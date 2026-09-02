@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import apiClient from './api-client';
+import { toast } from './toast-store';
 
 export interface SettingsStatus {
   deepseekApiKey: boolean;
@@ -41,8 +42,11 @@ export const useSettingsStore = create<Store>((set) => ({
       set({ saving: true, error: null });
       const response = await apiClient.put('/api/parametres', fields);
       set({ status: response.data, saving: false, lastSavedAt: Date.now() });
+      toast.success('Paramètres enregistrés');
     } catch (error: any) {
-      set({ error: error.response?.data?.message || 'Failed to update settings', saving: false });
+      const message = error.response?.data?.message || 'Failed to update settings';
+      set({ error: message, saving: false });
+      toast.error(message);
     }
   },
 }));

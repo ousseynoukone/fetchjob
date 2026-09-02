@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Inter, Source_Serif_4 } from 'next/font/google';
+import ToastContainer from '@/components/ui/toast-container';
 import './globals.css';
 
 const inter = Inter({ subsets: ['latin'], variable: '--font-inter' });
@@ -17,7 +18,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" data-theme="findurjob" className={`${inter.variable} ${sourceSerif.variable}`}>
-      <body className="font-sans">{children}</body>
+      <body className="font-sans">
+        {children}
+        <ToastContainer />
+      </body>
     </html>
   );
 }

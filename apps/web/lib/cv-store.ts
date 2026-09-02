@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import apiClient from './api-client';
+import { toast } from './toast-store';
 
 interface CV {
   fullName: string;
@@ -94,8 +95,11 @@ export const useCVStore = create<Store>((set) => ({
       set({ saving: true, error: null });
       const response = await apiClient.put('/api/cv', cvUpdate);
       set({ cv: response.data, saving: false, lastSavedAt: Date.now() });
+      toast.success('CV enregistré');
     } catch (error: any) {
-      set({ error: error.response?.data?.message || 'Failed to update CV', saving: false });
+      const message = error.response?.data?.message || 'Failed to update CV';
+      set({ error: message, saving: false });
+      toast.error(message);
     }
   },
 

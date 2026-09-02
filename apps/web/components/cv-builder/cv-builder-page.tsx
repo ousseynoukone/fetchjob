@@ -12,7 +12,7 @@ import FormationsSection from './sections/formations-section';
 import ProjetsSection from './sections/projets-section';
 import CertificationsSection from './sections/certifications-section';
 import LanguesSection from './sections/langues-section';
-import { Download, User, Wrench, Briefcase, GraduationCap, FolderKanban, Award, Languages, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Download, User, Wrench, Briefcase, GraduationCap, FolderKanban, Award, Languages } from 'lucide-react';
 
 const TABS = [
   { id: 'identite', label: 'Identité', icon: User },
@@ -25,21 +25,13 @@ const TABS = [
 ];
 
 export default function CVBuilderPage() {
-  const { cv, loading, saving, error, lastSavedAt, fetchCV } = useCVStore();
+  const { cv, loading, fetchCV } = useCVStore();
   const [activeTab, setActiveTab] = useState('identite');
   const [downloading, setDownloading] = useState(false);
-  const [showSavedToast, setShowSavedToast] = useState(false);
 
   useEffect(() => {
     fetchCV();
   }, [fetchCV]);
-
-  useEffect(() => {
-    if (!lastSavedAt) return;
-    setShowSavedToast(true);
-    const timer = setTimeout(() => setShowSavedToast(false), 2500);
-    return () => clearTimeout(timer);
-  }, [lastSavedAt]);
 
   const handleDownloadPdf = async () => {
     setDownloading(true);
@@ -141,31 +133,6 @@ export default function CVBuilderPage() {
           </div>
         </div>
       </div>
-
-      {/* Save toast */}
-      {(saving || showSavedToast || error) && (
-        <div className="fixed bottom-6 right-6 z-50">
-          <div
-            className={`flex items-center gap-2 px-4 py-3 rounded-xl shadow-xl text-sm font-medium ${
-              error ? 'bg-error text-error-content' : 'bg-base-100 border border-base-300'
-            }`}
-          >
-            {error ? (
-              <>
-                <AlertCircle className="w-4 h-4" /> {error}
-              </>
-            ) : saving ? (
-              <>
-                <span className="loading loading-spinner loading-xs" /> Enregistrement...
-              </>
-            ) : (
-              <>
-                <CheckCircle2 className="w-4 h-4 text-success" /> Enregistré
-              </>
-            )}
-          </div>
-        </div>
-      )}
     </AppShell>
   );
 }

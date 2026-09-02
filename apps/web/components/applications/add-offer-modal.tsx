@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import apiClient from '@/lib/api-client';
+import { toast } from '@/lib/toast-store';
 import { X } from 'lucide-react';
 
 export default function AddOfferModal({ onClose }: { onClose: () => void }) {
@@ -18,6 +19,7 @@ export default function AddOfferModal({ onClose }: { onClose: () => void }) {
     try {
       const response = await apiClient.post('/api/candidatures/manual', form);
       onClose();
+      toast.success('Offre ajoutée');
       router.push(`/candidatures/${response.data.id}`);
     } catch (err: any) {
       setError(err.response?.data?.message || "Impossible d'ajouter cette offre");

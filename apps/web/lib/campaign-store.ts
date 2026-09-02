@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import apiClient from './api-client';
+import { toast } from './toast-store';
 
 export interface Campaign {
   id: string;
@@ -71,8 +72,11 @@ export const useCampaignStore = create<Store>((set, get) => ({
       set({ saving: true, error: null });
       const response = await apiClient.put('/api/campagne', data);
       set({ campaign: response.data, saving: false });
+      toast.success('Campagne enregistrée');
     } catch (error: any) {
-      set({ error: error.response?.data?.message || 'Failed to update campaign', saving: false });
+      const message = error.response?.data?.message || 'Failed to update campaign';
+      set({ error: message, saving: false });
+      toast.error(message);
     }
   },
 
@@ -82,8 +86,11 @@ export const useCampaignStore = create<Store>((set, get) => ({
       const response = await apiClient.post('/api/campagne/run');
       set({ latestRun: response.data });
       await get().fetchCampaign();
+      toast.success('Campagne lancée');
     } catch (error: any) {
-      set({ error: error.response?.data?.message || 'Failed to start campaign', running: false });
+      const message = error.response?.data?.message || 'Failed to start campaign';
+      set({ error: message, running: false });
+      toast.error(message);
     }
   },
 
@@ -91,8 +98,11 @@ export const useCampaignStore = create<Store>((set, get) => ({
     try {
       const response = await apiClient.post('/api/campagne/pause');
       set({ campaign: response.data, running: false });
+      toast.info('Campagne mise en pause');
     } catch (error: any) {
-      set({ error: error.response?.data?.message || 'Failed to pause campaign' });
+      const message = error.response?.data?.message || 'Failed to pause campaign';
+      set({ error: message });
+      toast.error(message);
     }
   },
 
