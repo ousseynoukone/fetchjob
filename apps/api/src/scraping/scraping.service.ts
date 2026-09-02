@@ -1,8 +1,80 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-import { chromium } from 'playwright';
+import { chromium, type BrowserContext } from 'playwright';
 import { SettingsService } from '../common/settings.service';
+
+const DETAIL_PAGE_USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+// A search-results card is the whole offer for some sources (LinkedIn,
+// HelloWork) — no real description, just title/company/location stitched
+// together. Both sites embed a full schema.org JobPosting on the detail
+// page itself, so bounded-concurrency fan-out to fetch it is worth the
+// extra requests. Indeed blocks plain HTTP outright (verified: 401) so it
+// goes through Playwright like the search page already does.
+const HTML_ENTITIES: Record<string, string> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+  nbsp: ' ',
+};
+
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)))
+    .replace(/&(amp|lt|gt|quot|apos|nbsp);/g, (_, name) => HTML_ENTITIES[name]);
+}
+
+interface JsonLdJobPosting {
+  description?: string;
+  datePosted?: string;
+}
+
+// LinkedIn/HelloWork job-detail pages embed a schema.org JobPosting block
+// for Google Jobs indexing — a stable, structured source for the full
+// description, far more robust than guessing CSS class names that change
+// with every redesign.
+function extractJobPostingJsonLd(html: string): JsonLdJobPosting | null {
+  const $ = cheerio.load(html);
+  let result: JsonLdJobPosting | null = null;
+
+  $('script[type="application/ld+json"]').each((_, el) => {
+    if (result) return;
+    try {
+      const parsed = JSON.parse($(el).contents().text());
+      const candidates = Array.isArray(parsed) ? parsed : [parsed];
+      const jobPosting = candidates.find((entry) => entry?.['@type'] === 'JobPosting');
+      if (jobPosting?.description) {
+        result = { description: jobPosting.description, datePosted: jobPosting.datePosted };
+      }
+    } catch {
+      // Not parseable JSON-LD (or not a JobPosting) — skip this script tag.
+    }
+  });
+
+  return result;
+}
+
+// Bounds the extra per-offer detail-page fan-out so a single search doesn't
+// fire 20 simultaneous requests at a site and risk getting rate-limited.
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const current = nextIndex++;
+      results[current] = await fn(items[current]);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
 
 export interface ScrapedOffer {
   externalId: string;
@@ -54,13 +126,18 @@ function normalizeLocation(text: string): string {
 }
 
 function stripHtml(html: string): string {
-  return html
+  // Decode first: some sources (LinkedIn's JSON-LD) escape their HTML, so
+  // the tags below (<br>, </p>) only become visible after decoding.
+  const decoded = decodeHtmlEntities(html);
+  return decoded
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
     .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
     .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/\s+/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
@@ -117,6 +194,58 @@ export class ScrapingService {
         `Failed to fetch offers from ${source}: ${error.message}${status ? ` (HTTP ${status})` : ''}`,
       );
       return [];
+    }
+  }
+
+  // Fetches the real job description from the offer's own detail page.
+  // Only LinkedIn/HelloWork need this — their search-results cards never
+  // carry real description text (see fetchLinkedInOffers/fetchHelloWorkOffers).
+  // Indeed is enriched inline in fetchIndeedOffers (reusing its already-open
+  // Playwright browser is far cheaper than launching a new one per offer),
+  // and every other source already returns a full description from listing,
+  // so this is a no-op passthrough for them.
+  async enrichDescription(offer: ScrapedOffer): Promise<ScrapedOffer> {
+    switch (offer.source) {
+      case 'hellowork':
+        return this.enrichHelloWorkDescription(offer);
+      case 'linkedin':
+        return this.enrichLinkedInDescription(offer);
+      default:
+        return offer;
+    }
+  }
+
+  private async enrichHelloWorkDescription(offer: ScrapedOffer): Promise<ScrapedOffer> {
+    try {
+      const response = await axios.get(offer.url, {
+        headers: { 'User-Agent': DETAIL_PAGE_USER_AGENT, 'Accept-Language': 'fr-FR,fr;q=0.9' },
+        timeout: 10000,
+      });
+      const jobPosting = extractJobPostingJsonLd(response.data);
+      if (!jobPosting?.description) return offer;
+      return {
+        ...offer,
+        description: stripHtml(jobPosting.description),
+        postedAt: offer.postedAt || (jobPosting.datePosted ? new Date(jobPosting.datePosted) : undefined),
+      };
+    } catch (error: any) {
+      this.logger.warn(`HelloWork detail fetch failed for ${offer.url}: ${error.message}`);
+      return offer;
+    }
+  }
+
+  private async enrichLinkedInDescription(offer: ScrapedOffer): Promise<ScrapedOffer> {
+    try {
+      const response = await axios.get(offer.url, {
+        headers: { 'User-Agent': DETAIL_PAGE_USER_AGENT, 'Accept-Language': 'fr-FR,fr;q=0.9' },
+        timeout: 10000,
+      });
+      const jobPosting = extractJobPostingJsonLd(response.data);
+      if (!jobPosting?.description) return offer;
+      return { ...offer, description: stripHtml(jobPosting.description) };
+    } catch (error: any) {
+      this.logger.warn(`LinkedIn detail fetch failed for ${offer.url}: ${error.message}`);
+      return offer;
     }
   }
 
@@ -305,7 +434,12 @@ export class ScrapingService {
         });
       });
 
-      return offers.slice(0, 20);
+      const shortlisted = offers.slice(0, 20);
+      // Enrich in-place while the browser is still open — reusing it here is
+      // far cheaper than the ~1-2s launch cost of a fresh Chromium instance
+      // per offer, which is what a lazy per-offer enrichDescription() would
+      // require once this function has already returned and closed it.
+      return await mapWithConcurrency(shortlisted, 3, (offer) => this.fetchIndeedDescription(context, offer));
     } catch (err: any) {
       this.logger.warn(`Indeed scraper error: ${err.message}`);
       return [];
@@ -313,6 +447,34 @@ export class ScrapingService {
       if (browser) {
         await browser.close().catch(() => {});
       }
+    }
+  }
+
+  private async fetchIndeedDescription(context: BrowserContext, offer: ScrapedOffer): Promise<ScrapedOffer> {
+    const page = await context.newPage();
+    try {
+      await page.goto(`https://fr.indeed.com/viewjob?jk=${offer.externalId}`, {
+        waitUntil: 'domcontentloaded',
+        timeout: 15000,
+      });
+
+      const html = await page.content();
+      const jobPosting = extractJobPostingJsonLd(html);
+      if (jobPosting?.description) {
+        return { ...offer, description: stripHtml(jobPosting.description) };
+      }
+
+      const text = await page
+        .locator('#jobDescriptionText')
+        .first()
+        .innerText()
+        .catch(() => '');
+      return text.trim() ? { ...offer, description: text.trim() } : offer;
+    } catch (error: any) {
+      this.logger.warn(`Indeed detail fetch failed for jk=${offer.externalId}: ${error.message}`);
+      return offer;
+    } finally {
+      await page.close().catch(() => {});
     }
   }
 

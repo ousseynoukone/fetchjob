@@ -205,17 +205,17 @@ export class CampaignService {
           offersScanned += offers.length;
           await this.appendLog(runId, `${offers.length} offre(s) trouvée(s) sur ${source} pour "${query}"`);
 
-          for (const offer of offers) {
+          for (const rawOffer of offers) {
             if (applicationsPrepared >= campaign.maxApplicationsPerDay) break;
 
-            if (!isWithinIdf(offer.source, offer.location, campaign.location)) {
+            if (!isWithinIdf(rawOffer.source, rawOffer.location, campaign.location)) {
               offersFiltered++;
               continue;
             }
 
             const excludeKeywords = (campaign.excludeKeywords as string[]) || [];
             if (excludeKeywords.length) {
-              const haystack = `${offer.title} ${offer.description}`.toLowerCase();
+              const haystack = `${rawOffer.title} ${rawOffer.description}`.toLowerCase();
               const excluded = excludeKeywords.some((kw) => kw.trim() && haystack.includes(kw.trim().toLowerCase()));
               if (excluded) {
                 offersFiltered++;
@@ -223,14 +223,20 @@ export class CampaignService {
               }
             }
 
-            if (campaign.maxAgeMonths > 0 && offer.postedAt) {
+            if (campaign.maxAgeMonths > 0 && rawOffer.postedAt) {
               const cutoff = new Date();
               cutoff.setMonth(cutoff.getMonth() - campaign.maxAgeMonths);
-              if (offer.postedAt < cutoff) {
+              if (rawOffer.postedAt < cutoff) {
                 offersFiltered++;
                 continue;
               }
             }
+
+            // Only fetched now, after every filter has already passed — the
+            // early filters run cheap, so this avoids spending a detail-page
+            // request (LinkedIn/HelloWork) on an offer that was going to be
+            // discarded anyway.
+            const offer = await this.scraping.enrichDescription(rawOffer);
 
             const jobOffer = await this.prisma.jobOffer.upsert({
               where: { source_externalId: { source: offer.source, externalId: offer.externalId } },
