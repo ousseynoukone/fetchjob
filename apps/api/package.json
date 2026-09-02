@@ -1,0 +1,92 @@
+{
+  "name": "@findurjob/api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "FindUrJob API Server",
+  "author": "",
+  "license": "MIT",
+  "scripts": {
+    "prebuild": "rimraf dist",
+    "build": "nest build",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "start": "nest start",
+    "dev": "nest start --watch",
+    "debug": "nest start --debug --watch",
+    "prod": "node dist/main",
+    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:cov": "jest --coverage",
+    "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
+    "test:e2e": "jest --config ./test/jest-e2e.json"
+  },
+  "dependencies": {
+    "@nestjs/common": "^10.0.0",
+    "@nestjs/core": "^10.0.0",
+    "@nestjs/jwt": "^12.0.0",
+    "@nestjs/passport": "^10.0.0",
+    "@nestjs/config": "^3.0.0",
+    "@nestjs/platform-express": "^10.0.0",
+    "passport": "^0.7.0",
+    "passport-jwt": "^4.0.0",
+    "passport-google-oauth20": "^2.0.0",
+    "passport-oauth2": "^1.7.0",
+    "reflect-metadata": "^0.1.13",
+    "rxjs": "^7.8.0",
+    "pg": "^8.11.0",
+    "redis": "^4.6.0",
+    "dotenv": "^16.3.0",
+    "prisma": "^5.0.0",
+    "@prisma/client": "^5.0.0",
+    "openai": "^4.20.0",
+    "langchain": "^0.1.0",
+    "@react-pdf/renderer": "^4.9.0",
+    "react": "^18.2.0",
+    "playwright": "^1.40.0",
+    "cheerio": "^1.0.0",
+    "axios": "^1.6.0",
+    "stripe": "^13.0.0",
+    "nodemailer": "^6.9.0",
+    "bcryptjs": "^2.4.3",
+    "class-validator": "^0.14.0",
+    "class-transformer": "^0.5.1"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^10.0.0",
+    "@nestjs/schematics": "^10.0.0",
+    "@types/express": "^4.17.0",
+    "@types/jest": "^29.5.0",
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.2.0",
+    "@types/supertest": "^6.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.40.0",
+    "jest": "^29.5.0",
+    "prettier": "^3.0.0",
+    "rimraf": "^5.0.0",
+    "supertest": "^6.3.0",
+    "ts-jest": "^29.1.0",
+    "ts-loader": "^9.4.0",
+    "ts-node": "^10.9.0",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.1.0"
+  },
+  "jest": {
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
+    "transform": {
+      "^.+\\.(t|j)s$": "ts-jest"
+    },
+    "collectCoverageFrom": [
+      "**/*.(t|j)s"
+    ],
+    "coverageDirectory": "../coverage",
+    "testEnvironment": "node"
+  }
+}

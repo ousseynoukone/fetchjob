@@ -1,0 +1,276 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// Users & Authentication
+// ============================================================================
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String?
+  name      String?
+  plan      String   @default("free") // free, premium, pro
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  cvs                CV[]
+  linkedAccounts     LinkedAccount[]
+  campaigns          Campaign[]
+  applications       Application[]
+  campaignRuns       CampaignRun[]
+
+  @@map("users")
+}
+
+model LinkedAccount {
+  id              String   @id @default(cuid())
+  userId          String
+  platform        String   // linkedin, google, france_travail
+  accessToken     String   @db.Text
+  refreshToken    String?  @db.Text
+  platformEmail   String?
+  expiresAt       DateTime?
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, platform])
+  @@map("linked_accounts")
+}
+
+// ============================================================================
+// CV Management
+// ============================================================================
+
+model CV {
+  id        String   @id @default(cuid())
+  userId    String
+  data      Json     // Full CV object stored as JSON
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("cvs")
+}
+
+// ============================================================================
+// Campaigns & Job Scraping
+// ============================================================================
+
+model Campaign {
+  id                      String   @id @default(cuid())
+  userId                  String
+  
+  status                  String   @default("active") // active, paused, running, completed
+  jobTitle                String
+  location                String
+  remote                  Boolean  @default(false)
+  contractTypes           String[] // CDI, CDD, Freelance, Stage, Alternance
+  keywords                String[]
+  excludeKeywords         String[] @default([])
+  maxAgeMonths            Int      @default(0) // 0 = no limit
+
+  maxApplicationsPerDay   Int      @default(10)
+  minMatchScore           Int      @default(70)
+  actionMode              String   @default("prepare_only") // prepare_only, auto_apply
+  sources                 String[] // linkedin, france_travail, adzuna, indeed
+  
+  totalOffersScanned      Int      @default(0)
+  totalOffersFiltered     Int      @default(0)
+  totalApplicationsPrepared Int   @default(0)
+  totalApplicationsSent   Int      @default(0)
+  
+  lastRunAt               DateTime?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  // Relations
+  user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  applications            Application[]
+  campaignRuns            CampaignRun[]
+
+  @@index([userId])
+  @@index([status])
+  @@map("campaigns")
+}
+
+model CampaignRun {
+  id                      String   @id @default(cuid())
+  campaignId              String
+  userId                  String
+  
+  startedAt               DateTime @default(now())
+  finishedAt              DateTime?
+  
+  offersScanned           Int      @default(0)
+  offersFiltered          Int      @default(0)
+  applicationsPrepared    Int      @default(0)
+  applicationsSent        Int      @default(0)
+  error                   String?
+  
+  logs                    String[] @default([]) // Array of log messages
+
+  // Relations
+  campaign                Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId])
+  @@index([userId])
+  @@map("campaign_runs")
+}
+
+// ============================================================================
+// Job Offers (Scraped Data)
+// ============================================================================
+
+model JobOffer {
+  id          String   @id @default(cuid())
+  
+  externalId  String   // ID from the source (LinkedIn, France Travail, etc.)
+  source      String   // linkedin, france_travail, adzuna, indeed
+  
+  title       String
+  company     String
+  location    String?
+  description String   @db.Text
+  url         String
+  contractType String?
+  salary      String?
+  
+  postedAt    DateTime?
+  scrapedAt   DateTime @default(now())
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  applications Application[]
+
+  @@unique([source, externalId])
+  @@index([source])
+  @@index([scrapedAt])
+  @@map("job_offers")
+}
+
+// ============================================================================
+// Applications
+// ============================================================================
+
+model Application {
+  id              String   @id @default(cuid())
+  userId          String
+  campaignId      String
+  jobOfferId      String
+  
+  // Job details snapshot
+  jobTitle        String
+  company         String
+  location        String?
+  sourceUrl       String
+  
+  // Matching & Analysis
+  matchScore      Int      // 0-100
+  matchedSkills   String[]
+  missingSkills   String[]
+  aiAnalysis      Json?    // Structured analysis from OpenAI
+  
+  // Application materials
+  status          String   @default("to_apply") // to_apply, applied, interview, offer, rejected, ignored
+  adaptedCvUrl    String?  // URL to S3/R2 stored PDF
+  adaptedCvData   Json?    // Adapted CV content, rendered to PDF on demand
+  coverLetter     String?  @db.Text
+  
+  appliedAt       DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaign        Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  jobOffer        JobOffer @relation(fields: [jobOfferId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, jobOfferId])
+  @@index([userId])
+  @@index([campaignId])
+  @@index([status])
+  @@index([matchScore])
+  @@map("applications")
+}
+
+// ============================================================================
+// Payments & Subscriptions
+// ============================================================================
+
+model Subscription {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  
+  plan            String   // free, premium, pro
+  stripeCustomerId String?
+  stripePriceId   String?
+  stripeSubscriptionId String?
+  
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+  cancelledAt        DateTime?
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("subscriptions")
+}
+
+model Invoice {
+  id              String   @id @default(cuid())
+  userId          String
+  
+  stripeInvoiceId String   @unique
+  amount          Int      // in cents
+  currency        String   @default("eur")
+  status          String   @default("draft") // draft, open, paid, void, uncollectible
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([userId])
+  @@map("invoices")
+}
+
+// ============================================================================
+// Settings — API keys/tokens for external services, editable from the app
+// instead of hand-editing .env.local. Single row, no per-user scoping needed
+// for a personal tool.
+// ============================================================================
+
+model Settings {
+  id                        String   @id @default(cuid())
+  deepseekApiKey            String?
+  franceTravailClientId     String?
+  franceTravailClientSecret String?
+  adzunaAppId               String?
+  adzunaApiKey              String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}
