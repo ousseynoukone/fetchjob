@@ -47,3 +47,4 @@ dist/
 
 # Docker
 .dockerignore
+.neon

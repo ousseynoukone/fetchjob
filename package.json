@@ -13,8 +13,8 @@
     "type-check": "turbo run type-check"
   },
   "devDependencies": {
-    "turbo": "^2.1.0",
     "prettier": "^3.2.0",
+    "turbo": "^2.1.0",
     "typescript": "^5.3.0"
   },
   "engines": {
@@ -25,5 +25,9 @@
     "apps/*",
     "packages/*",
     "workers/*"
-  ]
+  ],
+  "dependencies": {
+    "@neon/config": "^1.2.0",
+    "@neon/env": "^1.2.0"
+  }
 }
