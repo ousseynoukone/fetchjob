@@ -43,6 +43,7 @@ lerna-debug.log*
 # Turbo
 .turbo/
 dist/
+*.tsbuildinfo
 
 # Docker
 .dockerignore
