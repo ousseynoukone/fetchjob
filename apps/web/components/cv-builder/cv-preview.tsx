@@ -4,6 +4,7 @@ import React from 'react';
 import { useCVStore } from '@/lib/cv-store';
 import CVPreviewAts from './cv-preview-ats';
 import { Mail, Phone, MapPin, Link as LinkIcon } from 'lucide-react';
+import { renderInlineLinks } from '@/lib/inline-links';
 
 const DEFAULT_ACCENT = '#2d5bff';
 const SIDEBAR_BG = '#111827';
@@ -55,7 +56,9 @@ export default function CVPreview() {
                 {cv.links?.map((link, idx) => (
                   <div key={idx} className="flex items-center gap-1.5 break-all">
                     <LinkIcon className="w-3 h-3 shrink-0" style={{ color: ACCENT }} />
-                    {link.label || link.url}
+                    <a href={link.url} target="_blank" rel="noopener noreferrer" className="underline">
+                      {link.label || link.url}
+                    </a>
                   </div>
                 ))}
               </div>
@@ -125,7 +128,15 @@ export default function CVPreview() {
                       {edu.period}
                     </span>
                     <div>
-                      <p className="font-bold text-[0.84em]">{edu.school}</p>
+                      <p className="font-bold text-[0.84em]">
+                        {edu.link ? (
+                          <a href={edu.link} target="_blank" rel="noopener noreferrer" className="underline">
+                            {edu.school}
+                          </a>
+                        ) : (
+                          edu.school
+                        )}
+                      </p>
                       <p className="text-[0.76em] text-slate-500">
                         {[edu.degree, edu.location].filter(Boolean).join(' — ')}
                       </p>
@@ -145,7 +156,8 @@ export default function CVPreview() {
                     <div className="flex items-center justify-between gap-2">
                       <p className="font-bold text-[0.86em] flex items-center gap-1.5">
                         <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: ACCENT }} />
-                        {[exp.company, exp.location].filter(Boolean).join(' - ')}
+                        {renderInlineLinks(exp.company)}
+                        {exp.location ? ` - ${exp.location}` : ''}
                       </p>
                       {exp.period && (
                         <span className="text-[0.68em] font-bold text-slate-500 whitespace-nowrap">
@@ -181,7 +193,15 @@ export default function CVPreview() {
                 {cv.projects.map((proj, idx) => (
                   <div key={idx}>
                     <div className="flex justify-between items-baseline gap-2">
-                      <p className="font-bold text-[0.86em]">{proj.name}</p>
+                      <p className="font-bold text-[0.86em]">
+                        {proj.url ? (
+                          <a href={proj.url} target="_blank" rel="noopener noreferrer" className="underline">
+                            {proj.name}
+                          </a>
+                        ) : (
+                          proj.name
+                        )}
+                      </p>
                       {proj.period && <span className="text-[0.7em] text-slate-400">{proj.period}</span>}
                     </div>
                     <ul className="mt-1 space-y-0.5">
@@ -207,7 +227,13 @@ export default function CVPreview() {
                 {cv.certifications.map((cert, idx) => (
                   <div key={idx} className="flex justify-between items-baseline gap-2">
                     <p className="text-[0.8em] font-bold" style={{ color: ACCENT }}>
-                      {cert.name}
+                      {cert.url ? (
+                        <a href={cert.url} target="_blank" rel="noopener noreferrer" className="underline">
+                          {cert.name}
+                        </a>
+                      ) : (
+                        cert.name
+                      )}
                       {cert.issuer && <span className="text-slate-500 font-normal"> — {cert.issuer}</span>}
                     </p>
                     {cert.date && (

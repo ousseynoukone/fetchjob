@@ -11,7 +11,7 @@ export default function FormationsSection() {
   const addEducation = () => {
     setEducation([
       ...education,
-      { degree: '', school: '', location: '', period: '', precision: '' },
+      { degree: '', school: '', location: '', period: '', precision: '', link: '' },
     ]);
   };
 
@@ -68,6 +68,13 @@ export default function FormationsSection() {
                     className="input input-bordered input-sm"
                   />
                 </div>
+                <input
+                  type="url"
+                  placeholder="Lien vers l'école (optionnel)"
+                  value={edu.link || ''}
+                  onChange={(e) => updateEducation(idx, 'link', e.target.value)}
+                  className="input input-bordered input-sm w-full"
+                />
               </div>
               <button
                 type="button"

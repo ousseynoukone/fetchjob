@@ -2,15 +2,14 @@
 
 import React from 'react';
 import { useCVStore } from '@/lib/cv-store';
+import { renderInlineLinks } from '@/lib/inline-links';
 
 export default function CVPreviewAts() {
   const { cv } = useCVStore();
   if (!cv) return null;
 
   const fontSize = cv.options?.fontSize || 11;
-  const contactParts = [cv.email, cv.phone, cv.location, ...(cv.links || []).map((l) => l.label || l.url)].filter(
-    Boolean,
-  );
+  const contactTextParts = [cv.email, cv.phone, cv.location].filter(Boolean);
 
   return (
     <div
@@ -19,7 +18,24 @@ export default function CVPreviewAts() {
     >
       <h1 className="text-[1.7em] font-bold">{cv.fullName || 'Votre nom'}</h1>
       {cv.headline && <p className="text-[1.05em] mt-0.5">{cv.headline}</p>}
-      {!!contactParts.length && <p className="text-[0.85em] mt-1.5 text-neutral-800">{contactParts.join(' | ')}</p>}
+      {(!!contactTextParts.length || !!cv.links?.length) && (
+        <p className="text-[0.85em] mt-1.5 text-neutral-800 space-x-1">
+          {contactTextParts.map((part, i) => (
+            <span key={i}>
+              {i > 0 ? ' | ' : ''}
+              {part}
+            </span>
+          ))}
+          {cv.links?.map((link, idx) => (
+            <span key={idx}>
+              {(idx > 0 || contactTextParts.length) ? ' | ' : ''}
+              <a href={link.url} target="_blank" rel="noopener noreferrer" className="underline">
+                {link.label || link.url}
+              </a>
+            </span>
+          ))}
+        </p>
+      )}
 
       {cv.summary && (
         <Section title="Résumé">
@@ -32,7 +48,7 @@ export default function CVPreviewAts() {
           {cv.experiences.map((exp, idx) => (
             <div key={idx} className="mb-3">
               <p className="text-[0.95em] font-bold">
-                {exp.role} — {exp.company}
+                {exp.role} — {renderInlineLinks(exp.company)}
               </p>
               <p className="text-[0.85em] mt-0.5">{[exp.location, exp.period].filter(Boolean).join(' | ')}</p>
               <ul className="mt-1 space-y-0.5">
@@ -52,7 +68,13 @@ export default function CVPreviewAts() {
           {cv.projects.map((proj, idx) => (
             <div key={idx} className="mb-3">
               <p className="text-[0.95em] font-bold">
-                {proj.name}
+                {proj.url ? (
+                  <a href={proj.url} target="_blank" rel="noopener noreferrer" className="underline">
+                    {proj.name}
+                  </a>
+                ) : (
+                  proj.name
+                )}
                 {proj.period ? ` — ${proj.period}` : ''}
               </p>
               <ul className="mt-1 space-y-0.5">
@@ -72,7 +94,18 @@ export default function CVPreviewAts() {
           {cv.education.map((edu, idx) => (
             <div key={idx} className="mb-3">
               <p className="text-[0.95em] font-bold">{edu.degree}</p>
-              <p className="text-[0.88em] mt-0.5">{[edu.school, edu.location, edu.period].filter(Boolean).join(' | ')}</p>
+              <p className="text-[0.88em] mt-0.5">
+                {edu.link ? (
+                  <a href={edu.link} target="_blank" rel="noopener noreferrer" className="underline">
+                    {edu.school}
+                  </a>
+                ) : (
+                  edu.school
+                )}
+                {[edu.location, edu.period].filter(Boolean).length
+                  ? ` | ${[edu.location, edu.period].filter(Boolean).join(' | ')}`
+                  : ''}
+              </p>
             </div>
           ))}
         </Section>
@@ -93,7 +126,14 @@ export default function CVPreviewAts() {
         <Section title="Certifications">
           {cv.certifications.map((cert, idx) => (
             <p key={idx} className="text-[0.88em] mb-0.5">
-              {cert.name} — {cert.issuer} ({cert.date})
+              {cert.url ? (
+                <a href={cert.url} target="_blank" rel="noopener noreferrer" className="underline">
+                  {cert.name}
+                </a>
+              ) : (
+                cert.name
+              )}{' '}
+              — {cert.issuer} ({cert.date})
             </p>
           ))}
         </Section>

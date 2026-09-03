@@ -9,7 +9,7 @@ export default function CertificationsSection() {
   const [certifications, setCertifications] = useState(cv?.certifications || []);
 
   const addCertification = () => {
-    setCertifications([...certifications, { name: '', issuer: '', date: '' }]);
+    setCertifications([...certifications, { name: '', issuer: '', date: '', url: '' }]);
   };
 
   const updateCertification = (idx: number, field: string, value: any) => {
@@ -53,6 +53,13 @@ export default function CertificationsSection() {
                   value={cert.date}
                   onChange={(e) => updateCertification(idx, 'date', e.target.value)}
                   className="input input-bordered input-sm"
+                />
+                <input
+                  type="url"
+                  placeholder="Lien vers le certificat (optionnel)"
+                  value={cert.url || ''}
+                  onChange={(e) => updateCertification(idx, 'url', e.target.value)}
+                  className="input input-bordered input-sm col-span-3"
                 />
               </div>
               <button

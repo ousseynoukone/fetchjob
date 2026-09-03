@@ -1,4 +1,5 @@
-import { Document, Page, Text, View, StyleSheet, Svg, Path } from '@react-pdf/renderer';
+import type { ReactNode } from 'react';
+import { Document, Page, Text, View, StyleSheet, Svg, Path, Link } from '@react-pdf/renderer';
 
 export interface CVData {
   fullName: string;
@@ -16,14 +17,15 @@ export interface CVData {
     period: string;
     bullets: string[];
   }[];
-  projects?: { name: string; period?: string; bullets: string[] }[];
+  projects?: { name: string; period?: string; url?: string; bullets: string[] }[];
   education?: {
     degree: string;
     school: string;
     location?: string;
     period: string;
+    link?: string;
   }[];
-  certifications?: { name: string; issuer: string; date: string }[];
+  certifications?: { name: string; issuer: string; date: string; url?: string }[];
   languages?: { name: string; level: string }[];
   interests?: string[];
   options?: { fontSize?: number; compact?: boolean; accent?: string; template?: string };
@@ -83,6 +85,33 @@ const BASE_FONT_SIZE = 11;
 
 function getUserScale(cv: CVData): number {
   return (cv.options?.fontSize || BASE_FONT_SIZE) / BASE_FONT_SIZE;
+}
+
+// The CV builder lets a user select a word inside certain fields (company
+// name, school, project name...) and turn it into a link — stored inline as
+// `[word](url)` rather than as a separate field, so the link lives on the
+// word itself. This renders those runs as mixed Text/Link children instead
+// of a plain string.
+const INLINE_LINK_REGEX = /\[([^\]]+)\]\(([^)]+)\)/g;
+
+function renderInlineLinkRuns(text: string, style: Record<string, any>): ReactNode {
+  if (!text || !text.includes('](')) return text;
+  const runs: ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let key = 0;
+  INLINE_LINK_REGEX.lastIndex = 0;
+  while ((match = INLINE_LINK_REGEX.exec(text)) !== null) {
+    if (match.index > lastIndex) runs.push(text.slice(lastIndex, match.index));
+    runs.push(
+      <Link key={key++} src={match[2]} style={style}>
+        {match[1]}
+      </Link>,
+    );
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) runs.push(text.slice(lastIndex));
+  return runs;
 }
 
 // ============================================================================
@@ -160,16 +189,26 @@ function AtsCVDocument({ cv }: { cv: CVData }) {
   const scale = getUserScale(cv) * estimateFitScale(cv, { twoColumn: false });
   const atsStyles = getAtsStyles(scale);
 
-  const contactParts = [cv.email, cv.phone, cv.location, ...(cv.links || []).map((l) => l.label || l.url)].filter(
-    Boolean,
-  );
+  const contactTextParts = [cv.email, cv.phone, cv.location].filter(Boolean);
 
   return (
     <Document title={cv.fullName || 'CV'}>
       <Page size="A4" style={atsStyles.page}>
         <Text style={atsStyles.name}>{cv.fullName}</Text>
         {!!cv.headline && <Text style={atsStyles.headline}>{cv.headline}</Text>}
-        {!!contactParts.length && <Text style={atsStyles.contactLine}>{contactParts.join(' | ')}</Text>}
+        {(!!contactTextParts.length || !!cv.links?.length) && (
+          <Text style={atsStyles.contactLine}>
+            {contactTextParts.join(' | ')}
+            {(cv.links || []).map((link, idx) => (
+              <Text key={idx}>
+                {idx === 0 && contactTextParts.length ? ' | ' : idx > 0 ? ' | ' : ''}
+                <Link src={link.url} style={atsStyles.contactLine}>
+                  {link.label || link.url}
+                </Link>
+              </Text>
+            ))}
+          </Text>
+        )}
 
         {!!cv.summary && (
           <View style={atsStyles.section}>
@@ -184,7 +223,7 @@ function AtsCVDocument({ cv }: { cv: CVData }) {
             {cv.experiences.map((exp, idx) => (
               <View style={atsStyles.entry} key={idx}>
                 <Text style={atsStyles.entryTitleLine}>
-                  {exp.role} — {exp.company}
+                  {exp.role} — {renderInlineLinkRuns(exp.company, { ...atsStyles.entryTitleLine, color: '#111111' })}
                 </Text>
                 <Text style={atsStyles.entrySubLine}>
                   {[exp.location, exp.period].filter(Boolean).join(' | ')}
@@ -205,7 +244,13 @@ function AtsCVDocument({ cv }: { cv: CVData }) {
             {cv.projects.map((proj, idx) => (
               <View style={atsStyles.entry} key={idx}>
                 <Text style={atsStyles.entryTitleLine}>
-                  {proj.name}
+                  {proj.url ? (
+                    <Link src={proj.url} style={{ ...atsStyles.entryTitleLine, color: '#111111' }}>
+                      {proj.name}
+                    </Link>
+                  ) : (
+                    proj.name
+                  )}
                   {proj.period ? ` — ${proj.period}` : ''}
                 </Text>
                 {proj.bullets?.map((bullet, bidx) => (
@@ -225,7 +270,16 @@ function AtsCVDocument({ cv }: { cv: CVData }) {
               <View style={atsStyles.entry} key={idx}>
                 <Text style={atsStyles.entryTitleLine}>{edu.degree}</Text>
                 <Text style={atsStyles.entrySubLine}>
-                  {[edu.school, edu.location, edu.period].filter(Boolean).join(' | ')}
+                  {edu.link ? (
+                    <Link src={edu.link} style={{ ...atsStyles.entrySubLine, color: '#111111' }}>
+                      {edu.school}
+                    </Link>
+                  ) : (
+                    edu.school
+                  )}
+                  {[edu.location, edu.period].filter(Boolean).length
+                    ? ` | ${[edu.location, edu.period].filter(Boolean).join(' | ')}`
+                    : ''}
                 </Text>
               </View>
             ))}
@@ -249,7 +303,14 @@ function AtsCVDocument({ cv }: { cv: CVData }) {
             <Text style={atsStyles.sectionTitle}>Certifications</Text>
             {cv.certifications.map((cert, idx) => (
               <Text style={atsStyles.skillLine} key={idx}>
-                {cert.name} — {cert.issuer} ({cert.date})
+                {cert.url ? (
+                  <Link src={cert.url} style={{ ...atsStyles.skillLine, color: '#111111' }}>
+                    {cert.name}
+                  </Link>
+                ) : (
+                  cert.name
+                )}{' '}
+                — {cert.issuer} ({cert.date})
               </Text>
             ))}
           </View>
@@ -538,7 +599,9 @@ function SidebarCVDocument({ cv }: { cv: CVData }) {
                 {(cv.links || []).map((link, idx) => (
                   <View style={styles.contactRow} key={idx}>
                     <Icon path={ICONS.link} color={ACCENT} />
-                    <Text style={styles.contactText}>{link.label || link.url}</Text>
+                    <Link src={link.url} style={{ ...styles.contactText, color: ACCENT }}>
+                      {link.label || link.url}
+                    </Link>
                   </View>
                 ))}
               </View>
@@ -589,7 +652,15 @@ function SidebarCVDocument({ cv }: { cv: CVData }) {
                 <View style={styles.eduRow} key={idx}>
                   <Text style={styles.eduPeriod}>{edu.period}</Text>
                   <View>
-                    <Text style={styles.eduDegree}>{edu.school}</Text>
+                    <Text style={styles.eduDegree}>
+                      {edu.link ? (
+                        <Link src={edu.link} style={{ ...styles.eduDegree, color: ACCENT }}>
+                          {edu.school}
+                        </Link>
+                      ) : (
+                        edu.school
+                      )}
+                    </Text>
                     <Text style={styles.eduSchool}>
                       {[edu.degree, edu.location].filter(Boolean).join(' — ')}
                     </Text>
@@ -608,7 +679,8 @@ function SidebarCVDocument({ cv }: { cv: CVData }) {
                     <View style={styles.expCompanyLine}>
                       <View style={styles.expDot} />
                       <Text style={styles.entryTitle}>
-                        {[exp.company, exp.location].filter(Boolean).join(' - ')}
+                        {renderInlineLinkRuns(exp.company, { ...styles.entryTitle, color: ACCENT })}
+                        {exp.location ? ` - ${exp.location}` : ''}
                       </Text>
                     </View>
                     {!!exp.period && <Text style={styles.entryPeriod}>{exp.period}</Text>}
@@ -628,7 +700,15 @@ function SidebarCVDocument({ cv }: { cv: CVData }) {
               {cv.projects.map((proj, idx) => (
                 <View style={styles.entry} key={idx}>
                   <View style={styles.entryRow}>
-                    <Text style={styles.entryTitle}>{proj.name}</Text>
+                    <Text style={styles.entryTitle}>
+                      {proj.url ? (
+                        <Link src={proj.url} style={{ ...styles.entryTitle, color: ACCENT }}>
+                          {proj.name}
+                        </Link>
+                      ) : (
+                        proj.name
+                      )}
+                    </Text>
                     {!!proj.period && <Text style={styles.entryPeriod}>{proj.period}</Text>}
                   </View>
                   {proj.bullets?.map((bullet, bidx) => (
@@ -645,7 +725,7 @@ function SidebarCVDocument({ cv }: { cv: CVData }) {
               {cv.certifications.map((cert, idx) => (
                 <View style={styles.certRow} key={idx}>
                   <Text style={styles.certName}>
-                    {cert.name}
+                    {cert.url ? <Link src={cert.url} style={styles.certName}>{cert.name}</Link> : cert.name}
                     {cert.issuer ? <Text style={styles.certIssuer}> — {cert.issuer}</Text> : null}
                   </Text>
                   {!!cert.date && <Text style={styles.certDate}>{cert.date}</Text>}

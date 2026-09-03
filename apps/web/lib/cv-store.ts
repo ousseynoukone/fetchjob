@@ -45,6 +45,7 @@ interface CV {
     name: string;
     issuer: string;
     date: string;
+    url?: string;
   }>;
   languages: Array<{
     name: string;

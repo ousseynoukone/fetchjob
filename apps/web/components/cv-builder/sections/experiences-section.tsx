@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { useCVStore } from '@/lib/cv-store';
 import { Plus, Trash2 } from 'lucide-react';
+import LinkableTextInput from '../linkable-text-input';
 
 export default function ExperiencesSection() {
   const { cv, saving, updateCV } = useCVStore();
@@ -44,12 +45,11 @@ export default function ExperiencesSection() {
                     onChange={(e) => updateExperience(idx, 'role', e.target.value)}
                     className="input input-bordered input-sm"
                   />
-                  <input
-                    type="text"
-                    placeholder="Entreprise"
+                  <LinkableTextInput
+                    placeholder="Entreprise (sélectionnez le nom pour ajouter un lien)"
                     value={exp.company}
-                    onChange={(e) => updateExperience(idx, 'company', e.target.value)}
-                    className="input input-bordered input-sm"
+                    onChange={(value) => updateExperience(idx, 'company', value)}
+                    className="input input-bordered input-sm w-full"
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-2">
