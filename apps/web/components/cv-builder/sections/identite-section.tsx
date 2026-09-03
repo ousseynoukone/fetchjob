@@ -230,7 +230,7 @@ export default function IdentiteSection() {
             type="number"
             step="0.1"
             min={9}
-            max={16}
+            max={20}
             className="input input-bordered"
             {...register('options.fontSize', { valueAsNumber: true })}
           />

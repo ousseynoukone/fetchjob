@@ -75,6 +75,16 @@ export function estimateFitScale(cv: CVData, { twoColumn }: { twoColumn: boolean
   return 0.6;
 }
 
+// The default fontSize a fit scale of 1 was calibrated against — the
+// "Taille de police" control in the CV builder is a multiplier off this,
+// not an absolute point size, so a short CV can be sized up to actually
+// fill the page instead of always rendering at the smallest safe size.
+const BASE_FONT_SIZE = 11;
+
+function getUserScale(cv: CVData): number {
+  return (cv.options?.fontSize || BASE_FONT_SIZE) / BASE_FONT_SIZE;
+}
+
 // ============================================================================
 // ATS-friendly template: single column, plain text, standard font, no
 // graphics or colored blocks in the reading path — built to parse cleanly
@@ -147,7 +157,7 @@ function getAtsStyles(scale: number) {
 }
 
 function AtsCVDocument({ cv }: { cv: CVData }) {
-  const scale = estimateFitScale(cv, { twoColumn: false });
+  const scale = getUserScale(cv) * estimateFitScale(cv, { twoColumn: false });
   const atsStyles = getAtsStyles(scale);
 
   const contactParts = [cv.email, cv.phone, cv.location, ...(cv.links || []).map((l) => l.label || l.url)].filter(
@@ -496,7 +506,7 @@ function Bullet({ text, styles }: { text: string; styles: ReturnType<typeof getS
 
 function SidebarCVDocument({ cv }: { cv: CVData }) {
   const ACCENT = cv.options?.accent || DEFAULT_SIDEBAR_ACCENT;
-  const scale = estimateFitScale(cv, { twoColumn: true });
+  const scale = getUserScale(cv) * estimateFitScale(cv, { twoColumn: true });
   const styles = getSidebarStyles(ACCENT, scale);
 
   return (
