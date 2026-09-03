@@ -125,20 +125,41 @@ function normalizeLocation(text: string): string {
     .trim();
 }
 
+// Cap on the cleaned description handed to the AI service. Real job ads
+// don't need more than this to convey the role, and some detail pages leak
+// nav/footer/related-jobs text into the JSON-LD description field.
+const MAX_DESCRIPTION_LENGTH = 6000;
+
+// Plain .slice(0, n) can land in the middle of a surrogate pair (an emoji,
+// common in job ads) and leave a lone/unpaired code unit at the cut.
+// DeepSeek's JSON parser then rejects the whole request body over it
+// ("unexpected end of hex escape") — trim the extra unit instead.
+function truncateSafely(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  let end = maxLength;
+  const code = text.charCodeAt(end - 1);
+  if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+  return text.slice(0, end);
+}
+
 function stripHtml(html: string): string {
   // Decode first: some sources (LinkedIn's JSON-LD) escape their HTML, so
   // the tags below (<br>, </p>) only become visible after decoding.
   const decoded = decodeHtmlEntities(html);
-  return decoded
+  const cleaned = decoded
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
     .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/p>/gi, '\n\n')
     .replace(/<[^>]+>/g, ' ')
+    // Stray control characters (bad source encoding, binary noise) blow up
+    // to a 6-char \u00XX JSON escape each — keep only real whitespace.
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
     .replace(/[ \t]+/g, ' ')
     .replace(/ *\n */g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+  return truncateSafely(cleaned, MAX_DESCRIPTION_LENGTH);
 }
 
 const STOPWORDS = new Set(['pour', 'avec', 'dans', 'les', 'des', 'developpeur', 'developpeuse', 'and', 'the', 'for', 'with']);

@@ -49,7 +49,7 @@ export class CvController {
 
     res.set({
       'Content-Type': 'application/pdf',
-      'Content-Disposition': 'inline; filename="cv.pdf"',
+      'Content-Disposition': 'inline; filename="CV OUSSEYNOU KONE.pdf"',
       'Content-Length': pdf.length,
     });
     res.send(pdf);

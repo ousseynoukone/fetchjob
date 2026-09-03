@@ -12,6 +12,8 @@ export interface JobOffer {
   contractType?: string;
   salary?: string;
   source: string;
+  postedAt?: string;
+  scrapedAt?: string;
 }
 
 export interface Application {
@@ -36,7 +38,7 @@ interface Store {
   current: Application | null;
   loading: boolean;
   error: string | null;
-  fetchList: (status?: string) => Promise<void>;
+  fetchList: (status?: string, scope?: 'current' | 'history') => Promise<void>;
   fetchById: (id: string) => Promise<void>;
   updateStatus: (id: string, status: string) => Promise<void>;
   markApplied: (id: string) => Promise<void>;
@@ -51,10 +53,12 @@ export const useApplicationsStore = create<Store>((set, get) => ({
   loading: false,
   error: null,
 
-  fetchList: async (status) => {
+  fetchList: async (status, scope) => {
     try {
       set({ loading: true, error: null });
-      const response = await apiClient.get('/api/candidatures', { params: status ? { status } : {} });
+      const response = await apiClient.get('/api/candidatures', {
+        params: { ...(status ? { status } : {}), ...(scope ? { scope } : {}) },
+      });
       set({ applications: response.data, loading: false });
     } catch (error: any) {
       const message = error.response?.data?.message || 'Failed to fetch applications';

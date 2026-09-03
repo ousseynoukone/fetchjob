@@ -15,16 +15,28 @@ export interface GithubContext {
 
 const EMPTY_CONTEXT: GithubContext = { text: '', repos: [] };
 
+// Plain .slice(0, n) can land in the middle of a surrogate pair (READMEs
+// are full of emoji) and leave a lone/unpaired code unit at the cut, which
+// DeepSeek's JSON parser then rejects the whole request body over
+// ("unexpected end of hex escape") — trim the extra unit instead.
+function truncateSafely(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  let end = maxLength;
+  const code = text.charCodeAt(end - 1);
+  if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+  return text.slice(0, end);
+}
+
 function cleanReadme(raw: string): string {
-  return raw
+  const cleaned = raw
     .replace(/```[\s\S]*?```/g, ' ') // code blocks
     .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ') // images/badges
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1') // links -> link text
     .replace(/<[^>]+>/g, ' ') // html tags
     .replace(/^#+\s*/gm, '') // markdown headers
     .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 500);
+    .trim();
+  return truncateSafely(cleaned, 500);
 }
 
 @Injectable()

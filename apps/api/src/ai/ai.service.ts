@@ -21,6 +21,16 @@ const TECH_TERMS = [
 
 const DIACRITICS_REGEX = new RegExp('[\\u0300-\\u036f]', 'g');
 
+// Defense-in-depth: a lone/unpaired UTF-16 surrogate anywhere in the prompt
+// (e.g. an emoji split by an upstream .slice()) makes DeepSeek's JSON
+// parser reject the entire request body ("unexpected end of hex escape"),
+// failing CV/lettre/analyse together. Strip any that slipped through.
+function stripLoneSurrogates(text: string): string {
+  return text
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, '')
+    .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '');
+}
+
 function normalizeForCompare(text: string): string {
   return (text || '').toLowerCase().normalize('NFD').replace(DIACRITICS_REGEX, '');
 }
@@ -126,7 +136,7 @@ Reformule uniquement les "bullets" de chaque experience pour mettre en avant les
 
     const response = await (await this.getClient()).chat.completions.create({
       model: MODEL,
-      messages: [{ role: 'user', content: prompt }],
+      messages: [{ role: 'user', content: stripLoneSurrogates(prompt) }],
       response_format: { type: 'json_object' },
     });
 
@@ -166,7 +176,7 @@ ${extraContext ? `\nInformations complementaires sur le candidat (a mentionner s
 
     const response = await (await this.getClient()).chat.completions.create({
       model: MODEL,
-      messages: [{ role: 'user', content: prompt }],
+      messages: [{ role: 'user', content: stripLoneSurrogates(prompt) }],
     });
 
     return response.choices[0].message.content || '';
@@ -185,7 +195,7 @@ Reponds uniquement en JSON avec les champs: strengths (array de 3 max), gaps (ar
 
     const response = await (await this.getClient()).chat.completions.create({
       model: MODEL,
-      messages: [{ role: 'user', content: prompt }],
+      messages: [{ role: 'user', content: stripLoneSurrogates(prompt) }],
       response_format: { type: 'json_object' },
     });
 

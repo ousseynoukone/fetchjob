@@ -258,7 +258,18 @@ export class CampaignService {
             const existingApplication = await this.prisma.application.findUnique({
               where: { campaignId_jobOfferId: { campaignId: campaign.id, jobOfferId: jobOffer.id } },
             });
-            if (existingApplication) continue;
+            if (existingApplication) {
+              // Still surfaced by this run and still pending — keep it counted
+              // as "current" instead of letting it fall into Historique just
+              // because it isn't a brand-new candidature this time.
+              if (existingApplication.status === 'to_apply' && existingApplication.campaignRunId !== runId) {
+                await this.prisma.application.update({
+                  where: { id: existingApplication.id },
+                  data: { campaignRunId: runId },
+                });
+              }
+              continue;
+            }
 
             const result = this.matching.match(
               cv,
@@ -279,6 +290,7 @@ export class CampaignService {
               data: {
                 userId,
                 campaignId: campaign.id,
+                campaignRunId: runId,
                 jobOfferId: jobOffer.id,
                 jobTitle: jobOffer.title,
                 company: jobOffer.company,

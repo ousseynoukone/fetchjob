@@ -5,11 +5,12 @@ import Link from 'next/link';
 import { useApplicationsStore } from '@/lib/applications-store';
 import AppShell from '@/components/layout/app-shell';
 import AddOfferModal from './add-offer-modal';
-import { MapPin, Building2, Plus, Trash2, ChevronDown } from 'lucide-react';
+import { MapPin, Building2, Plus, Trash2, ChevronDown, CalendarClock, CalendarCheck } from 'lucide-react';
 
-const TABS = [
+const TABS: { id: string; label: string; status?: string; scope?: 'current' | 'history' }[] = [
   { id: '', label: 'Toutes' },
-  { id: 'to_apply', label: 'À postuler' },
+  { id: 'to_apply', label: 'À postuler', status: 'to_apply', scope: 'current' },
+  { id: 'to_apply_history', label: 'Historique', status: 'to_apply', scope: 'history' },
   { id: 'applied', label: 'Envoyées' },
   { id: 'interview', label: 'Entretien' },
   { id: 'offer', label: 'Offre' },
@@ -26,6 +27,11 @@ const STATUS_STYLE: Record<string, string> = {
   ignored: 'badge-ghost',
 };
 
+function formatDate(iso?: string) {
+  if (!iso) return null;
+  return new Date(iso).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
 function scoreColor(score: number) {
   if (score >= 80) return 'text-success';
   if (score >= 60) return 'text-warning';
@@ -36,9 +42,10 @@ export default function ApplicationsList() {
   const { applications, loading, fetchList, removeAll } = useApplicationsStore();
   const [tab, setTab] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
+  const activeTab = TABS.find((t) => t.id === tab);
 
   useEffect(() => {
-    fetchList(tab || undefined);
+    fetchList(activeTab?.status ?? (tab || undefined), activeTab?.scope);
   }, [tab, fetchList]);
 
   const handleClearToApply = async () => {
@@ -146,7 +153,21 @@ export default function ApplicationsList() {
                     {app.location}
                   </div>
                 )}
-                <div className="mt-3 text-xs text-base-content/30 capitalize">{app.jobOffer?.source?.replace('_', ' ')}</div>
+                <div className="flex items-center justify-between mt-3">
+                  <div className="text-xs text-base-content/30 capitalize">{app.jobOffer?.source?.replace('_', ' ')}</div>
+                  <div className="flex items-center gap-2.5 text-xs text-base-content/30">
+                    {formatDate(app.jobOffer?.postedAt) && (
+                      <span className="flex items-center gap-1" title="Date de publication sur le site source">
+                        <CalendarClock className="w-3 h-3" /> {formatDate(app.jobOffer?.postedAt)}
+                      </span>
+                    )}
+                    {formatDate(app.jobOffer?.scrapedAt) && (
+                      <span className="flex items-center gap-1" title="Date de récupération de l'offre">
+                        <CalendarCheck className="w-3 h-3" /> {formatDate(app.jobOffer?.scrapedAt)}
+                      </span>
+                    )}
+                  </div>
+                </div>
               </Link>
             ))}
           </div>

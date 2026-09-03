@@ -288,6 +288,7 @@ const ICONS = {
 };
 
 const DEFAULT_SIDEBAR_ACCENT = '#2d5bff';
+const SIDEBAR_BG = '#111827';
 
 function getSidebarStyles(ACCENT: string, scale: number) {
   const leftPadding = Math.max(14, 20 * scale);
@@ -302,22 +303,7 @@ function getSidebarStyles(ACCENT: string, scale: number) {
     left: {
       width: '34%',
       padding: leftPadding,
-      borderRightWidth: 1,
-      borderRightColor: '#f1f5f9',
-    },
-    name: {
-      fontSize: 17 * scale,
-      fontWeight: 700,
-      lineHeight: 1.15,
-    },
-    headline: {
-      fontSize: 8.5 * scale,
-      fontWeight: 700,
-      textTransform: 'uppercase',
-      letterSpacing: 0.5,
-      color: ACCENT,
-      marginTop: 4 * scale,
-      marginBottom: 14 * scale,
+      backgroundColor: SIDEBAR_BG,
     },
     contactBlock: {
       marginBottom: 16 * scale,
@@ -326,53 +312,64 @@ function getSidebarStyles(ACCENT: string, scale: number) {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 5,
-      marginBottom: 4 * scale,
+      marginBottom: 5 * scale,
     },
     contactText: {
       fontSize: 8 * scale,
-      color: '#475569',
+      color: '#cbd5e1',
     },
     sideBlock: {
       marginBottom: 14 * scale,
     },
     sideTitle: {
-      fontSize: 7.5 * scale,
+      fontSize: 8 * scale,
       fontWeight: 700,
       textTransform: 'uppercase',
       letterSpacing: 1,
-      color: '#94a3b8',
-      marginBottom: 6 * scale,
-    },
-    skillGroupLabel: {
-      fontSize: 7 * scale,
-      fontWeight: 700,
-      textTransform: 'uppercase',
-      color: '#64748b',
-      marginBottom: 3 * scale,
-    },
-    skillRow: {
-      flexDirection: 'row',
-      flexWrap: 'wrap',
+      color: '#f8fafc',
+      borderBottomWidth: 1.5,
+      borderBottomColor: ACCENT,
+      paddingBottom: 4 * scale,
       marginBottom: 8 * scale,
     },
-    skillTag: {
-      fontSize: 7 * scale,
-      backgroundColor: '#f1f5f9',
-      color: '#334155',
-      borderRadius: 3,
-      paddingVertical: 2 * scale,
-      paddingHorizontal: 4 * scale,
-      marginRight: 3 * scale,
-      marginBottom: 3 * scale,
+    skillGroupLabel: {
+      fontSize: 7.5 * scale,
+      fontWeight: 700,
+      textTransform: 'uppercase',
+      color: ACCENT,
+      marginBottom: 2 * scale,
+    },
+    skillItemsText: {
+      fontSize: 7.5 * scale,
+      color: '#cbd5e1',
+      lineHeight: 1.4,
+      marginBottom: 8 * scale,
     },
     sideText: {
       fontSize: 8 * scale,
-      color: '#334155',
+      color: '#cbd5e1',
       marginBottom: 3 * scale,
     },
     right: {
       width: '66%',
       padding: rightPadding,
+    },
+    headerName: {
+      fontSize: 19 * scale,
+      fontWeight: 700,
+      lineHeight: 1.15,
+    },
+    headerHeadline: {
+      fontSize: 9.5 * scale,
+      fontWeight: 700,
+      textTransform: 'uppercase',
+      letterSpacing: 0.5,
+      color: ACCENT,
+      marginTop: 3 * scale,
+      paddingBottom: 10 * scale,
+      marginBottom: 14 * scale,
+      borderBottomWidth: 2,
+      borderBottomColor: '#e2e8f0',
     },
     summary: {
       fontSize: 9 * scale,
@@ -388,8 +385,8 @@ function getSidebarStyles(ACCENT: string, scale: number) {
       fontWeight: 700,
       textTransform: 'uppercase',
       letterSpacing: 0.5,
-      borderBottomWidth: 1,
-      borderBottomColor: '#e2e8f0',
+      borderBottomWidth: 2,
+      borderBottomColor: ACCENT,
       paddingBottom: 5 * scale,
       marginBottom: 9 * scale,
     },
@@ -400,20 +397,28 @@ function getSidebarStyles(ACCENT: string, scale: number) {
       fontSize: 9.5 * scale,
       fontWeight: 700,
     },
-    metaRow: {
-      flexDirection: 'row',
-      marginTop: 3 * scale,
-      marginBottom: 2 * scale,
-    },
-    metaItem: {
+    expHeaderRow: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: 3,
-      marginRight: 10 * scale,
+      justifyContent: 'space-between',
     },
-    metaText: {
-      fontSize: 7 * scale,
-      color: '#64748b',
+    expCompanyLine: {
+      flexDirection: 'row',
+      alignItems: 'center',
+    },
+    expDot: {
+      width: 5,
+      height: 5,
+      borderRadius: 2.5,
+      backgroundColor: ACCENT,
+      marginRight: 5,
+    },
+    expRole: {
+      fontSize: 8.5 * scale,
+      fontWeight: 700,
+      color: ACCENT,
+      marginTop: 3 * scale,
+      marginBottom: 3 * scale,
     },
     bulletRow: {
       flexDirection: 'row',
@@ -434,13 +439,48 @@ function getSidebarStyles(ACCENT: string, scale: number) {
       flexDirection: 'row',
       justifyContent: 'space-between',
     },
-    entrySubtitle: {
-      fontSize: 8 * scale,
+    entryPeriod: {
+      fontSize: 7.5 * scale,
+      fontWeight: 700,
       color: '#64748b',
     },
-    entryPeriod: {
-      fontSize: 7.5,
-      color: '#94a3b8',
+    eduRow: {
+      flexDirection: 'row',
+      marginBottom: 9 * scale,
+    },
+    eduPeriod: {
+      width: '28%',
+      fontSize: 7.5 * scale,
+      fontWeight: 700,
+      color: '#64748b',
+    },
+    eduDegree: {
+      fontSize: 9 * scale,
+      fontWeight: 700,
+    },
+    eduSchool: {
+      fontSize: 8 * scale,
+      color: '#64748b',
+      marginTop: 1,
+    },
+    certRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'baseline',
+      marginBottom: 5 * scale,
+    },
+    certName: {
+      fontSize: 8.5 * scale,
+      fontWeight: 700,
+      color: ACCENT,
+    },
+    certIssuer: {
+      fontSize: 7.5 * scale,
+      color: '#64748b',
+    },
+    certDate: {
+      fontSize: 7.5 * scale,
+      color: '#64748b',
     },
   });
 }
@@ -463,51 +503,45 @@ function SidebarCVDocument({ cv }: { cv: CVData }) {
     <Document title={cv.fullName || 'CV'}>
       <Page size="A4" style={styles.page}>
         <View style={styles.left}>
-          <Text style={styles.name}>{cv.fullName}</Text>
-          {!!cv.headline && <Text style={styles.headline}>{cv.headline}</Text>}
-
           {(!!cv.email || !!cv.phone || !!cv.location || !!cv.links?.length) && (
-            <View style={styles.contactBlock}>
-              {!!cv.email && (
-                <View style={styles.contactRow}>
-                  <Icon path={ICONS.mail} color={ACCENT} />
-                  <Text style={styles.contactText}>{cv.email}</Text>
-                </View>
-              )}
-              {!!cv.phone && (
-                <View style={styles.contactRow}>
-                  <Icon path={ICONS.phone} color={ACCENT} />
-                  <Text style={styles.contactText}>{cv.phone}</Text>
-                </View>
-              )}
-              {!!cv.location && (
-                <View style={styles.contactRow}>
-                  <Icon path={ICONS.pin} color={ACCENT} />
-                  <Text style={styles.contactText}>{cv.location}</Text>
-                </View>
-              )}
-              {(cv.links || []).map((link, idx) => (
-                <View style={styles.contactRow} key={idx}>
-                  <Icon path={ICONS.link} color={ACCENT} />
-                  <Text style={styles.contactText}>{link.label || link.url}</Text>
-                </View>
-              ))}
+            <View style={styles.sideBlock}>
+              <Text style={styles.sideTitle}>Contact</Text>
+              <View style={styles.contactBlock}>
+                {!!cv.email && (
+                  <View style={styles.contactRow}>
+                    <Icon path={ICONS.mail} color={ACCENT} />
+                    <Text style={styles.contactText}>{cv.email}</Text>
+                  </View>
+                )}
+                {!!cv.phone && (
+                  <View style={styles.contactRow}>
+                    <Icon path={ICONS.phone} color={ACCENT} />
+                    <Text style={styles.contactText}>{cv.phone}</Text>
+                  </View>
+                )}
+                {!!cv.location && (
+                  <View style={styles.contactRow}>
+                    <Icon path={ICONS.pin} color={ACCENT} />
+                    <Text style={styles.contactText}>{cv.location}</Text>
+                  </View>
+                )}
+                {(cv.links || []).map((link, idx) => (
+                  <View style={styles.contactRow} key={idx}>
+                    <Icon path={ICONS.link} color={ACCENT} />
+                    <Text style={styles.contactText}>{link.label || link.url}</Text>
+                  </View>
+                ))}
+              </View>
             </View>
           )}
 
           {!!cv.skillGroups?.length && (
             <View style={styles.sideBlock}>
-              <Text style={styles.sideTitle}>Compétences</Text>
+              <Text style={styles.sideTitle}>Expertise technique</Text>
               {cv.skillGroups.map((group, idx) => (
-                <View key={idx} style={{ marginBottom: 6 }}>
-                  <Text style={styles.skillGroupLabel}>{group.label}</Text>
-                  <View style={styles.skillRow}>
-                    {group.items.map((item, i) => (
-                      <Text style={styles.skillTag} key={i}>
-                        {item}
-                      </Text>
-                    ))}
-                  </View>
+                <View key={idx}>
+                  <Text style={styles.skillGroupLabel}>{group.label} :</Text>
+                  <Text style={styles.skillItemsText}>{group.items.join(', ')}</Text>
                 </View>
               ))}
             </View>
@@ -518,18 +552,7 @@ function SidebarCVDocument({ cv }: { cv: CVData }) {
               <Text style={styles.sideTitle}>Langues</Text>
               {cv.languages.map((lang, idx) => (
                 <Text style={styles.sideText} key={idx}>
-                  {lang.name} — {lang.level}
-                </Text>
-              ))}
-            </View>
-          )}
-
-          {!!cv.certifications?.length && (
-            <View style={styles.sideBlock}>
-              <Text style={styles.sideTitle}>Certifications</Text>
-              {cv.certifications.map((cert, idx) => (
-                <Text style={styles.sideText} key={idx}>
-                  {cert.name} — {cert.issuer}
+                  {lang.name} : {lang.level}
                 </Text>
               ))}
             </View>
@@ -544,34 +567,43 @@ function SidebarCVDocument({ cv }: { cv: CVData }) {
         </View>
 
         <View style={styles.right}>
+          <Text style={styles.headerName}>{cv.fullName}</Text>
+          {!!cv.headline && <Text style={styles.headerHeadline}>{cv.headline}</Text>}
+
           {!!cv.summary && <Text style={styles.summary}>{cv.summary}</Text>}
+
+          {!!cv.education?.length && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Education</Text>
+              {cv.education.map((edu, idx) => (
+                <View style={styles.eduRow} key={idx}>
+                  <Text style={styles.eduPeriod}>{edu.period}</Text>
+                  <View>
+                    <Text style={styles.eduDegree}>{edu.school}</Text>
+                    <Text style={styles.eduSchool}>
+                      {[edu.degree, edu.location].filter(Boolean).join(' — ')}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
 
           {!!cv.experiences?.length && (
             <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Expériences professionnelles</Text>
+              <Text style={styles.sectionTitle}>Expérience professionnelle</Text>
               {cv.experiences.map((exp, idx) => (
                 <View style={styles.entry} key={idx}>
-                  <Text style={styles.entryTitle}>{exp.role}</Text>
-                  <View style={styles.metaRow}>
-                    {!!exp.company && (
-                      <View style={styles.metaItem}>
-                        <Icon path={ICONS.briefcase} color="#64748b" size={7} />
-                        <Text style={styles.metaText}>{exp.company}</Text>
-                      </View>
-                    )}
-                    {!!exp.location && (
-                      <View style={styles.metaItem}>
-                        <Icon path={ICONS.pin} color="#64748b" size={7} />
-                        <Text style={styles.metaText}>{exp.location}</Text>
-                      </View>
-                    )}
-                    {!!exp.period && (
-                      <View style={styles.metaItem}>
-                        <Icon path={ICONS.calendar} color="#64748b" size={7} />
-                        <Text style={styles.metaText}>{exp.period}</Text>
-                      </View>
-                    )}
+                  <View style={styles.expHeaderRow}>
+                    <View style={styles.expCompanyLine}>
+                      <View style={styles.expDot} />
+                      <Text style={styles.entryTitle}>
+                        {[exp.company, exp.location].filter(Boolean).join(' - ')}
+                      </Text>
+                    </View>
+                    {!!exp.period && <Text style={styles.entryPeriod}>{exp.period}</Text>}
                   </View>
+                  {!!exp.role && <Text style={styles.expRole}>{exp.role}</Text>}
                   {exp.bullets?.map((bullet, bidx) => (
                     <Bullet key={bidx} text={bullet} styles={styles} />
                   ))}
@@ -582,7 +614,7 @@ function SidebarCVDocument({ cv }: { cv: CVData }) {
 
           {!!cv.projects?.length && (
             <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Projets</Text>
+              <Text style={styles.sectionTitle}>Projets perso réalisés</Text>
               {cv.projects.map((proj, idx) => (
                 <View style={styles.entry} key={idx}>
                   <View style={styles.entryRow}>
@@ -597,16 +629,16 @@ function SidebarCVDocument({ cv }: { cv: CVData }) {
             </View>
           )}
 
-          {!!cv.education?.length && (
+          {!!cv.certifications?.length && (
             <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Formation</Text>
-              {cv.education.map((edu, idx) => (
-                <View style={styles.entryRow} key={idx}>
-                  <View>
-                    <Text style={styles.entryTitle}>{edu.degree}</Text>
-                    <Text style={styles.entrySubtitle}>{edu.school}</Text>
-                  </View>
-                  <Text style={styles.entryPeriod}>{edu.period}</Text>
+              <Text style={styles.sectionTitle}>Certificats</Text>
+              {cv.certifications.map((cert, idx) => (
+                <View style={styles.certRow} key={idx}>
+                  <Text style={styles.certName}>
+                    {cert.name}
+                    {cert.issuer ? <Text style={styles.certIssuer}> — {cert.issuer}</Text> : null}
+                  </Text>
+                  {!!cert.date && <Text style={styles.certDate}>{cert.date}</Text>}
                 </View>
               ))}
             </View>

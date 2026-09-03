@@ -13,8 +13,8 @@ export class ApplicationsController {
   ) {}
 
   @Get()
-  async list(@Query('status') status?: string) {
-    return this.applicationsService.list(status);
+  async list(@Query('status') status?: string, @Query('scope') scope?: 'current' | 'history') {
+    return this.applicationsService.list(status, scope);
   }
 
   @Post('manual')
@@ -59,7 +59,7 @@ export class ApplicationsController {
 
     res.set({
       'Content-Type': 'application/pdf',
-      'Content-Disposition': 'inline; filename="cv-adapte.pdf"',
+      'Content-Disposition': 'inline; filename="CV OUSSEYNOU KONE.pdf"',
       'Content-Length': pdf.length,
     });
     res.send(pdf);

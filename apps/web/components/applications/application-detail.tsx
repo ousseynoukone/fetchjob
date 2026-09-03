@@ -17,7 +17,20 @@ import {
   AlertCircle,
   Copy,
   FileText,
+  CalendarClock,
+  CalendarCheck,
 } from 'lucide-react';
+
+function formatDateTime(iso?: string) {
+  if (!iso) return null;
+  return new Date(iso).toLocaleDateString('fr-FR', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
 
 const TABS = ['Offre', 'CV adapté', 'Lettre de motivation', 'Analyse IA', 'Matching'];
 
@@ -142,6 +155,18 @@ export default function ApplicationDetail({ id }: { id: string }) {
                 <span className="capitalize badge badge-ghost badge-sm">
                   {current.jobOffer?.source?.replace('_', ' ')}
                 </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-4 text-xs text-base-content/40 mt-2">
+                {formatDateTime(current.jobOffer?.postedAt) && (
+                  <span className="flex items-center gap-1.5" title="Date de publication sur le site source">
+                    <CalendarClock className="w-3.5 h-3.5" /> Publiée le {formatDateTime(current.jobOffer?.postedAt)}
+                  </span>
+                )}
+                {formatDateTime(current.jobOffer?.scrapedAt) && (
+                  <span className="flex items-center gap-1.5" title="Date de récupération de l'offre">
+                    <CalendarCheck className="w-3.5 h-3.5" /> Récupérée le {formatDateTime(current.jobOffer?.scrapedAt)}
+                  </span>
+                )}
               </div>
             </div>
             <div className="flex flex-col items-end gap-2 shrink-0">

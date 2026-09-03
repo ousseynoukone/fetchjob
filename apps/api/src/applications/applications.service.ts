@@ -19,10 +19,27 @@ export class ApplicationsService {
     private prep: ApplicationPrepService,
   ) {}
 
-  async list(status?: string) {
+  // `scope` only matters for the to_apply status: 'current' keeps the "À
+  // postuler" list to what the latest campaign run actually surfaced (plus
+  // anything with no run at all — manual offers, or candidatures prepared
+  // before campaignRunId existed), 'history' shows what got left behind by
+  // an older run instead. Every other status ignores it — once you've acted
+  // on a candidature (applied/interview/...), it stays visible regardless
+  // of which run produced it.
+  async list(status?: string, scope?: 'current' | 'history') {
     const userId = await this.localUser.getDefaultUserId();
+
+    let runFilter: Record<string, any> = {};
+    if (status === 'to_apply' && scope) {
+      const latestRun = await this.campaignService.getLatestRun();
+      const latestRunId = latestRun?.id;
+      runFilter = scope === 'history'
+        ? { campaignRunId: latestRunId ? { not: latestRunId } : { not: null } }
+        : { OR: [{ campaignRunId: null }, ...(latestRunId ? [{ campaignRunId: latestRunId }] : [])] };
+    }
+
     return this.prisma.application.findMany({
-      where: { userId, ...(status ? { status } : {}) },
+      where: { userId, ...(status ? { status } : {}), ...runFilter },
       include: { jobOffer: true },
       orderBy: { createdAt: 'desc' },
     });

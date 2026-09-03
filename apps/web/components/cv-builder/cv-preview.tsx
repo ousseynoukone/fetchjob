@@ -3,9 +3,10 @@
 import React from 'react';
 import { useCVStore } from '@/lib/cv-store';
 import CVPreviewAts from './cv-preview-ats';
-import { Mail, Phone, MapPin, Building2, Calendar, Link as LinkIcon } from 'lucide-react';
+import { Mail, Phone, MapPin, Link as LinkIcon } from 'lucide-react';
 
 const DEFAULT_ACCENT = '#2d5bff';
+const SIDEBAR_BG = '#111827';
 
 export default function CVPreview() {
   const { cv } = useCVStore();
@@ -28,64 +29,49 @@ export default function CVPreview() {
     >
       <div className="grid grid-cols-[34%_66%] min-h-full">
         {/* Left column */}
-        <div className="px-5 py-7 space-y-5 border-r border-slate-100">
-          <div>
-            <h1 className="text-[1.55em] font-bold leading-tight">{cv.fullName || 'Votre nom'}</h1>
-            {cv.headline && (
-              <p className="text-[0.8em] font-semibold uppercase tracking-wide mt-1" style={{ color: ACCENT }}>
-                {cv.headline}
-              </p>
-            )}
-          </div>
-
+        <div className="px-5 py-7 space-y-5" style={{ backgroundColor: SIDEBAR_BG }}>
           {(!!cv.email || !!cv.phone || !!cv.location || !!cv.links?.length) && (
-            <div className="space-y-1.5 text-[0.78em] text-slate-600">
-              {cv.email && (
-                <div className="flex items-center gap-1.5 break-all">
-                  <Mail className="w-3 h-3 shrink-0" style={{ color: ACCENT }} />
-                  {cv.email}
-                </div>
-              )}
-              {cv.phone && (
-                <div className="flex items-center gap-1.5">
-                  <Phone className="w-3 h-3 shrink-0" style={{ color: ACCENT }} />
-                  {cv.phone}
-                </div>
-              )}
-              {cv.location && (
-                <div className="flex items-center gap-1.5">
-                  <MapPin className="w-3 h-3 shrink-0" style={{ color: ACCENT }} />
-                  {cv.location}
-                </div>
-              )}
-              {cv.links?.map((link, idx) => (
-                <div key={idx} className="flex items-center gap-1.5 break-all">
-                  <LinkIcon className="w-3 h-3 shrink-0" style={{ color: ACCENT }} />
-                  {link.label || link.url}
-                </div>
-              ))}
+            <div>
+              <SideTitle accent={ACCENT}>Contact</SideTitle>
+              <div className="space-y-1.5 text-[0.78em] text-slate-300 mt-2">
+                {cv.email && (
+                  <div className="flex items-center gap-1.5 break-all">
+                    <Mail className="w-3 h-3 shrink-0" style={{ color: ACCENT }} />
+                    {cv.email}
+                  </div>
+                )}
+                {cv.phone && (
+                  <div className="flex items-center gap-1.5">
+                    <Phone className="w-3 h-3 shrink-0" style={{ color: ACCENT }} />
+                    {cv.phone}
+                  </div>
+                )}
+                {cv.location && (
+                  <div className="flex items-center gap-1.5">
+                    <MapPin className="w-3 h-3 shrink-0" style={{ color: ACCENT }} />
+                    {cv.location}
+                  </div>
+                )}
+                {cv.links?.map((link, idx) => (
+                  <div key={idx} className="flex items-center gap-1.5 break-all">
+                    <LinkIcon className="w-3 h-3 shrink-0" style={{ color: ACCENT }} />
+                    {link.label || link.url}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
           {!!cv.skillGroups?.length && (
             <div>
-              <SideTitle>Compétences</SideTitle>
-              <div className="space-y-2.5 mt-2">
+              <SideTitle accent={ACCENT}>Expertise technique</SideTitle>
+              <div className="space-y-2 mt-2">
                 {cv.skillGroups.map((group, idx) => (
                   <div key={idx}>
-                    <p className="text-[0.72em] font-bold uppercase tracking-wide text-slate-500 mb-1">
-                      {group.label}
+                    <p className="text-[0.72em] font-bold uppercase tracking-wide" style={{ color: ACCENT }}>
+                      {group.label} :
                     </p>
-                    <div className="flex flex-wrap gap-1">
-                      {group.items.map((item, i) => (
-                        <span
-                          key={i}
-                          className="text-[0.7em] rounded px-1.5 py-0.5 bg-slate-100 text-slate-700"
-                        >
-                          {item}
-                        </span>
-                      ))}
-                    </div>
+                    <p className="text-[0.72em] text-slate-300 leading-relaxed">{group.items.join(', ')}</p>
                   </div>
                 ))}
               </div>
@@ -94,25 +80,11 @@ export default function CVPreview() {
 
           {!!cv.languages?.length && (
             <div>
-              <SideTitle>Langues</SideTitle>
+              <SideTitle accent={ACCENT}>Langues</SideTitle>
               <div className="space-y-1 mt-2">
                 {cv.languages.map((lang, idx) => (
-                  <p key={idx} className="text-[0.78em] text-slate-700">
-                    <span className="font-semibold">{lang.name}</span>{' '}
-                    <span className="text-slate-500">— {lang.level}</span>
-                  </p>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {!!cv.certifications?.length && (
-            <div>
-              <SideTitle>Certifications</SideTitle>
-              <div className="space-y-1 mt-2">
-                {cv.certifications.map((cert, idx) => (
-                  <p key={idx} className="text-[0.76em] text-slate-700 leading-snug">
-                    {cert.name} <span className="text-slate-500">— {cert.issuer}</span>
+                  <p key={idx} className="text-[0.78em] text-slate-300">
+                    {lang.name} : {lang.level}
                   </p>
                 ))}
               </div>
@@ -121,41 +93,72 @@ export default function CVPreview() {
 
           {!!cv.interests?.length && (
             <div>
-              <SideTitle>Centres d'intérêt</SideTitle>
-              <p className="text-[0.78em] text-slate-600 mt-2">{cv.interests.join(' · ')}</p>
+              <SideTitle accent={ACCENT}>Centres d'intérêt</SideTitle>
+              <p className="text-[0.78em] text-slate-300 mt-2">{cv.interests.join(' · ')}</p>
             </div>
           )}
         </div>
 
         {/* Right column */}
         <div className={`px-6 py-7 ${gap}`}>
+          <div>
+            <h1 className="text-[1.65em] font-bold leading-tight">{cv.fullName || 'Votre nom'}</h1>
+            {cv.headline && (
+              <p
+                className="text-[0.85em] font-bold uppercase tracking-wide mt-1 pb-2.5 border-b-2 border-slate-200"
+                style={{ color: ACCENT }}
+              >
+                {cv.headline}
+              </p>
+            )}
+          </div>
+
           {cv.summary && <p className="text-[0.8em] leading-relaxed text-slate-600">{cv.summary}</p>}
+
+          {!!cv.education?.length && (
+            <div>
+              <SectionTitle accent={ACCENT}>Education</SectionTitle>
+              <div className={compact ? 'space-y-1.5' : 'space-y-2.5'}>
+                {cv.education.map((edu, idx) => (
+                  <div key={idx} className="flex gap-3">
+                    <span className="text-[0.68em] font-bold text-slate-500 w-[28%] shrink-0 whitespace-nowrap">
+                      {edu.period}
+                    </span>
+                    <div>
+                      <p className="font-bold text-[0.84em]">{edu.school}</p>
+                      <p className="text-[0.76em] text-slate-500">
+                        {[edu.degree, edu.location].filter(Boolean).join(' — ')}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {!!cv.experiences?.length && (
             <div>
-              <SectionTitle>Expériences professionnelles</SectionTitle>
+              <SectionTitle accent={ACCENT}>Expérience professionnelle</SectionTitle>
               <div className={compact ? 'space-y-2.5' : 'space-y-4'}>
                 {cv.experiences.map((exp, idx) => (
                   <div key={idx}>
-                    <p className="font-bold text-[0.9em]">{exp.role}</p>
-                    <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[0.7em] text-slate-500 mt-0.5">
-                      {exp.company && (
-                        <span className="flex items-center gap-1">
-                          <Building2 className="w-2.5 h-2.5" /> {exp.company}
-                        </span>
-                      )}
-                      {exp.location && (
-                        <span className="flex items-center gap-1">
-                          <MapPin className="w-2.5 h-2.5" /> {exp.location}
-                        </span>
-                      )}
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-bold text-[0.86em] flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: ACCENT }} />
+                        {[exp.company, exp.location].filter(Boolean).join(' - ')}
+                      </p>
                       {exp.period && (
-                        <span className="flex items-center gap-1">
-                          <Calendar className="w-2.5 h-2.5" /> {exp.period}
+                        <span className="text-[0.68em] font-bold text-slate-500 whitespace-nowrap">
+                          {exp.period}
                         </span>
                       )}
                     </div>
-                    <ul className="mt-1.5 space-y-0.5">
+                    {exp.role && (
+                      <p className="text-[0.8em] font-bold mt-1 mb-1" style={{ color: ACCENT }}>
+                        {exp.role}
+                      </p>
+                    )}
+                    <ul className="space-y-0.5">
                       {exp.bullets?.map((bullet, bidx) => (
                         <li key={bidx} className="text-[0.78em] text-slate-600 leading-snug pl-3 relative">
                           <span className="absolute left-0" style={{ color: ACCENT }}>
@@ -173,7 +176,7 @@ export default function CVPreview() {
 
           {!!cv.projects?.length && (
             <div>
-              <SectionTitle>Projets</SectionTitle>
+              <SectionTitle accent={ACCENT}>Projets perso réalisés</SectionTitle>
               <div className={compact ? 'space-y-2' : 'space-y-3'}>
                 {cv.projects.map((proj, idx) => (
                   <div key={idx}>
@@ -197,17 +200,19 @@ export default function CVPreview() {
             </div>
           )}
 
-          {!!cv.education?.length && (
+          {!!cv.certifications?.length && (
             <div>
-              <SectionTitle>Formation</SectionTitle>
-              <div className={compact ? 'space-y-1.5' : 'space-y-2.5'}>
-                {cv.education.map((edu, idx) => (
+              <SectionTitle accent={ACCENT}>Certificats</SectionTitle>
+              <div className={compact ? 'space-y-1' : 'space-y-1.5'}>
+                {cv.certifications.map((cert, idx) => (
                   <div key={idx} className="flex justify-between items-baseline gap-2">
-                    <div>
-                      <p className="font-bold text-[0.84em]">{edu.degree}</p>
-                      <p className="text-[0.76em] text-slate-500">{edu.school}</p>
-                    </div>
-                    <span className="text-[0.7em] text-slate-400 whitespace-nowrap">{edu.period}</span>
+                    <p className="text-[0.8em] font-bold" style={{ color: ACCENT }}>
+                      {cert.name}
+                      {cert.issuer && <span className="text-slate-500 font-normal"> — {cert.issuer}</span>}
+                    </p>
+                    {cert.date && (
+                      <span className="text-[0.7em] text-slate-400 whitespace-nowrap">{cert.date}</span>
+                    )}
                   </div>
                 ))}
               </div>
@@ -219,15 +224,20 @@ export default function CVPreview() {
   );
 }
 
-function SideTitle({ children }: { children: React.ReactNode }) {
+function SideTitle({ children, accent }: { children: React.ReactNode; accent: string }) {
   return (
-    <p className="text-[0.72em] font-bold uppercase tracking-wider text-slate-400">{children}</p>
+    <p
+      className="text-[0.75em] font-bold uppercase tracking-wider text-slate-50 pb-1.5 border-b"
+      style={{ borderColor: accent }}
+    >
+      {children}
+    </p>
   );
 }
 
-function SectionTitle({ children }: { children: React.ReactNode }) {
+function SectionTitle({ children, accent }: { children: React.ReactNode; accent: string }) {
   return (
-    <p className="text-[0.82em] font-bold uppercase tracking-wide border-b border-slate-200 pb-1.5 mb-2.5">
+    <p className="text-[0.82em] font-bold uppercase tracking-wide border-b-2 pb-1.5 mb-2.5" style={{ borderColor: accent }}>
       {children}
     </p>
   );

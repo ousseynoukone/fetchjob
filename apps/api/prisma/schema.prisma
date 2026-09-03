@@ -132,6 +132,7 @@ model CampaignRun {
   // Relations
   campaign                Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  applications            Application[]
 
   @@index([campaignId])
   @@index([userId])
@@ -180,7 +181,11 @@ model Application {
   userId          String
   campaignId      String
   jobOfferId      String
-  
+  // Which campaign run prepared this candidature — null for manually-added
+  // offers, or for candidatures created before this field existed. Used to
+  // scope the "À postuler" view to the latest run only.
+  campaignRunId   String?
+
   // Job details snapshot
   jobTitle        String
   company         String
@@ -204,13 +209,15 @@ model Application {
   updatedAt       DateTime @updatedAt
 
   // Relations
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  campaign        Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  jobOffer        JobOffer @relation(fields: [jobOfferId], references: [id], onDelete: Cascade)
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaign        Campaign    @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  jobOffer        JobOffer    @relation(fields: [jobOfferId], references: [id], onDelete: Cascade)
+  campaignRun     CampaignRun? @relation(fields: [campaignRunId], references: [id], onDelete: SetNull)
 
   @@unique([campaignId, jobOfferId])
   @@index([userId])
   @@index([campaignId])
+  @@index([campaignRunId])
   @@index([status])
   @@index([matchScore])
   @@map("applications")
