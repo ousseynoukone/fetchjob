@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useApplicationsStore } from '@/lib/applications-store';
 import AppShell from '@/components/layout/app-shell';
 import AddOfferModal from './add-offer-modal';
@@ -40,13 +41,22 @@ function scoreColor(score: number) {
 
 export default function ApplicationsList() {
   const { applications, loading, fetchList, removeAll } = useApplicationsStore();
-  const [tab, setTab] = useState('');
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  // Tab lives in the URL (not local state) so the browser back button from a
+  // candidature's detail page restores whichever tab was active instead of
+  // resetting to "Toutes".
+  const tab = searchParams.get('tab') || '';
   const [showAddModal, setShowAddModal] = useState(false);
   const activeTab = TABS.find((t) => t.id === tab);
 
   useEffect(() => {
     fetchList(activeTab?.status ?? (tab || undefined), activeTab?.scope);
   }, [tab, fetchList]);
+
+  const setTab = (id: string) => {
+    router.replace(id ? `/candidatures?tab=${id}` : '/candidatures');
+  };
 
   const handleClearToApply = async () => {
     if (!confirm("Supprimer toutes les candidatures au statut \"à postuler\" ? Cette action est irréversible.")) return;

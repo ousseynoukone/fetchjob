@@ -133,7 +133,7 @@ export default function ApplicationDetail({ id }: { id: string }) {
     <AppShell>
       <div className="max-w-4xl mx-auto px-8 py-10">
         <button
-          onClick={() => router.push('/candidatures')}
+          onClick={() => router.back()}
           className="flex items-center gap-1.5 text-sm text-base-content/50 hover:text-base-content mb-6"
         >
           <ArrowLeft className="w-4 h-4" /> Retour aux candidatures

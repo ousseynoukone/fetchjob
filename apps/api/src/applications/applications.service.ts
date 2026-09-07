@@ -6,6 +6,7 @@ import { MatchingService } from '../matching/matching.service';
 import { CampaignService } from '../campaign/campaign.service';
 import { ApplicationPrepService } from './application-prep.service';
 import { AddManualOfferDto } from './dto/add-manual.dto';
+import type { CVData } from '../pdf/templates/cv-document';
 import { createHash } from 'crypto';
 
 @Injectable()
@@ -173,13 +174,30 @@ export class ApplicationsService {
     });
   }
 
-  async getCvData(id: string) {
+  async getCvData(id: string): Promise<CVData> {
     const application = await this.getById(id);
+    const userId = await this.localUser.getDefaultUserId();
+    const liveCv = await this.cvService.getCV(userId);
+
     if (application.adaptedCvData) {
-      return application.adaptedCvData as any;
+      // adaptedCvData is a frozen AI snapshot taken when the candidature was
+      // prepared — it's meant to capture offer-specific experience/project
+      // adaptations, not your identity. If fullName/email/etc were blank (or
+      // have since changed) at snapshot time, every candidature prepared
+      // before the fix would otherwise permanently show stale contact info.
+      // Always take identity fields from the live CV instead.
+      const snapshot = application.adaptedCvData as Record<string, any>;
+      return {
+        ...snapshot,
+        fullName: liveCv.fullName,
+        headline: liveCv.headline,
+        email: liveCv.email,
+        phone: liveCv.phone,
+        location: liveCv.location,
+        links: liveCv.links,
+      } as CVData;
     }
 
-    const userId = await this.localUser.getDefaultUserId();
-    return this.cvService.getCV(userId);
+    return liveCv as CVData;
   }
 }

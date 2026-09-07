@@ -1,5 +1,10 @@
+import { Suspense } from 'react';
 import ApplicationsList from '@/components/applications/applications-list';
 
 export default function Page() {
-  return <ApplicationsList />;
+  return (
+    <Suspense>
+      <ApplicationsList />
+    </Suspense>
+  );
 }

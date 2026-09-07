@@ -25,6 +25,14 @@ function normalizeText(text: string): string {
     .trim();
 }
 
+// JobOffer uniqueness is per (source, externalId), so the same posting
+// cross-listed on e.g. LinkedIn and HelloWork creates two distinct JobOffer
+// rows and would otherwise become two separate candidatures. Key on
+// normalized title+company instead to catch that across sources.
+function jobDedupeKey(title: string, company: string): string {
+  return `${normalizeText(title)}|${normalizeText(company)}`;
+}
+
 // The scraping APIs' own location matching is best-effort (France Travail's
 // commune/region params, Adzuna's free-text `where`) — verify locally rather
 // than trust every result actually sits in the requested area. Remotive is a
@@ -168,6 +176,16 @@ export class CampaignService {
       const cv = await this.cvService.getCV(userId);
       const targetKeywords = (campaign.keywords as string[]) || [];
 
+      // Seed with every existing candidature's title+company for this
+      // campaign so a job already prepared from one source (in this run or
+      // a previous one) doesn't get re-prepared just because another
+      // source scraped it under a different externalId.
+      const existingJobKeys = await this.prisma.application.findMany({
+        where: { campaignId: campaign.id },
+        select: { jobTitle: true, company: true },
+      });
+      const seenJobKeys = new Set(existingJobKeys.map((a) => jobDedupeKey(a.jobTitle, a.company)));
+
       // Each keyword is run as its own separate search query (never ANDed
       // together — a query built from the full list would match nothing).
       // Capped at 50 as a safety net against an accidentally huge keyword
@@ -271,6 +289,16 @@ export class CampaignService {
               continue;
             }
 
+            const jobKey = jobDedupeKey(jobOffer.title, jobOffer.company);
+            if (seenJobKeys.has(jobKey)) {
+              offersFiltered++;
+              await this.appendLog(
+                runId,
+                `Doublon ignoré: ${jobOffer.title} chez ${jobOffer.company} (déjà vu sur une autre source)`,
+              );
+              continue;
+            }
+
             const result = this.matching.match(
               cv,
               {
@@ -302,6 +330,7 @@ export class CampaignService {
               },
             });
 
+            seenJobKeys.add(jobKey);
             applicationsPrepared++;
             await this.appendLog(
               runId,
