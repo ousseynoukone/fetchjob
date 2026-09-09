@@ -17,6 +17,14 @@ const TECH_TERMS = [
   'docker', 'kubernetes', 'terraform', 'ansible', 'jenkins',
   'aws', 'azure', 'gcp', 'google cloud',
   'kafka', 'rabbitmq', 'graphql', 'grpc',
+  // Architecture/practice vocabulary — was missing entirely, so a term like
+  // "microservices" already present in a candidate's own bullet (confirmed
+  // live: "architecture micro-service" on a real experience) was invisible
+  // to this list and never counted as already-grounded.
+  'microservices', 'microservice', 'micro-service', 'micro-services', 'monolithe', 'monolith',
+  'ci/cd', 'cicd', 'tdd', 'bdd', 'ddd', 'mvc', 'mvvm', 'clean architecture',
+  'serverless', 'event-driven', 'websocket', 'soap', 'oauth', 'jwt', 'rest api', 'restful',
+  'github actions', 'gitlab ci',
 ];
 
 const DIACRITICS_REGEX = new RegExp('[\\u0300-\\u036f]', 'g');
