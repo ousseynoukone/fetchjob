@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
 import { LocalUserService } from '../common/local-user.service';
 import { CvService } from '../cv/cv.service';
@@ -8,9 +8,13 @@ import { ApplicationPrepService } from './application-prep.service';
 import { AddManualOfferDto } from './dto/add-manual.dto';
 import type { CVData } from '../pdf/templates/cv-document';
 import { createHash } from 'crypto';
+import { PdfService } from '../pdf/pdf.service';
+import { EmailService } from '../email/email.service';
 
 @Injectable()
 export class ApplicationsService {
+  private readonly logger = new Logger(ApplicationsService.name);
+
   constructor(
     private prisma: PrismaService,
     private localUser: LocalUserService,
@@ -18,6 +22,8 @@ export class ApplicationsService {
     private matching: MatchingService,
     private campaignService: CampaignService,
     private prep: ApplicationPrepService,
+    private pdfService: PdfService,
+    private email: EmailService,
   ) {}
 
   // `scope` only matters for the to_apply status: 'current' keeps the "À
@@ -75,10 +81,31 @@ export class ApplicationsService {
       data: { totalApplicationsSent: { increment: 1 } },
     });
 
-    return this.prisma.application.update({
+    const updated = await this.prisma.application.update({
       where: { id },
       data: { status: 'applied', appliedAt: new Date() },
       include: { jobOffer: true },
+    });
+
+    // Best-effort, same as the auto-apply path — clicking "Marquer comme
+    // postulée" should never fail just because the email couldn't go out.
+    this.sendApplicationSentEmail(updated).catch((error: any) =>
+      this.logger.warn(`Failed to send application-sent email: ${error.message}`),
+    );
+
+    return updated;
+  }
+
+  private async sendApplicationSentEmail(application: { id: string; jobTitle: string; company: string; jobOffer: { description: string; url: string } }) {
+    const cv = await this.getCvData(application.id);
+    const cvPdf = await this.pdfService.generateCVPdf(cv);
+    await this.email.sendApplicationSentEmail({
+      applicationId: application.id,
+      jobTitle: application.jobTitle,
+      company: application.company,
+      jobOfferUrl: application.jobOffer.url,
+      jobDescription: application.jobOffer.description,
+      cvPdf,
     });
   }
 

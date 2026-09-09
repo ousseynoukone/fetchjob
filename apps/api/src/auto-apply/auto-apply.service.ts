@@ -21,6 +21,7 @@ import { JobApplier } from './appliers/applier.interface';
 import { scanInvalidFields } from './appliers/form-fields';
 import { resolveWelcomeToTheJungleApplyUrl } from './appliers/ats-common';
 import { CustomQuestionsService } from '../custom-questions/custom-questions.service';
+import { EmailService } from '../email/email.service';
 import type { CVData } from '../pdf/templates/cv-document';
 import type { Page } from 'playwright';
 
@@ -64,6 +65,7 @@ export class AutoApplyService {
     private credentials: PlatformCredentialsService,
     private browserSession: BrowserSessionService,
     private customQuestions: CustomQuestionsService,
+    private email: EmailService,
     linkedin: LinkedInApplier,
     indeed: IndeedApplier,
     franceTravail: FranceTravailApplier,
@@ -220,7 +222,14 @@ export class AutoApplyService {
 
   private async applyToOne(
     userId: string,
-    application: { id: string; jobTitle: string; company: string; sourceUrl: string; coverLetter: string | null; jobOffer: { source: string } },
+    application: {
+      id: string;
+      jobTitle: string;
+      company: string;
+      sourceUrl: string;
+      coverLetter: string | null;
+      jobOffer: { source: string; description: string; url: string };
+    },
     atsEnabled: boolean,
     knownAnswers: Map<string, string>,
   ) {
@@ -285,6 +294,21 @@ export class AutoApplyService {
             this.logger.warn(`Failed to persist session state for ${platform}: ${error.message}`);
           }
         }
+      }
+
+      if (result.success) {
+        // Best-effort: a failed email must never turn a successful
+        // candidature into a `needs_review` one.
+        await this.email
+          .sendApplicationSentEmail({
+            applicationId: application.id,
+            jobTitle: application.jobTitle,
+            company: application.company,
+            jobOfferUrl: application.jobOffer.url,
+            jobDescription: application.jobOffer.description,
+            cvPdf: pdfBuffer,
+          })
+          .catch((error: any) => this.logger.warn(`Failed to send application-sent email: ${error.message}`));
       }
 
       return result;
