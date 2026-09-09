@@ -41,6 +41,28 @@ export function truncateSafely(text: string, maxLength: number): string {
   return text.slice(0, end);
 }
 
+// Scaffold-generated READMEs (Laravel's default, Flutter's `flutter create`
+// boilerplate, Create React App's, ...) describe the *framework*, not what
+// the candidate actually built — confirmed live: several synced repos had
+// nothing but this text as their "source of truth", which is worse than no
+// README at all since it reads as real signal to the AI. Matched against a
+// handful of well-known openers; anything else is assumed to be real content
+// written by the repo's author.
+const BOILERPLATE_README_MARKERS = [
+  'is a web application framework with expressive, elegant syntax', // Laravel
+  'this project is a starting point for a flutter application', // flutter create
+  'this project was bootstrapped with create react app',
+  'in the project directory, you can run', // CRA default body
+  'getting started with create react app',
+  'this is a next.js project bootstrapped with',
+  'welcome to your expo app',
+];
+
+function isBoilerplateReadme(cleaned: string): boolean {
+  const normalized = cleaned.toLowerCase();
+  return BOILERPLATE_README_MARKERS.some((marker) => normalized.includes(marker));
+}
+
 export function cleanReadme(raw: string): string {
   const cleaned = raw
     .replace(/```[\s\S]*?```/g, ' ') // code blocks
@@ -50,6 +72,8 @@ export function cleanReadme(raw: string): string {
     .replace(/^#+\s*/gm, '') // markdown headers
     .replace(/\s+/g, ' ')
     .trim();
+
+  if (isBoilerplateReadme(cleaned)) return '';
   return truncateSafely(cleaned, 500);
 }
 

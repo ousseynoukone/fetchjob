@@ -62,9 +62,10 @@ function sanitizeAdaptedExperiences(original: any[], adapted: any[]): any[] {
 // README content), and every tech term it claims must trace back to that
 // repo's own README/language — never invented, never borrowed from another
 // experience's stack.
-function sanitizeNewProject(
+function sanitizeOneNewProject(
   repos: GithubRepoInfo[] | undefined,
   existingProjects: any[],
+  alreadyAdded: Set<string>,
   newProject: any,
 ): any | null {
   if (!newProject?.name || !Array.isArray(newProject.bullets) || !newProject.bullets.length) return null;
@@ -73,6 +74,7 @@ function sanitizeNewProject(
   const normalizedName = normalizeForCompare(newProject.name);
   const matchedRepo = repos.find((r) => normalizedName.includes(normalizeForCompare(r.name)));
   if (!matchedRepo) return null;
+  if (alreadyAdded.has(normalizeForCompare(matchedRepo.name))) return null;
 
   const alreadyOnCv = (existingProjects || []).some((p) =>
     normalizeForCompare(p.name || '').includes(normalizeForCompare(matchedRepo.name)),
@@ -85,12 +87,74 @@ function sanitizeNewProject(
   const hasFabrication = [...claimedTerms].some((term) => !sourceTerms.has(term));
   if (hasFabrication) return null;
 
+  alreadyAdded.add(normalizeForCompare(matchedRepo.name));
   return {
     name: newProject.name,
     period: '',
     url: matchedRepo.url,
     bullets: newProject.bullets.slice(0, 2),
   };
+}
+
+// Up to 2 — enough to actually surface real GitHub work when several repos
+// are genuinely relevant to an offer, without turning the CV into a repo list.
+function sanitizeNewProjects(
+  repos: GithubRepoInfo[] | undefined,
+  existingProjects: any[],
+  newProjects: any,
+): any[] {
+  const candidates = Array.isArray(newProjects) ? newProjects : newProjects ? [newProjects] : [];
+  const alreadyAdded = new Set<string>();
+  const sanitized: any[] = [];
+
+  for (const candidate of candidates) {
+    const project = sanitizeOneNewProject(repos, existingProjects, alreadyAdded, candidate);
+    if (project) sanitized.push(project);
+    if (sanitized.length >= 2) break;
+  }
+
+  return sanitized;
+}
+
+// Same anti-fabrication check, applied to the tailored summary: since a
+// summary can reference anything on the CV (not one specific experience),
+// it's validated against every tech term appearing anywhere in the
+// candidate's data (experiences + skills + projects), not just one section.
+function sanitizeSummary(cv: any, newProjects: any[], summary: unknown): string {
+  if (typeof summary !== 'string' || !summary.trim()) return cv.summary || '';
+
+  const wholeCvText = JSON.stringify({
+    experiences: cv.experiences,
+    skillGroups: cv.skillGroups,
+    projects: [...(cv.projects || []), ...newProjects],
+    additionalContext: cv.additionalContext,
+  });
+  const allowedTerms = techTermsIn(wholeCvText);
+  const claimedTerms = techTermsIn(summary);
+  const hasFabrication = [...claimedTerms].some((term) => !allowedTerms.has(term));
+
+  return hasFabrication ? cv.summary || '' : summary.trim();
+}
+
+// Skills can be reordered/regrouped to surface what's relevant to this
+// offer, but never added or removed — validated as a strict same-multiset
+// check per the flattened item list; any mismatch reverts to the original
+// order entirely rather than risk silently dropping or inventing a skill.
+function sanitizeSkillGroups(original: any[], adapted: any): any[] {
+  if (!Array.isArray(adapted) || !adapted.length) return original;
+
+  const flatten = (groups: any[]) =>
+    (groups || [])
+      .flatMap((g) => g?.items || [])
+      .map((s: string) => normalizeForCompare(s))
+      .sort();
+
+  const originalFlat = flatten(original);
+  const adaptedFlat = flatten(adapted);
+  const sameSet =
+    originalFlat.length === adaptedFlat.length && originalFlat.every((s, i) => s === adaptedFlat[i]);
+
+  return sameSet ? adapted : original;
 }
 
 @Injectable()
@@ -119,9 +183,9 @@ export class AiService {
       .map((r) => `- "${r.name}" [${r.language || 'langage inconnu'}] — README réel : ${r.readmeExcerpt}`)
       .join('\n');
 
-    const prompt = `Tu es expert en recrutement. Adapte les bullet points d'experience de ce CV pour l'offre suivante.
+    const prompt = `Tu es expert en recrutement. Adapte ce CV pour l'offre suivante : experiences, resume, ordre des competences, et eventuellement un ou deux nouveaux projets tires des depots GitHub du candidat. Toutes les sections listees ci-dessous doivent etre reconsiderees — n'en laisse aucune identique par defaut si une adaptation pertinente est possible.
 
-REGLE ABSOLUE, LA PLUS IMPORTANTE : ne change JAMAIS quelle technologie, langage, framework, outil ou base de donnees a ete utilise sur une experience. Tu peux reformuler, reordonner, raccourcir ou mettre en avant un aspect deja present dans le bullet d'origine — mais chaque techno citee dans ta reponse doit deja etre citee dans le bullet ORIGINAL de cette meme experience. Ceci s'applique meme si une autre techno fait partie des competences du candidat listees ailleurs dans le CV : une techno mentionnee sur l'experience X ne doit jamais migrer vers l'experience Y.
+REGLE ABSOLUE, LA PLUS IMPORTANTE : ne change JAMAIS quelle technologie, langage, framework, outil ou base de donnees a ete utilise. Tu peux reformuler, reordonner, raccourcir ou mettre en avant un aspect deja present — mais chaque techno citee dans ta reponse doit deja etre citee dans la source correspondante (le bullet ORIGINAL pour une experience, le README reel pour un nouveau projet, l'ensemble du CV pour le resume). Une techno mentionnee sur l'experience X ne doit jamais migrer vers l'experience Y, meme si elle fait partie des competences listees ailleurs.
 
 Exemple INTERDIT : bullet original "API en Spring Boot / PostgreSQL" -> bullet adapte "API en ASP.NET / SQL Server" (fabrication, meme si le candidat connait aussi C#/.NET ailleurs).
 Exemple AUTORISE : bullet original "API REST avec Spring Boot, JWT et PostgreSQL, tests unitaires JUnit" -> bullet adapte "Developpement d'API REST securisees (Spring Boot, JWT) avec PostgreSQL" (reformulation qui ne garde que des elements deja presents).
@@ -129,10 +193,18 @@ Exemple AUTORISE : bullet original "API REST avec Spring Boot, JWT et PostgreSQL
 OFFRE: ${offer.title} chez ${offer.company}
 DESCRIPTION: ${offer.description}
 EXPERIENCES ACTUELLES (JSON): ${JSON.stringify(cv.experiences || [])}
+COMPETENCES ACTUELLES (JSON): ${JSON.stringify(cv.skillGroups || [])}
+RESUME ACTUEL: ${cv.summary || '(vide)'}
 PROJETS DEJA SUR LE CV (JSON, ne pas dupliquer): ${JSON.stringify(cv.projects || [])}
-${additionalContext ? `\nNOTES COMPLEMENTAIRES DU CANDIDAT (a utiliser uniquement pour mieux formuler les bullets existants, jamais pour ajouter une technologie ou un projet qui n'est pas deja dans la liste ci-dessus) :\n${additionalContext}\n` : ''}
-${reposBlock ? `\nDEPOTS GITHUB DU CANDIDAT AVEC EXTRAIT REEL DE LEUR README (source de verite si tu ajoutes un projet) :\n${reposBlock}\n\nSi et SEULEMENT SI un de ces depots est clairement pertinent pour l'offre ET absent des "PROJETS DEJA SUR LE CV", tu peux proposer AU PLUS UN nouveau projet a ajouter, dans le champ "newProject". Les bullets de ce nouveau projet doivent decrire UNIQUEMENT ce que dit le README fourni ci-dessus pour ce depot — n'invente aucune technologie, metrique ou fonctionnalite qui n'y figure pas explicitement. Si aucun depot n'est clairement pertinent, ou si le README ne donne pas assez d'information pour ecrire une description fiable, mets "newProject": null.\n` : '\nAucun depot GitHub exploitable n\'a ete fourni : mets systematiquement "newProject": null.\n'}
-Reformule uniquement les "bullets" de chaque experience pour mettre en avant les elements deja presents et pertinents pour cette offre. Garde le meme nombre d'experiences et de bullets. Reponds uniquement avec un JSON de la forme { "experiences": [...], "newProject": { "name": string, "bullets": string[] } | null } au meme format que l'entree.`;
+${additionalContext ? `\nNOTES COMPLEMENTAIRES DU CANDIDAT (a utiliser uniquement pour mieux formuler, jamais pour ajouter une technologie ou un projet qui n'est pas deja dans les donnees ci-dessus) :\n${additionalContext}\n` : ''}
+${reposBlock ? `\nDEPOTS GITHUB DU CANDIDAT AVEC EXTRAIT REEL DE LEUR README (source de verite si tu ajoutes un projet) :\n${reposBlock}\n\nSi et SEULEMENT SI un ou deux de ces depots sont clairement pertinents pour l'offre ET absents des "PROJETS DEJA SUR LE CV", propose-les dans le champ "newProjects" (tableau, 0 a 2 elements). Pour chaque projet, ecris un bullet de type realisation professionnelle : QUOI (ce que fait concretement le projet/l'application) et AVEC QUOI (stack technique), en une phrase percutante — jamais une paraphrase des instructions d'installation, badges, licence ou table des matieres du README. Si le README ne decrit pas clairement une fonctionnalite ou un objectif exploitable (ex: seulement des instructions de setup), ne propose PAS ce projet plutot que d'inventer un objectif. Si aucun depot n'est clairement pertinent, mets "newProjects": [].\n` : '\nAucun depot GitHub exploitable n\'a ete fourni : mets systematiquement "newProjects": [].\n'}
+INSTRUCTIONS PAR CHAMP :
+- "experiences" : reformule les "bullets" de chaque experience pour mettre en avant les elements deja presents et pertinents pour cette offre. Garde le meme nombre d'experiences et de bullets par experience.
+- "skillGroups" : renvoie EXACTEMENT les memes competences (aucun ajout, aucune suppression), simplement reordonnees pour faire apparaitre en premier celles pertinentes pour cette offre, dans chaque groupe et entre les groupes.
+- "summary" : 2 a 3 phrases d'accroche ciblees sur cette offre, basees uniquement sur les faits reels du CV (experiences/competences/projets) — jamais de metrique ou technologie non presente ailleurs dans les donnees fournies.
+- "newProjects" : voir instructions ci-dessus.
+
+Reponds uniquement avec un JSON de la forme { "experiences": [...], "skillGroups": [...], "summary": string, "newProjects": [{ "name": string, "bullets": string[] }] }, chaque section au meme format que dans les donnees d'entree.`;
 
     const response = await (await this.getClient()).chat.completions.create({
       model: MODEL,
@@ -142,12 +214,16 @@ Reformule uniquement les "bullets" de chaque experience pour mettre en avant les
 
     const result = JSON.parse(response.choices[0].message.content || '{}');
     const adaptedExperiences = result.experiences || cv.experiences;
-    const sanitizedNewProject = sanitizeNewProject(githubRepos, cv.projects || [], result.newProject);
+    const sanitizedNewProjects = sanitizeNewProjects(githubRepos, cv.projects || [], result.newProjects);
+    const sanitizedSkillGroups = sanitizeSkillGroups(cv.skillGroups || [], result.skillGroups);
+    const sanitizedSummary = sanitizeSummary(cv, sanitizedNewProjects, result.summary);
 
     return {
       ...cv,
       experiences: sanitizeAdaptedExperiences(cv.experiences || [], adaptedExperiences),
-      projects: sanitizedNewProject ? [...(cv.projects || []), sanitizedNewProject] : cv.projects,
+      skillGroups: sanitizedSkillGroups,
+      summary: sanitizedSummary,
+      projects: sanitizedNewProjects.length ? [...(cv.projects || []), ...sanitizedNewProjects] : cv.projects,
     };
   }
 
