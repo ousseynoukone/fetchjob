@@ -19,9 +19,8 @@ import { SmartRecruitersApplier } from './appliers/smartrecruiters.applier';
 import { GenericRedirectApplier } from './appliers/generic-redirect.applier';
 import { JobApplier } from './appliers/applier.interface';
 import { scanInvalidFields } from './appliers/form-fields';
-import { resolveWelcomeToTheJungleApplyUrl } from './appliers/ats-common';
+import { resolveWelcomeToTheJungleApplyUrl, blockHeavyResources } from './appliers/ats-common';
 import { CustomQuestionsService } from '../custom-questions/custom-questions.service';
-import { EmailService } from '../email/email.service';
 import type { CVData } from '../pdf/templates/cv-document';
 import type { Page } from 'playwright';
 
@@ -65,7 +64,6 @@ export class AutoApplyService {
     private credentials: PlatformCredentialsService,
     private browserSession: BrowserSessionService,
     private customQuestions: CustomQuestionsService,
-    private email: EmailService,
     linkedin: LinkedInApplier,
     indeed: IndeedApplier,
     franceTravail: FranceTravailApplier,
@@ -209,6 +207,7 @@ export class AutoApplyService {
 
     const context = await this.browserSession.createContext(null);
     try {
+      await blockHeavyResources(context);
       const page = await context.newPage();
       const resolved = await resolveWelcomeToTheJungleApplyUrl(page, sourceUrl);
       return resolved || sourceUrl;
@@ -296,20 +295,9 @@ export class AutoApplyService {
         }
       }
 
-      if (result.success) {
-        // Best-effort: a failed email must never turn a successful
-        // candidature into a `needs_review` one.
-        await this.email
-          .sendApplicationSentEmail({
-            applicationId: application.id,
-            jobTitle: application.jobTitle,
-            company: application.company,
-            jobOfferUrl: application.jobOffer.url,
-            jobDescription: application.jobOffer.description,
-            cvPdf: pdfBuffer,
-          })
-          .catch((error: any) => this.logger.warn(`Failed to send application-sent email: ${error.message}`));
-      }
+      // No per-candidature email here — DigestService reads `appliedAt`
+      // directly off the Application table and sends a periodic summary
+      // instead (see digest.service.ts).
 
       return result;
     } finally {

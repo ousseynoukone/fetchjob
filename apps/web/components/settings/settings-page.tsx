@@ -27,6 +27,12 @@ const NOTIFICATION_FIELDS: FieldSpec[] = [
   { key: 'smtpPort', label: 'Port SMTP', placeholder: '587', type: 'text' },
   { key: 'smtpUsername', label: 'Utilisateur SMTP (adresse d\'envoi)', placeholder: 'moi@gmail.com', type: 'email' },
   { key: 'smtpPassword', label: 'Mot de passe SMTP', placeholder: '••••••••' },
+  {
+    key: 'digestIntervalHours',
+    label: 'Résumé des candidatures envoyées — toutes les X heures',
+    placeholder: '4',
+    type: 'number',
+  },
 ];
 
 const PLATFORM_LABELS: Record<SupportedPlatform, string> = {

@@ -13,6 +13,7 @@ export interface SettingsStatus {
   smtpUsername: boolean;
   smtpPassword: boolean;
   notificationEmail: boolean;
+  digestIntervalHours: boolean;
 }
 
 interface Store {

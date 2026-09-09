@@ -19,11 +19,7 @@ export class EmailService {
   // Silently no-ops when SMTP isn't fully configured — email alerts are a
   // convenience on top of the in-app "Questions" list, never a requirement
   // for auto-apply itself to keep working.
-  async send(
-    subject: string,
-    html: string,
-    attachments?: { filename: string; content: Buffer }[],
-  ): Promise<void> {
+  async send(subject: string, html: string): Promise<void> {
     const [host, port, username, password, to] = await Promise.all([
       this.settings.get('smtpHost'),
       this.settings.get('smtpPort'),
@@ -44,48 +40,46 @@ export class EmailService {
 
       // Gmail (and most providers) reject or silently rewrite a From
       // address that isn't the authenticated account.
-      await transporter.sendMail({ from: username, to, subject, html, attachments });
+      await transporter.sendMail({ from: username, to, subject, html });
     } catch (error: any) {
       this.logger.warn(`Failed to send email alert: ${error.message}`);
     }
   }
 
-  // One email per candidature actually sent (bot or manual "Marquer comme
-  // postulée") — the CV attached is the exact PDF that went out, the offer
-  // is linked back to its original source, and the button goes straight to
-  // this candidature's detail page rather than the general candidatures list.
-  async sendApplicationSentEmail(params: {
-    applicationId: string;
-    jobTitle: string;
-    company: string;
-    jobOfferUrl: string;
-    jobDescription: string;
-    cvPdf: Buffer;
-  }): Promise<void> {
+  // Periodic summary of every candidature sent since the last one (see
+  // DigestService), replacing one email per candidature. No attachments —
+  // each entry links to its own detail page on the platform, where the
+  // exact CV that was sent and the full offer are already viewable.
+  async sendDigestEmail(
+    applications: { id: string; jobTitle: string; company: string; jobOfferUrl: string }[],
+    needsReviewCount: number,
+  ): Promise<void> {
+    if (!applications.length) return;
+
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-    const detailUrl = `${frontendUrl}/candidatures/${params.applicationId}`;
-    const description = (params.jobDescription || '').trim();
-    const excerpt = description.slice(0, 600);
+    const rows = applications
+      .map((application) => {
+        const detailUrl = `${frontendUrl}/candidatures/${application.id}`;
+        return `
+          <li style="margin-bottom:12px">
+            <strong>${escapeHtml(application.jobTitle)}</strong> chez ${escapeHtml(application.company)}<br/>
+            <a href="${application.jobOfferUrl}">Voir l'offre</a> ·
+            <a href="${detailUrl}">Voir les détails et le CV envoyé</a>
+          </li>
+        `;
+      })
+      .join('');
+
+    const needsReviewLine = needsReviewCount
+      ? `<p>${needsReviewCount} candidature(s) supplémentaire(s) à finaliser manuellement (voir l'onglet Candidatures).</p>`
+      : '';
 
     const html = `
-      <h2>Candidature envoyée : ${escapeHtml(params.jobTitle)} chez ${escapeHtml(params.company)}</h2>
-      <p><a href="${params.jobOfferUrl}">Voir l'offre originale</a></p>
-      <p style="white-space:pre-wrap;color:#444">${escapeHtml(excerpt)}${description.length > excerpt.length ? '…' : ''}</p>
-      <p>
-        <a href="${detailUrl}" style="display:inline-block;padding:10px 16px;background:#2d5bff;color:#fff;text-decoration:none;border-radius:6px">
-          Voir les détails sur la plateforme
-        </a>
-      </p>
+      <h2>${applications.length} candidature(s) envoyée(s)</h2>
+      <ul style="padding-left:18px">${rows}</ul>
+      ${needsReviewLine}
     `;
 
-    const safeFileName = `CV - ${params.jobTitle} - ${params.company}`
-      .replace(/[\\/:*?"<>|]/g, '')
-      .slice(0, 100);
-
-    await this.send(
-      `Candidature envoyée : ${params.jobTitle} chez ${params.company}`,
-      html,
-      [{ filename: `${safeFileName}.pdf`, content: params.cvPdf }],
-    );
+    await this.send(`Résumé candidatures : ${applications.length} envoyée(s)`, html);
   }
 }

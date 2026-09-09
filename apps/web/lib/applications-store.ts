@@ -29,6 +29,8 @@ export interface Application {
   status: string;
   coverLetter?: string;
   autoApplyNote?: string;
+  verifiedAt?: string;
+  verificationNote?: string;
   appliedAt?: string;
   createdAt: string;
   jobOffer: JobOffer;

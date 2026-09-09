@@ -1,4 +1,17 @@
-import type { Locator, Page } from 'playwright';
+import type { BrowserContext, Locator, Page } from 'playwright';
+
+// Scraping/resolution only ever needs the text (job cards, JSON-LD, an
+// apply-button href) — company logos, hero photos and web fonts add real
+// weight and bandwidth for zero value there. Scripts/stylesheets stay on:
+// WTTJ's WAF challenge and general page hydration depend on them running.
+// Not applied to BrowserSessionService's default context (real apply/form
+// flows), only where a caller opts in explicitly.
+export async function blockHeavyResources(context: BrowserContext): Promise<void> {
+  await context.route('**/*', (route) => {
+    const type = route.request().resourceType();
+    return ['image', 'media', 'font'].includes(type) ? route.abort() : route.continue();
+  });
+}
 
 export function splitName(fullName: string): { first: string; last: string } {
   const parts = (fullName || '').trim().split(/\s+/).filter(Boolean);
@@ -45,6 +58,22 @@ export async function hasSecurityCheck(page: Page): Promise<boolean> {
   if (SECURITY_CHECK_TEXT.test(page.url())) return true;
   const bodyText = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
   return SECURITY_CHECK_TEXT.test(bodyText);
+}
+
+// Used by the verification pass (see verification.service.ts) to confirm a
+// candidature the apply flow already reported as sent actually got recorded
+// by the platform — revisiting the offer's own page with its stored session
+// and looking for whatever "you already applied" state it shows instead of
+// an active apply button. NOT verified against a real logged-in session on
+// any of these four platforms (none was available while building this) —
+// best-effort patterns based on each platform's known/documented wording;
+// expect to tighten these once a real run reports false negatives.
+const ALREADY_APPLIED_TEXT =
+  /vous avez (déjà )?postulé|candidature (envoyée|déjà envoyée|transmise)|vous avez postulé le|application submitted|you('| ha)ve applied|already applied|applied \d+ (day|week|month|hour)|postulé le \s*\d|application (sent|received)|applied on /i;
+
+export async function hasAlreadyAppliedIndicator(page: Page): Promise<boolean> {
+  const bodyText = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
+  return ALREADY_APPLIED_TEXT.test(bodyText);
 }
 
 // Welcome to the Jungle hosts the job posting itself, but the real "Postuler"

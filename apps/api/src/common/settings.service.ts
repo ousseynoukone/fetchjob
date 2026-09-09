@@ -13,6 +13,7 @@ export interface SettingsFields {
   smtpUsername?: string;
   smtpPassword?: string;
   notificationEmail?: string;
+  digestIntervalHours?: string;
 }
 
 const FIELD_TO_ENV_FALLBACK: Record<keyof SettingsFields, string> = {
@@ -26,6 +27,7 @@ const FIELD_TO_ENV_FALLBACK: Record<keyof SettingsFields, string> = {
   smtpUsername: 'SMTP_USERNAME',
   smtpPassword: 'SMTP_PASSWORD',
   notificationEmail: 'NOTIFICATION_EMAIL',
+  digestIntervalHours: 'DIGEST_INTERVAL_HOURS',
 };
 
 @Injectable()
@@ -75,5 +77,18 @@ export class SettingsService {
 
     await this.prisma.settings.update({ where: { id: row.id }, data });
     return this.status();
+  }
+
+  // Internal bookkeeping for DigestService — never shown or edited in the
+  // Paramètres UI, so it doesn't fit the SettingsFields/env-fallback shape
+  // above (which is specifically for user-configurable values).
+  async getLastDigestSentAt(): Promise<Date | null> {
+    const row = await this.getRow();
+    return row.lastDigestSentAt;
+  }
+
+  async setLastDigestSentAt(date: Date): Promise<void> {
+    const row = await this.getRow();
+    await this.prisma.settings.update({ where: { id: row.id }, data: { lastDigestSentAt: date } });
   }
 }

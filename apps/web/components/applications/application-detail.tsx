@@ -188,6 +188,26 @@ export default function ApplicationDetail({ id }: { id: string }) {
             </div>
           )}
 
+          {current.status === 'applied' && (
+            <div className={`alert mt-5 text-sm ${current.verifiedAt ? 'alert-success' : 'alert-warning'}`}>
+              <AlertCircle className="w-4 h-4" />
+              <span>
+                {current.verifiedAt ? (
+                  <>
+                    <strong>Confirmée</strong> par la plateforme le{' '}
+                    {new Date(current.verifiedAt).toLocaleString('fr-FR')}.
+                  </>
+                ) : current.verificationNote ? (
+                  <>
+                    <strong>Non confirmée :</strong> {current.verificationNote}
+                  </>
+                ) : (
+                  <>Pas encore vérifiée — lancez une vérification depuis la page Vérification.</>
+                )}
+              </span>
+            </div>
+          )}
+
           <div className="flex flex-wrap gap-2 mt-5">
             <a href={current.sourceUrl} target="_blank" rel="noopener noreferrer" className="btn btn-primary btn-sm gap-2">
               <ExternalLink className="w-4 h-4" /> Postuler

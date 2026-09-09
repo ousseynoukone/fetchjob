@@ -3,6 +3,7 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 import { chromium, type BrowserContext } from 'playwright';
 import { SettingsService } from '../common/settings.service';
+import { blockHeavyResources } from '../auto-apply/appliers/ats-common';
 
 const DETAIL_PAGE_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -300,6 +301,7 @@ export class ScrapingService {
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
       });
       const context = await browser.newContext({ userAgent: DETAIL_PAGE_USER_AGENT, locale: 'fr-FR' });
+      await blockHeavyResources(context);
       const page = await context.newPage();
       await page.goto(offer.url, { waitUntil: 'domcontentloaded', timeout: 20000 });
       // Gives the WAF challenge's JS time to resolve and the SPA time to
@@ -457,6 +459,7 @@ export class ScrapingService {
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         locale: 'fr-FR',
       });
+      await blockHeavyResources(context);
       const page = await context.newPage();
 
       const searchUrl = `https://fr.indeed.com/jobs?q=${encodeURIComponent(params.keywords)}&l=${encodeURIComponent(params.location || '')}&sort=date`;

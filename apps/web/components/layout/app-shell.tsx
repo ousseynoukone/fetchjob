@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, FileText, Rocket, Briefcase, Sparkles, Settings, HelpCircle, BookOpen } from 'lucide-react';
+import { LayoutDashboard, FileText, Rocket, Briefcase, Sparkles, Settings, HelpCircle, BookOpen, ShieldCheck } from 'lucide-react';
 import clsx from 'clsx';
 
 const NAV_ITEMS = [
@@ -10,6 +10,7 @@ const NAV_ITEMS = [
   { href: '/mon-cv', label: 'Mon CV', icon: FileText },
   { href: '/campagne', label: 'Campagne', icon: Rocket },
   { href: '/candidatures', label: 'Candidatures', icon: Briefcase },
+  { href: '/verification', label: 'Vérification', icon: ShieldCheck },
   { href: '/connaissances', label: 'Connaissances', icon: BookOpen },
   { href: '/questions', label: 'Questions', icon: HelpCircle },
   { href: '/parametres', label: 'Paramètres', icon: Settings },

@@ -40,4 +40,8 @@ export class UpdateSettingsDto {
   @IsString()
   @IsOptional()
   notificationEmail?: string;
+
+  @IsString()
+  @IsOptional()
+  digestIntervalHours?: string;
 }

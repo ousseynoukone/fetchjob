@@ -9,6 +9,7 @@ import { SettingsModule } from './settings/settings.module';
 import { PlatformCredentialsModule } from './platform-credentials/platform-credentials.module';
 import { KnowledgeModule } from './knowledge/knowledge.module';
 import { CustomQuestionsModule } from './custom-questions/custom-questions.module';
+import { VerificationModule } from './verification/verification.module';
 import { VersionController } from './version.controller';
 
 @Module({
@@ -26,6 +27,7 @@ import { VersionController } from './version.controller';
     PlatformCredentialsModule,
     KnowledgeModule,
     CustomQuestionsModule,
+    VerificationModule,
   ],
   controllers: [VersionController],
   providers: [],

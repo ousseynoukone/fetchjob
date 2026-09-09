@@ -7,10 +7,9 @@ import { MatchingModule } from '../matching/matching.module';
 import { CampaignModule } from '../campaign/campaign.module';
 import { ApplicationPrepModule } from './application-prep.module';
 import { PdfModule } from '../pdf/pdf.module';
-import { EmailModule } from '../email/email.module';
 
 @Module({
-  imports: [CommonModule, CvModule, MatchingModule, CampaignModule, ApplicationPrepModule, PdfModule, EmailModule],
+  imports: [CommonModule, CvModule, MatchingModule, CampaignModule, ApplicationPrepModule, PdfModule],
   providers: [ApplicationsService],
   controllers: [ApplicationsController],
 })

@@ -39,6 +39,7 @@ model User {
   platformCredentials PlatformCredential[]
   knowledgeItems      KnowledgeItem[]
   customQuestions     CustomQuestion[]
+  verificationRuns    VerificationRun[]
 
   @@map("users")
 }
@@ -331,6 +332,16 @@ model Application {
   // this explains why, for manual follow-up.
   autoApplyNote String? @db.Text
 
+  // Independent post-send check (see VerificationRun): does the offer's own
+  // page, revisited with the platform's stored session, actually show an
+  // "already applied" state? Separate from `status`, which only reflects
+  // what the apply flow itself optimistically reported at send time — a
+  // confirmation message shown on screen isn't proof the platform actually
+  // recorded it server-side. Left untouched (never auto-reverted) when a
+  // check comes back negative; verificationNote explains why for manual review.
+  verifiedAt       DateTime?
+  verificationNote String?   @db.Text
+
   appliedAt DateTime?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
@@ -412,8 +423,40 @@ model Settings {
   smtpPassword      String?
   notificationEmail String?
 
+  // Digest of applications actually sent (CV + offer + link to the
+  // candidature), replacing one email per candidature — sent by
+  // DigestService's hourly cron check whenever at least this many hours
+  // have passed since the last send. Text like every other Settings field;
+  // parsed where used, defaults to 4 when unset.
+  digestIntervalHours String?
+  // Internal bookkeeping only — never shown or edited in the UI.
+  lastDigestSentAt    DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@map("settings")
+}
+
+// A manually-launched pass that revisits already-"applied" candidatures on
+// their own offer page (using the platform's stored session) to confirm the
+// platform actually recorded the application, rather than trusting the apply
+// flow's own on-screen confirmation. Mirrors CampaignRun's shape so the
+// frontend page can reuse the same run-history/live-log UI pattern.
+model VerificationRun {
+  id     String @id @default(cuid())
+  userId String
+
+  startedAt   DateTime  @default(now())
+  finishedAt  DateTime?
+  checked     Int       @default(0)
+  confirmed   Int       @default(0)
+  unconfirmed Int       @default(0)
+  error       String?
+  logs        String[]  @default([])
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("verification_runs")
 }
