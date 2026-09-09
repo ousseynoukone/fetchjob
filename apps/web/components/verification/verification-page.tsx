@@ -31,7 +31,10 @@ export default function VerificationPage() {
   }, [connectStream]);
 
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // See campaign-page.tsx's identical fix: `block: 'nearest'` keeps this
+    // scroll inside the log panel's own overflow container instead of
+    // dragging the whole page down past it on every new log line.
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [latestRun?.logs?.length]);
 
   return (

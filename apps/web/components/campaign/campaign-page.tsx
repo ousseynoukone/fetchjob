@@ -113,7 +113,12 @@ export default function CampaignPage() {
   }, [running, fetchLatestRun]);
 
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // `block: 'nearest'` keeps this scroll inside the log panel's own
+    // overflow container — the default ('start') scrolls whatever ancestor
+    // it takes to put the anchor at the top of the viewport, which during a
+    // running campaign (new log line every few seconds) dragged the whole
+    // page down past the panel itself.
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [latestRun?.logs?.length]);
 
   const toggleArrayValue = (key: 'contractTypes' | 'sources', value: string) => {
