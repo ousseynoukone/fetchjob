@@ -84,6 +84,13 @@ const PROBE_QUOTA = 1;
 export class CampaignService {
   private readonly logger = new Logger(CampaignService.name);
   private runningCampaigns = new Set<string>();
+  // Set by pause() while executeRun's background task for that campaign is
+  // still in flight — checked between offers/sources/queries (and passed
+  // into AutoApplyService for its own between-candidature check) so
+  // "Pause" actually stops the run soon instead of only preventing the
+  // *next* one, which is all flipping `campaign.status` to 'paused' alone
+  // ever did.
+  private cancelledCampaigns = new Set<string>();
   // In-process only: this is a single-instance, single-user tool, so an
   // RxJS Subject is enough to fan a run's log lines out to any number of
   // connected browser tabs live, with no external broker needed. `done` lets
@@ -153,6 +160,7 @@ export class CampaignService {
 
   async pause() {
     const campaign = await this.getOrCreateCampaign();
+    this.cancelledCampaigns.add(campaign.id);
     return this.prisma.campaign.update({
       where: { id: campaign.id },
       data: { status: 'paused' },
@@ -173,6 +181,7 @@ export class CampaignService {
     });
 
     this.runningCampaigns.add(campaign.id);
+    this.cancelledCampaigns.delete(campaign.id);
     await this.prisma.campaign.update({
       where: { id: campaign.id },
       data: { status: 'running' },
@@ -320,13 +329,19 @@ export class CampaignService {
         );
       }
       const preparedPerSource = new Map<string, number>();
+      let cancelled = false;
 
       // Query-outer, source-inner: each query is tried across every source
       // before moving to the next query. Looping sources-outer would let the
       // first source alone exhaust its budget before later sources (and
       // later queries) are even tried in a given run.
-      for (const query of searchQueries) {
+      queries: for (const query of searchQueries) {
         for (const source of campaign.sources as string[]) {
+          if (this.cancelledCampaigns.has(campaign.id)) {
+            cancelled = true;
+            break queries;
+          }
+
           const sourceBudget = sourceBudgets.get(source) ?? campaign.maxApplicationsPerDay;
           if ((preparedPerSource.get(source) || 0) >= sourceBudget) continue;
 
@@ -342,6 +357,10 @@ export class CampaignService {
           await this.appendLog(runId, `${offers.length} offre(s) trouvée(s) sur ${source} pour "${query}"`);
 
           for (const rawOffer of offers) {
+            if (this.cancelledCampaigns.has(campaign.id)) {
+              cancelled = true;
+              break queries;
+            }
             if ((preparedPerSource.get(source) || 0) >= sourceBudget) break;
 
             if (!isWithinIdf(rawOffer.source, rawOffer.location, campaign.location)) {
@@ -480,17 +499,30 @@ export class CampaignService {
         }
       }
 
+      if (cancelled) {
+        await this.appendLog(runId, 'Campagne arrêtée (pause demandée) — auto-apply non lancé.');
+        await this.finishRun(campaign.id, runId, { offersScanned, offersFiltered, applicationsPrepared }, 'paused');
+        return;
+      }
+
       if (campaign.actionMode === 'auto_apply' && createdApplicationIds.length) {
         await this.appendLog(runId, `Auto-apply: soumission de ${createdApplicationIds.length} candidature(s)...`);
-        const { applied, needsReview } = await this.autoApply.run({
+        const { applied, needsReview, cancelled: autoApplyCancelled } = await this.autoApply.run({
           userId,
           applicationIds: createdApplicationIds,
           atsEnabled: campaign.autoApplyAts,
           minDelaySeconds: campaign.autoApplyMinDelaySeconds,
           maxDelaySeconds: campaign.autoApplyMaxDelaySeconds,
           appendLog: (message) => this.appendLog(runId, message),
+          isCancelled: () => this.cancelledCampaigns.has(campaign.id),
         });
         await this.appendLog(runId, `Auto-apply terminé: ${applied} envoyée(s), ${needsReview} à vérifier.`);
+
+        if (autoApplyCancelled) {
+          await this.appendLog(runId, 'Campagne arrêtée (pause demandée) pendant l\'auto-apply.');
+          await this.finishRun(campaign.id, runId, { offersScanned, offersFiltered, applicationsPrepared }, 'paused');
+          return;
+        }
       }
 
       await this.appendLog(runId, `Terminé: ${applicationsPrepared} candidature(s) préparée(s).`);
@@ -502,8 +534,16 @@ export class CampaignService {
         where: { id: runId },
         data: { finishedAt: new Date(), error: error.message, offersScanned, offersFiltered, applicationsPrepared },
       });
-      await this.prisma.campaign.update({ where: { id: campaign.id }, data: { status: 'active' } });
+      // A crash mid-run shouldn't leave the campaign stuck as 'paused' if a
+      // pause happened to be requested around the same time, but it also
+      // shouldn't overwrite an intentional pause with 'active' — only fall
+      // back to 'active' when this crash wasn't itself the result of one.
+      await this.prisma.campaign.update({
+        where: { id: campaign.id },
+        data: { status: this.cancelledCampaigns.has(campaign.id) ? 'paused' : 'active' },
+      });
       this.runningCampaigns.delete(campaign.id);
+      this.cancelledCampaigns.delete(campaign.id);
       this.logStream.next({ runId, type: 'done', message: error.message, at: new Date().toISOString() });
     }
   }
@@ -512,6 +552,7 @@ export class CampaignService {
     campaignId: string,
     runId: string,
     stats: { offersScanned: number; offersFiltered: number; applicationsPrepared: number },
+    finalStatus: 'active' | 'paused' = 'active',
   ) {
     await this.prisma.campaignRun.update({
       where: { id: runId },
@@ -521,7 +562,7 @@ export class CampaignService {
     await this.prisma.campaign.update({
       where: { id: campaignId },
       data: {
-        status: 'active',
+        status: finalStatus,
         lastRunAt: new Date(),
         totalOffersScanned: { increment: stats.offersScanned },
         totalOffersFiltered: { increment: stats.offersFiltered },
@@ -530,6 +571,7 @@ export class CampaignService {
     });
 
     this.runningCampaigns.delete(campaignId);
+    this.cancelledCampaigns.delete(campaignId);
     this.logStream.next({ runId, type: 'done', message: '', at: new Date().toISOString() });
   }
 }

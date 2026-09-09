@@ -48,7 +48,7 @@ interface Store {
   markApplied: (id: string) => Promise<void>;
   regenerate: (id: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
-  removeAll: (status?: string) => Promise<void>;
+  removeAll: (status?: string, scope?: 'current' | 'history') => Promise<void>;
 }
 
 export const useApplicationsStore = create<Store>((set, get) => ({
@@ -134,12 +134,17 @@ export const useApplicationsStore = create<Store>((set, get) => ({
     }
   },
 
-  removeAll: async (status) => {
+  // Re-fetches with the same status/scope afterwards rather than filtering
+  // the local list in place — `scope` (current run vs. history, for
+  // "à postuler") can't be replicated client-side from the fields already
+  // held in state, so the only way to end up with an accurate list is to
+  // ask the server again with the exact same filter that was just deleted.
+  removeAll: async (status, scope) => {
     try {
-      await apiClient.delete('/api/candidatures', { params: status ? { status } : {} });
-      set({
-        applications: status ? get().applications.filter((a) => a.status !== status) : [],
+      await apiClient.delete('/api/candidatures', {
+        params: { ...(status ? { status } : {}), ...(scope ? { scope } : {}) },
       });
+      await get().fetchList(status, scope);
       toast.success('Candidatures supprimées');
     } catch (error: any) {
       toast.error(error.response?.data?.message || 'Failed to delete applications');

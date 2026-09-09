@@ -9,6 +9,12 @@ import { AddManualOfferDto } from './dto/add-manual.dto';
 import type { CVData } from '../pdf/templates/cv-document';
 import { createHash } from 'crypto';
 
+// Statuses that imply a real submission happened at some point (auto-apply
+// success or manual "Marquer comme postulée") — used to keep
+// Campaign.totalApplicationsSent accurate when candidatures are deleted.
+// 'to_apply', 'needs_review' and 'ignored' never reached that point.
+const SENT_STATUSES = ['applied', 'interview', 'offer', 'rejected'];
+
 @Injectable()
 export class ApplicationsService {
   constructor(
@@ -26,10 +32,9 @@ export class ApplicationsService {
   // before campaignRunId existed), 'history' shows what got left behind by
   // an older run instead. Every other status ignores it — once you've acted
   // on a candidature (applied/interview/...), it stays visible regardless
-  // of which run produced it.
-  async list(status?: string, scope?: 'current' | 'history') {
-    const userId = await this.localUser.getDefaultUserId();
-
+  // of which run produced it. Shared by list() and removeAll() so "delete
+  // this tab" always matches exactly what that tab is showing.
+  private async buildStatusScopeFilter(userId: string, status?: string, scope?: 'current' | 'history') {
     let runFilter: Record<string, any> = {};
     if (status === 'to_apply' && scope) {
       const latestRun = await this.campaignService.getLatestRun();
@@ -38,13 +43,51 @@ export class ApplicationsService {
         ? { campaignRunId: latestRunId ? { not: latestRunId } : { not: null } }
         : { OR: [{ campaignRunId: null }, ...(latestRunId ? [{ campaignRunId: latestRunId }] : [])] };
     }
+    return { userId, ...(status ? { status } : {}), ...runFilter };
+  }
+
+  async list(status?: string, scope?: 'current' | 'history') {
+    const userId = await this.localUser.getDefaultUserId();
+    const where = await this.buildStatusScopeFilter(userId, status, scope);
 
     return this.prisma.application.findMany({
-      where: { userId, ...(status ? { status } : {}), ...runFilter },
+      where,
       include: { jobOffer: true },
       omit: { screenshot: true },
       orderBy: { createdAt: 'desc' },
     });
+  }
+
+  // Keeps Campaign.totalApplicationsPrepared/totalApplicationsSent accurate
+  // after a delete — without this, those counters (shown on the Campagne
+  // page) keep counting rows that no longer exist, drifting further from
+  // reality with every cleanup. Grouped by campaign in case more than one
+  // exists, though in practice this tool only ever has the one.
+  private async decrementCampaignStats(deleted: { campaignId: string; status: string }[]) {
+    if (!deleted.length) return;
+
+    const byCampaign = new Map<string, { prepared: number; sent: number }>();
+    for (const row of deleted) {
+      const entry = byCampaign.get(row.campaignId) || { prepared: 0, sent: 0 };
+      entry.prepared += 1;
+      if (SENT_STATUSES.includes(row.status)) entry.sent += 1;
+      byCampaign.set(row.campaignId, entry);
+    }
+
+    for (const [campaignId, counts] of byCampaign) {
+      const campaign = await this.prisma.campaign.findUnique({ where: { id: campaignId } });
+      if (!campaign) continue;
+      await this.prisma.campaign.update({
+        where: { id: campaignId },
+        data: {
+          // Clamped via Math.min rather than a raw decrement: stats that
+          // predate this fix (or drifted for any other reason) could
+          // otherwise go negative.
+          totalApplicationsPrepared: { decrement: Math.min(counts.prepared, campaign.totalApplicationsPrepared) },
+          totalApplicationsSent: { decrement: Math.min(counts.sent, campaign.totalApplicationsSent) },
+        },
+      });
+    }
   }
 
   async getById(id: string) {
@@ -100,14 +143,26 @@ export class ApplicationsService {
 
   async remove(id: string) {
     await this.getById(id);
-    return this.prisma.application.delete({ where: { id } });
+    const deleted = await this.prisma.application.delete({ where: { id } });
+    await this.decrementCampaignStats([{ campaignId: deleted.campaignId, status: deleted.status }]);
+    return deleted;
   }
 
-  async removeAll(status?: string) {
+  // `status`/`scope` scope this to exactly one tab (e.g. "à postuler" alone,
+  // or just its history) instead of only ever offering "this one status" or
+  // "everything" — both left undefined still wipes every candidature.
+  async removeAll(status?: string, scope?: 'current' | 'history') {
     const userId = await this.localUser.getDefaultUserId();
-    const result = await this.prisma.application.deleteMany({
-      where: { userId, ...(status ? { status } : {}) },
+    const where = await this.buildStatusScopeFilter(userId, status, scope);
+
+    const toDelete = await this.prisma.application.findMany({
+      where,
+      select: { campaignId: true, status: true },
     });
+
+    const result = await this.prisma.application.deleteMany({ where });
+    await this.decrementCampaignStats(toDelete);
+
     return { deleted: result.count };
   }
 

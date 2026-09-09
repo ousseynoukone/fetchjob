@@ -23,8 +23,8 @@ export class ApplicationsController {
   }
 
   @Delete()
-  async removeAll(@Query('status') status?: string) {
-    return this.applicationsService.removeAll(status);
+  async removeAll(@Query('status') status?: string, @Query('scope') scope?: 'current' | 'history') {
+    return this.applicationsService.removeAll(status, scope);
   }
 
   @Get(':id')

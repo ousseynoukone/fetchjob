@@ -68,6 +68,9 @@ function matchesOwnDomain(source: string, sourceUrl: string): boolean {
 export interface AutoApplyRunResult {
   applied: number;
   needsReview: number;
+  // True if a pause request cut the run short — the remaining
+  // applicationIds were never attempted (left at `to_apply`, not touched).
+  cancelled: boolean;
 }
 
 @Injectable()
@@ -162,8 +165,12 @@ export class AutoApplyService {
     minDelaySeconds: number;
     maxDelaySeconds: number;
     appendLog: (message: string) => Promise<void>;
+    // Checked before each candidature and again after the between-candidature
+    // delay — a pause request otherwise wouldn't take effect until the whole
+    // list (each one 45-150s apart by default) finished on its own.
+    isCancelled?: () => boolean;
   }): Promise<AutoApplyRunResult> {
-    const { userId, applicationIds, atsEnabled, appendLog } = params;
+    const { userId, applicationIds, atsEnabled, appendLog, isCancelled } = params;
     const minDelaySeconds = Math.min(params.minDelaySeconds, params.maxDelaySeconds);
     const maxDelaySeconds = Math.max(params.minDelaySeconds, params.maxDelaySeconds);
     // Loaded once for the whole run rather than per candidature — a
@@ -173,6 +180,10 @@ export class AutoApplyService {
     let needsReview = 0;
 
     for (let i = 0; i < applicationIds.length; i++) {
+      if (isCancelled?.()) {
+        return { applied, needsReview, cancelled: true };
+      }
+
       const applicationId = applicationIds[i];
       const application = await this.prisma.application.findUnique({
         where: { id: applicationId },
@@ -218,10 +229,13 @@ export class AutoApplyService {
 
       if (i < applicationIds.length - 1) {
         await this.browserSession.randomDelay(minDelaySeconds * 1000, maxDelaySeconds * 1000);
+        if (isCancelled?.()) {
+          return { applied, needsReview, cancelled: true };
+        }
       }
     }
 
-    return { applied, needsReview };
+    return { applied, needsReview, cancelled: false };
   }
 
   // Welcome to the Jungle hosts the posting but rarely the actual apply

@@ -60,9 +60,9 @@ export default function ApplicationsList() {
     router.replace(id ? `/candidatures?tab=${id}` : '/candidatures');
   };
 
-  const handleClearToApply = async () => {
-    if (!confirm("Supprimer toutes les candidatures au statut \"à postuler\" ? Cette action est irréversible.")) return;
-    await removeAll('to_apply');
+  const handleClearTab = async () => {
+    if (!confirm(`Supprimer toutes les candidatures de l'onglet "${activeTab?.label}" ? Cette action est irréversible.`)) return;
+    await removeAll(activeTab?.status, activeTab?.scope);
   };
 
   const handleClearAll = async () => {
@@ -87,9 +87,11 @@ export default function ApplicationsList() {
                   <Trash2 className="w-4 h-4" /> Nettoyer <ChevronDown className="w-3.5 h-3.5" />
                 </label>
                 <ul tabIndex={0} className="dropdown-content menu z-10 mt-2 p-1.5 shadow-xl bg-base-200 border border-base-300 rounded-xl w-64">
-                  <li>
-                    <button onClick={handleClearToApply}>Supprimer les "à postuler"</button>
-                  </li>
+                  {tab && (
+                    <li>
+                      <button onClick={handleClearTab}>Supprimer "{activeTab?.label}"</button>
+                    </li>
+                  )}
                   <li>
                     <button onClick={handleClearAll} className="text-error">
                       Tout supprimer
