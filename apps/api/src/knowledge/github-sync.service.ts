@@ -29,7 +29,10 @@ const JUNK_NAME_PATTERN = /(^|[-_.])(devoir|tp\d*|test|exercice|exo\d*|essai|san
 // "tech-space" / "TechSpace" / "tech_space" all synced as separate items).
 function worthinessScore(repo: GithubFullRepoInfo): number {
   let score = 0;
-  if (repo.readmeExcerpt) score += 3;
+  // A bare "# repo-name" README (confirmed live) is technically non-empty
+  // but carries zero real information — only reward README length that
+  // could plausibly describe something.
+  if (repo.readmeExcerpt.length > 40) score += 3;
   score += Math.min(repo.dependencies.length, 10) * 0.5;
   score += repo.structureSignals.length * 2;
   if (repo.description) score += 1;
