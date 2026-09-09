@@ -89,7 +89,8 @@ export const useKnowledgeStore = create<Store>((set, get) => ({
     try {
       set({ syncing: true });
       const response = await apiClient.post('/api/knowledge/sync');
-      toast.success(`Synchronisation terminée : ${response.data.synced} dépôt(s)`);
+      const skippedNote = response.data.skipped ? ` (${response.data.skipped} écarté(s) : devoirs/doublons/vides)` : '';
+      toast.success(`Synchronisation terminée : ${response.data.synced} dépôt(s)${skippedNote}`);
       set({ syncing: false });
       await Promise.all([get().fetchStatus(), get().fetchItems()]);
     } catch (error: any) {

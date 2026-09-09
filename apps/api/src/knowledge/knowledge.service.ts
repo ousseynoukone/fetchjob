@@ -118,6 +118,15 @@ export class KnowledgeService {
     });
   }
 
+  // Removes GitHub-sourced items that no longer qualify as worthwhile
+  // (coursework, near-duplicate, near-empty scratch repos) — without this,
+  // a repo that passed an earlier, less strict sync would linger forever.
+  async pruneGithubItems(userId: string, keepExternalIds: string[]) {
+    await this.prisma.knowledgeItem.deleteMany({
+      where: { userId, source: 'github', externalId: { notIn: keepExternalIds } },
+    });
+  }
+
   // Ranks stored knowledge items against a job offer by keyword overlap and
   // returns the top few, formatted as prompt-ready text — replaces the
   // live, unauthenticated GitHub call previously made at CV-adaptation time.

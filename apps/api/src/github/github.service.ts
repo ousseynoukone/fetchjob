@@ -28,6 +28,9 @@ export interface GithubFullRepoInfo {
   // from the file tree — meaningful signal for repos with a thin or
   // boilerplate README.
   structureSignals: string[];
+  // Repo size in KB, as reported by GitHub — used downstream to help tell
+  // a real project apart from an empty/near-empty scratch repo.
+  sizeKb: number;
 }
 
 // Plain .slice(0, n) can land in the middle of a surrogate pair (READMEs
@@ -278,6 +281,7 @@ export class GithubService {
       readmeExcerpt: settled(readmes, idx, ''),
       dependencies: settled(dependencies, idx, [] as string[]),
       structureSignals: settled(structureSignals, idx, [] as string[]),
+      sizeKb: r.size || 0,
     }));
   }
 }
