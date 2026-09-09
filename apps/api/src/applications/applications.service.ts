@@ -163,6 +163,24 @@ export class ApplicationsService {
     const result = await this.prisma.application.deleteMany({ where });
     await this.decrementCampaignStats(toDelete);
 
+    // No status filter at all means "wipe everything" — a deliberate fresh
+    // start, so the scan/filter counters reset too, not just
+    // prepared/sent. A scoped delete (one tab/status) leaves them alone:
+    // offers filtered out along the way never became Application rows in
+    // the first place, so a partial delete has nothing to "give back" for
+    // those. Reset directly off the user's campaigns (not just whatever
+    // campaignIds happened to appear in `toDelete`) so this still works
+    // when the list was already empty and the stats were merely stale.
+    if (!status) {
+      const campaigns = await this.prisma.campaign.findMany({ where: { userId }, select: { id: true } });
+      if (campaigns.length) {
+        await this.prisma.campaign.updateMany({
+          where: { id: { in: campaigns.map((c) => c.id) } },
+          data: { totalOffersScanned: 0, totalOffersFiltered: 0 },
+        });
+      }
+    }
+
     return { deleted: result.count };
   }
 

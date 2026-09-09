@@ -7,13 +7,15 @@
 // or getting flagged) to automate the login form itself.
 //
 // Usage (from apps/api):
-//   npm run establish-session -- linkedin you@example.com yourpassword
+//   npm run establish-session -- linkedin you@example.com
 //   npm run establish-session -- indeed you@example.com
-//   npm run establish-session -- hellowork you@example.com yourpassword
-//   npm run establish-session -- france_travail you@example.com yourpassword
+//   npm run establish-session -- hellowork you@example.com
+//   npm run establish-session -- france_travail you@example.com
 //
 // Reads CREDENTIALS_ENCRYPTION_KEY and DATABASE_URL from .env.local
-// automatically — same values the API itself uses.
+// automatically — same values the API itself uses. Only `email` is stored
+// (as a display label) — there is no password field on PlatformCredential
+// anymore; login itself always happens in the real browser window below.
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env.local') });
 
@@ -43,10 +45,10 @@ function prompt(question) {
 }
 
 async function main() {
-  const [, , platform, email, password] = process.argv;
+  const [, , platform, email] = process.argv;
 
   if (!platform || !LOGIN_URLS[platform] || !email) {
-    console.error(`Usage: node establish-session.js <${Object.keys(LOGIN_URLS).join('|')}> <email> [password]`);
+    console.error(`Usage: node establish-session.js <${Object.keys(LOGIN_URLS).join('|')}> <email>`);
     process.exit(1);
   }
 
@@ -79,7 +81,6 @@ async function main() {
       where: { userId_platform: { userId: user.id, platform } },
       update: {
         emailEncrypted: encrypt(email, key),
-        passwordEncrypted: encrypt(password || '', key),
         sessionStateEncrypted: encrypt(JSON.stringify(storageState), key),
         lastLoginAt: new Date(),
         lastLoginError: null,
@@ -88,7 +89,6 @@ async function main() {
         userId: user.id,
         platform,
         emailEncrypted: encrypt(email, key),
-        passwordEncrypted: encrypt(password || '', key),
         sessionStateEncrypted: encrypt(JSON.stringify(storageState), key),
         lastLoginAt: new Date(),
       },
