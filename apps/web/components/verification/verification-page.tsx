@@ -40,8 +40,13 @@ export default function VerificationPage() {
   return (
     <AppShell>
       <div className="max-w-6xl mx-auto px-8 py-10">
-        <div className="flex justify-between items-center mb-8">
-          <div>
+        <div className="flex justify-between items-start gap-6 mb-8">
+          {/* min-w-0 lets this column actually shrink instead of forcing its
+              content's intrinsic width — without it, a flex item's default
+              min-width is "auto", so this long two-line paragraph overflowed
+              past its column and rendered underneath the button instead of
+              wrapping within the space actually available to it. */}
+          <div className="min-w-0">
             <h1 className="text-3xl font-semibold tracking-tight">Vérification</h1>
             <p className="text-base-content/50 mt-1">
               Revisite chaque candidature marquée « envoyée » sur LinkedIn, Indeed, France Travail et HelloWork pour
@@ -49,7 +54,7 @@ export default function VerificationPage() {
               moment de l'envoi.
             </p>
           </div>
-          <button className="btn btn-primary gap-2" disabled={running} onClick={runVerification}>
+          <button className="btn btn-primary gap-2 shrink-0" disabled={running} onClick={runVerification}>
             {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
             Lancer une vérification
           </button>

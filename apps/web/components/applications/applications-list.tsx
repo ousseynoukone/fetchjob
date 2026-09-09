@@ -73,8 +73,8 @@ export default function ApplicationsList() {
   return (
     <AppShell>
       <div className="max-w-6xl mx-auto px-8 py-10">
-        <div className="flex justify-between items-start mb-8">
-          <div>
+        <div className="flex justify-between items-start gap-6 mb-8">
+          <div className="min-w-0">
             <h1 className="text-3xl font-semibold tracking-tight">Candidatures</h1>
             <p className="text-base-content/50 mt-1">
               Candidatures préparées automatiquement par vos campagnes, ou ajoutées manuellement
