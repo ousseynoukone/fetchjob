@@ -28,7 +28,7 @@ export class FranceTravailApplier implements JobApplier {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await dismissCookieBanner(page);
 
-    const loginResult = await this.ensureLoggedIn(page, ctx);
+    const loginResult = await this.ensureLoggedIn(page);
     if (loginResult) return loginResult;
 
     const applyButton = page.getByRole('button', { name: /^postuler/i }).or(page.getByRole('link', { name: /^postuler/i })).first();
@@ -134,28 +134,15 @@ export class FranceTravailApplier implements JobApplier {
     };
   }
 
-  private async ensureLoggedIn(page: Page, ctx: ApplyContext): Promise<ApplyResult | null> {
+  private async ensureLoggedIn(page: Page): Promise<ApplyResult | null> {
     const identifiantField = page.locator('#identifiant, input[name="identifiant"]').first();
     const onLoginWall = await identifiantField.isVisible().catch(() => false);
-    if (!onLoginWall) return null;
+    if (!onLoginWall) return null; // already have a valid, reused session
 
-    if (!ctx.credential) {
-      return { success: false, note: 'Session France Travail expirée et aucun identifiant enregistré.' };
-    }
-
-    await identifiantField.fill(ctx.credential.email);
-    const passwordField = page.locator('#password, input[name="password"]').first();
-    await passwordField.fill(ctx.credential.password);
-    await page.getByRole('button', { name: /se connecter|connexion/i }).first().click();
-    await page.waitForTimeout(2000);
-
-    if (/captcha|challenge|verification/i.test(page.url())) {
-      return {
-        success: false,
-        note: 'France Travail demande une vérification de sécurité — connectez-vous manuellement une fois pour établir une session réutilisable.',
-      };
-    }
-
-    return null;
+    return {
+      success: false,
+      sessionExpired: true,
+      note: "Session France Travail absente ou expirée — exécutez `npm run establish-session -- france_travail votre@email.com` sur votre machine pour la rétablir.",
+    };
   }
 }

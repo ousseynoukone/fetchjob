@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
 import { CryptoService } from '../common/crypto.service';
 import { LocalUserService } from '../common/local-user.service';
+import { EmailService } from '../email/email.service';
 import { SUPPORTED_PLATFORMS, SupportedPlatform } from './dto/upsert-credential.dto';
 
 export interface PlatformCredentialStatus {
@@ -19,11 +20,11 @@ function maskEmail(email: string): string {
   return `${visible}***@${domain}`;
 }
 
-// Internal shape handed to the browser-automation layer — the only place
-// that ever sees a decrypted password. Never returned from a controller.
+// Internal shape handed to the browser-automation layer. No password is
+// ever stored — the session is established once by the user logging in
+// manually (see scripts/establish-session.js) and reused from here on.
 export interface DecryptedCredential {
   email: string;
-  password: string;
   sessionState: string | null;
 }
 
@@ -33,6 +34,7 @@ export class PlatformCredentialsService {
     private prisma: PrismaService,
     private crypto: CryptoService,
     private localUser: LocalUserService,
+    private email: EmailService,
   ) {}
 
   async listStatus(): Promise<PlatformCredentialStatus[]> {
@@ -47,35 +49,12 @@ export class PlatformCredentialsService {
       }
       return {
         platform,
-        configured: true,
+        configured: !!row.sessionStateEncrypted,
         email: maskEmail(this.crypto.decrypt(row.emailEncrypted)),
         lastLoginAt: row.lastLoginAt,
         lastLoginError: row.lastLoginError,
       };
     });
-  }
-
-  async upsert(platform: SupportedPlatform, email: string, password: string) {
-    const userId = await this.localUser.getDefaultUserId();
-
-    await this.prisma.platformCredential.upsert({
-      where: { userId_platform: { userId, platform } },
-      update: {
-        emailEncrypted: this.crypto.encrypt(email),
-        passwordEncrypted: this.crypto.encrypt(password),
-        // Credentials changed — any saved session is for the old account/password.
-        sessionStateEncrypted: null,
-        lastLoginError: null,
-      },
-      create: {
-        userId,
-        platform,
-        emailEncrypted: this.crypto.encrypt(email),
-        passwordEncrypted: this.crypto.encrypt(password),
-      },
-    });
-
-    return this.listStatus();
   }
 
   async remove(platform: SupportedPlatform) {
@@ -90,12 +69,11 @@ export class PlatformCredentialsService {
       where: { userId_platform: { userId, platform } },
     });
     if (!row) {
-      throw new NotFoundException(`Aucun identifiant enregistré pour ${platform}`);
+      throw new NotFoundException(`Aucune session enregistrée pour ${platform}`);
     }
 
     return {
       email: this.crypto.decrypt(row.emailEncrypted),
-      password: this.crypto.decrypt(row.passwordEncrypted),
       sessionState: row.sessionStateEncrypted ? this.crypto.decrypt(row.sessionStateEncrypted) : null,
     };
   }
@@ -107,10 +85,20 @@ export class PlatformCredentialsService {
     });
   }
 
-  async recordLoginError(userId: string, platform: SupportedPlatform, message: string) {
+  // Called when an applier finds itself back at a login wall with no
+  // working session — emails once per occurrence (auto-apply runs at most
+  // once a day in practice, so this doesn't spam) rather than silently
+  // leaving every candidature on that platform stuck in `needs_review`.
+  async recordSessionExpired(userId: string, platform: SupportedPlatform) {
     await this.prisma.platformCredential.update({
       where: { userId_platform: { userId, platform } },
-      data: { lastLoginError: message },
+      data: { lastLoginError: 'Session expirée', sessionStateEncrypted: null },
     });
+
+    await this.email.send(
+      `Session ${platform} expirée`,
+      `<p>La session ${platform} utilisée par l'auto-apply a expiré.</p>` +
+        `<p>Relancez <code>npm run establish-session -- ${platform} votre@email.com</code> depuis votre machine pour la rétablir.</p>`,
+    );
   }
 }

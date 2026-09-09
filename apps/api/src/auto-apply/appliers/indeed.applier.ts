@@ -8,6 +8,9 @@ import { dismissCookieBanner } from './ats-common';
 // "Indeed Apply" flow sometimes runs inline, sometimes in a popup on
 // smartapply.indeed.com — this handles both, and bails out to
 // `needs_review` at the first unrecognized step rather than guessing.
+// Login is NOT automated — Indeed only offers Google sign-in in practice,
+// which isn't something to script — only a session established manually
+// via `npm run establish-session -- indeed ...` is ever reused.
 // Verify against the real site with AUTO_APPLY_HEADLESS=false first.
 @Injectable()
 export class IndeedApplier implements JobApplier {
@@ -18,7 +21,7 @@ export class IndeedApplier implements JobApplier {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await dismissCookieBanner(page);
 
-    const loginResult = await this.ensureLoggedIn(page, ctx);
+    const loginResult = await this.ensureLoggedIn(page);
     if (loginResult) return loginResult;
 
     const applyButton = page.getByRole('button', { name: /apply now|postuler maintenant|postuler dès maintenant/i }).first();
@@ -102,33 +105,15 @@ export class IndeedApplier implements JobApplier {
     };
   }
 
-  private async ensureLoggedIn(page: Page, ctx: ApplyContext): Promise<ApplyResult | null> {
+  private async ensureLoggedIn(page: Page): Promise<ApplyResult | null> {
     const loginEmailField = page.locator('#login-email-input, input[name="__email"]').first();
     const onLoginWall = await loginEmailField.isVisible().catch(() => false);
-    if (!onLoginWall) return null;
+    if (!onLoginWall) return null; // already have a valid, reused session
 
-    if (!ctx.credential) {
-      return { success: false, note: 'Session Indeed expirée et aucun identifiant enregistré.' };
-    }
-
-    await loginEmailField.fill(ctx.credential.email);
-    await page.getByRole('button', { name: /continue|continuer/i }).first().click().catch(() => {});
-    await page.waitForTimeout(1000);
-
-    const passwordField = page.locator('#login-password-input, input[type="password"]').first();
-    if (await passwordField.isVisible().catch(() => false)) {
-      await passwordField.fill(ctx.credential.password);
-      await page.getByRole('button', { name: /sign in|se connecter/i }).first().click().catch(() => {});
-      await page.waitForTimeout(2000);
-    }
-
-    if (/verify|verification|captcha|challenge/i.test(page.url())) {
-      return {
-        success: false,
-        note: 'Indeed demande une vérification de sécurité (2FA/CAPTCHA) — connectez-vous manuellement une fois pour établir une session réutilisable.',
-      };
-    }
-
-    return null;
+    return {
+      success: false,
+      sessionExpired: true,
+      note: "Session Indeed absente ou expirée — exécutez `npm run establish-session -- indeed votre@email.com` sur votre machine pour la rétablir.",
+    };
   }
 }

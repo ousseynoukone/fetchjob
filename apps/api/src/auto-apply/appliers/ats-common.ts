@@ -32,3 +32,17 @@ export async function dismissCookieBanner(page: Page): Promise<void> {
     await page.waitForTimeout(300);
   }
 }
+
+// Confirmed live on HelloWork: a failed bot-detection check (FriendlyCaptcha)
+// shows up as inline text on the *same* URL ("Échec de la vérification —
+// Browser check failed, try a different browser"), not a URL change — a
+// URL-only check misses it entirely. Checked after every login attempt,
+// across every account-based applier; on a hit, the applier must abandon
+// and report `needs_review`, never try to work around it.
+const SECURITY_CHECK_TEXT = /échec de la vérification|browser check failed|verify you are human|unusual activity|friendlycaptcha|hcaptcha|recaptcha|security check|vérification supplémentaire|prouvez que vous êtes humain/i;
+
+export async function hasSecurityCheck(page: Page): Promise<boolean> {
+  if (SECURITY_CHECK_TEXT.test(page.url())) return true;
+  const bodyText = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
+  return SECURITY_CHECK_TEXT.test(bodyText);
+}

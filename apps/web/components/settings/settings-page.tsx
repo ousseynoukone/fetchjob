@@ -37,65 +37,34 @@ const PLATFORM_LABELS: Record<SupportedPlatform, string> = {
 };
 
 function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
-  const { items, saving, save, remove } = usePlatformCredentialsStore();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const { items, remove } = usePlatformCredentialsStore();
   const item = items.find((i) => i.platform === platform);
-
-  const handleSave = async () => {
-    if (!email.trim() || !password.trim()) return;
-    await save(platform, email.trim(), password);
-    setEmail('');
-    setPassword('');
-  };
 
   return (
     <div className="border border-base-300 rounded-xl p-4">
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between mb-1">
         <span className="font-medium">{PLATFORM_LABELS[platform]}</span>
         {item?.configured ? (
           <div className="flex items-center gap-2">
             <span className="badge badge-success badge-sm gap-1">
               <CheckCircle2 className="w-3 h-3" /> {item.email}
             </span>
-            <button className="btn btn-ghost btn-xs text-error" onClick={() => remove(platform)} title="Supprimer">
+            <button className="btn btn-ghost btn-xs text-error" onClick={() => remove(platform)} title="Supprimer la session">
               <Trash2 className="w-3.5 h-3.5" />
             </button>
           </div>
         ) : (
           <span className="badge badge-ghost badge-sm gap-1">
-            <XCircle className="w-3 h-3" /> Non configuré
+            <XCircle className="w-3 h-3" /> Session non établie
           </span>
         )}
       </div>
-      {item?.lastLoginError && (
-        <p className="text-xs text-error mb-2">Dernière erreur de connexion : {item.lastLoginError}</p>
+      {item?.lastLoginError && <p className="text-xs text-error mb-1">{item.lastLoginError}</p>}
+      {!item?.configured && (
+        <p className="text-xs text-base-content/40">
+          Depuis votre machine : <code>npm run establish-session -- {platform} votre@email.com</code>
+        </p>
       )}
-      <div className="grid grid-cols-2 gap-2">
-        <input
-          type="email"
-          placeholder="email"
-          className="input input-bordered input-sm"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          autoComplete="off"
-        />
-        <input
-          type="password"
-          placeholder="mot de passe"
-          className="input input-bordered input-sm"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          autoComplete="off"
-        />
-      </div>
-      <button
-        className="btn btn-outline btn-xs mt-2"
-        onClick={handleSave}
-        disabled={saving || !email.trim() || !password.trim()}
-      >
-        {item?.configured ? 'Remplacer' : 'Enregistrer'}
-      </button>
     </div>
   );
 }
@@ -304,11 +273,10 @@ export default function SettingsPage() {
                 <h2 className="font-semibold">Comptes externes (auto-apply)</h2>
               </div>
               <p className="text-xs text-base-content/40 mb-4">
-                Identifiants utilisés par le bot pour se connecter et postuler à votre place en mode
-                auto-apply. Stockés chiffrés. LinkedIn et Indeed interdisent l'automatisation dans leurs
-                CGU — un usage abusif peut entraîner une suspension de compte. En cas de CAPTCHA ou de
-                vérification en deux étapes, le bot abandonne la candidature (statut "à vérifier") plutôt
-                que de tenter de la contourner.
+                Aucun mot de passe n'est stocké ici. Le bot réutilise une session que vous établissez
+                vous-même en vous connectant une fois dans un vrai navigateur (script local, voir
+                ci-dessous) — il ne tente jamais d'automatiser la connexion. Quand la session expire,
+                vous recevez un email pour la rétablir.
               </p>
               <div className="space-y-3">
                 <PlatformCredentialRow platform="linkedin" />

@@ -15,16 +15,16 @@ export interface PlatformCredentialStatus {
 interface Store {
   items: PlatformCredentialStatus[];
   loading: boolean;
-  saving: boolean;
   fetchStatus: () => Promise<void>;
-  save: (platform: SupportedPlatform, email: string, password: string) => Promise<void>;
   remove: (platform: SupportedPlatform) => Promise<void>;
 }
 
+// Sessions are established out-of-band via `npm run establish-session --
+// <platform> <email>` (see apps/api/scripts/establish-session.js) — there
+// is no form here to submit credentials through, only status + revoke.
 export const usePlatformCredentialsStore = create<Store>((set) => ({
   items: [],
   loading: false,
-  saving: false,
 
   fetchStatus: async () => {
     try {
@@ -33,19 +33,7 @@ export const usePlatformCredentialsStore = create<Store>((set) => ({
       set({ items: response.data, loading: false });
     } catch (error: any) {
       set({ loading: false });
-      toast.error(error.response?.data?.message || 'Échec du chargement des identifiants');
-    }
-  },
-
-  save: async (platform, email, password) => {
-    try {
-      set({ saving: true });
-      const response = await apiClient.put('/api/parametres/identifiants', { platform, email, password });
-      set({ items: response.data, saving: false });
-      toast.success('Identifiants enregistrés');
-    } catch (error: any) {
-      set({ saving: false });
-      toast.error(error.response?.data?.message || 'Échec de l\'enregistrement des identifiants');
+      toast.error(error.response?.data?.message || 'Échec du chargement des sessions');
     }
   },
 
@@ -53,7 +41,7 @@ export const usePlatformCredentialsStore = create<Store>((set) => ({
     try {
       const response = await apiClient.delete(`/api/parametres/identifiants/${platform}`);
       set({ items: response.data });
-      toast.success('Identifiants supprimés');
+      toast.success('Session supprimée');
     } catch (error: any) {
       toast.error(error.response?.data?.message || 'Échec de la suppression');
     }

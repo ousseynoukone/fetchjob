@@ -4,15 +4,14 @@ import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
 import { dismissCookieBanner } from './ats-common';
 
-const LOGIN_URL = 'https://www.linkedin.com/login';
-const SECURITY_CHECK_MARKERS = /checkpoint|challenge|two-step|verification|puzzle|captcha/i;
-
 // Best-effort automation of LinkedIn's own UI — LinkedIn does not offer an
-// "apply on my behalf" API, and its DOM/selectors change over time, so this
-// is written defensively: at every step where the expected element isn't
-// found, or a security checkpoint appears, it stops and returns
-// `needs_review` rather than guessing further. Verify against the real site
-// with AUTO_APPLY_HEADLESS=false before relying on it for real submissions.
+// "apply on my behalf" API. Logging in is NOT automated: LinkedIn actively
+// hardens its login form against automation (confirmed live — it serves a
+// variant with a deliberately hidden input), so this only ever reuses a
+// session established manually via `npm run establish-session -- linkedin
+// ...`. If that session is missing or has expired, it stops and emails the
+// user rather than attempting the login form itself. Verify against the
+// real site with AUTO_APPLY_HEADLESS=false before relying on it further.
 @Injectable()
 export class LinkedInApplier implements JobApplier {
   readonly credentialPlatform = 'linkedin';
@@ -22,7 +21,7 @@ export class LinkedInApplier implements JobApplier {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await dismissCookieBanner(page);
 
-    const loginResult = await this.ensureLoggedIn(page, ctx);
+    const loginResult = await this.ensureLoggedIn(page);
     if (loginResult) return loginResult;
 
     // Login may have redirected away from the job posting — go back to it.
@@ -108,32 +107,18 @@ export class LinkedInApplier implements JobApplier {
     };
   }
 
-  private async ensureLoggedIn(page: Page, ctx: ApplyContext): Promise<ApplyResult | null> {
+  private async ensureLoggedIn(page: Page): Promise<ApplyResult | null> {
     const onLoginWall =
       page.url().includes('/login') ||
       page.url().includes('/uas/login') ||
       (await page.locator('#username').isVisible().catch(() => false));
 
-    if (!onLoginWall) return null; // already have a valid session
+    if (!onLoginWall) return null; // already have a valid, reused session
 
-    if (!ctx.credential) {
-      return { success: false, note: 'Session LinkedIn expirée et aucun identifiant enregistré.' };
-    }
-
-    await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await dismissCookieBanner(page);
-    await page.locator('#username').fill(ctx.credential.email);
-    await page.locator('#password').fill(ctx.credential.password);
-    await page.getByRole('button', { name: /sign in|se connecter/i }).click();
-    await page.waitForTimeout(2500);
-
-    if (SECURITY_CHECK_MARKERS.test(page.url())) {
-      return {
-        success: false,
-        note: 'LinkedIn demande une vérification de sécurité (2FA/CAPTCHA) — connectez-vous manuellement une fois pour établir une session réutilisable.',
-      };
-    }
-
-    return null;
+    return {
+      success: false,
+      sessionExpired: true,
+      note: "Session LinkedIn absente ou expirée — exécutez `npm run establish-session -- linkedin votre@email.com` sur votre machine pour la rétablir.",
+    };
   }
 }

@@ -78,13 +78,18 @@ model CustomQuestion {
 // the auto-apply browser automation. Distinct from `LinkedAccount`, which is
 // for OAuth token flows — job platforms don't expose an "apply on my behalf"
 // API, so the bot needs real account credentials to drive a browser session.
+// A reusable login session for a job platform, established once by the
+// user logging in manually in a real browser (see scripts/establish-
+// session.js — solving any CAPTCHA/2FA/Google login themselves) rather
+// than the bot attempting to automate the login form itself, which proved
+// unreliable and risks flagging the account. `emailEncrypted` is kept only
+// for display ("connecté en tant que ..."); there is no password on file.
 model PlatformCredential {
   id                    String    @id @default(cuid())
   userId                String
-  platform              String // linkedin, indeed
+  platform              String // linkedin, indeed, hellowork, france_travail
   emailEncrypted        String    @db.Text
-  passwordEncrypted     String    @db.Text
-  sessionStateEncrypted String?   @db.Text // Playwright storageState (cookies), reused to avoid re-login on every run
+  sessionStateEncrypted String?   @db.Text // Playwright storageState (cookies)
   lastLoginAt           DateTime?
   lastLoginError        String?
 

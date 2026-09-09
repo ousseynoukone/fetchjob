@@ -12,10 +12,6 @@ export interface ApplyContext {
   cv: CVData;
   cvPdfPath: string;
   coverLetter: string | null;
-  // Present only when this applier's `credentialPlatform` has a saved
-  // PlatformCredential — the applier is responsible for detecting whether
-  // it's already logged in (session reused) before attempting to fill this.
-  credential: { email: string; password: string } | null;
   // Custom/screening questions answered once before (see
   // CustomQuestionsService), keyed by normalized label text — appliers call
   // `fillKnownFields(page, knownAnswers)` once the form is visible so a
@@ -33,11 +29,16 @@ export interface ApplyResult {
   // Reason the candidature could not be completed (CAPTCHA, 2FA, form not
   // recognized, external redirect...) — always set when success is false.
   note?: string;
+  // Set when the applier found itself back at a login wall with no working
+  // session — triggers an email alert so the user knows to re-run
+  // `npm run establish-session -- <platform> ...` rather than silently
+  // leaving every candidature on that platform stuck in `needs_review`.
+  sessionExpired?: boolean;
 }
 
 export interface JobApplier {
-  // Credential platform key this applier needs from PlatformCredential
-  // (e.g. 'linkedin'), or null if it never logs in (generic fallback).
+  // Credential platform key this applier needs a saved session for (e.g.
+  // 'linkedin'), or null if it never logs in (generic/ATS fallback).
   readonly credentialPlatform: string | null;
   apply(page: Page, ctx: ApplyContext): Promise<ApplyResult>;
 }

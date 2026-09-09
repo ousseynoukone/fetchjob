@@ -204,16 +204,13 @@ export class AutoApplyService {
     const { applier, platformKey } = this.getApplier(application.jobOffer.source, application.sourceUrl, atsEnabled);
     const platform = applier.credentialPlatform as SupportedPlatform | null;
 
-    let credential: { email: string; password: string } | null = null;
     let sessionState: string | null = null;
     if (platform && (SUPPORTED_PLATFORMS as readonly string[]).includes(platform)) {
       try {
-        const decrypted = await this.credentials.getDecrypted(userId, platform);
-        credential = { email: decrypted.email, password: decrypted.password };
-        sessionState = decrypted.sessionState;
+        sessionState = (await this.credentials.getDecrypted(userId, platform)).sessionState;
       } catch {
-        // No credential saved — the applier will hit its login wall and
-        // report a clear "no credential" needs_review note on its own.
+        // No session established yet — the applier will hit its login wall
+        // and report a clear "session expired/missing" note on its own.
       }
     }
 
@@ -235,7 +232,6 @@ export class AutoApplyService {
         cv,
         cvPdfPath,
         coverLetter: application.coverLetter,
-        credential,
         knownAnswers,
         reportUnknownFields: (fields) =>
           this.customQuestions.recordUnknown(
@@ -253,11 +249,17 @@ export class AutoApplyService {
       }
 
       if (platform) {
-        try {
-          const newState = await context.storageState();
-          await this.credentials.saveSessionState(userId, platform, JSON.stringify(newState));
-        } catch (error: any) {
-          this.logger.warn(`Failed to persist session state for ${platform}: ${error.message}`);
+        if (result.sessionExpired) {
+          await this.credentials.recordSessionExpired(userId, platform).catch((error: any) => {
+            this.logger.warn(`Failed to record expired session for ${platform}: ${error.message}`);
+          });
+        } else {
+          try {
+            const newState = await context.storageState();
+            await this.credentials.saveSessionState(userId, platform, JSON.stringify(newState));
+          } catch (error: any) {
+            this.logger.warn(`Failed to persist session state for ${platform}: ${error.message}`);
+          }
         }
       }
 

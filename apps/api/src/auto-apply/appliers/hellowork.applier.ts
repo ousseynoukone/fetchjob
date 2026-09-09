@@ -4,11 +4,12 @@ import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
 import { dismissCookieBanner } from './ats-common';
 
-// Same best-effort/defensive posture as the other account-based appliers
-// (LinkedIn, Indeed, France Travail): HelloWork's own "Postuler" flow,
-// driven generically and abandoned in favor of `needs_review` at the first
-// unrecognized step. Verify against the real site with
-// AUTO_APPLY_HEADLESS=false before relying on it for real submissions.
+// Same best-effort/defensive posture as the other account-based appliers.
+// Login is NOT automated — HelloWork runs a real bot-detection check
+// (FriendlyCaptcha) that failed outright against a headless browser in
+// live testing ("Échec de la vérification — Browser check failed"), so
+// this only ever reuses a session established manually via
+// `npm run establish-session -- hellowork ...`.
 @Injectable()
 export class HelloWorkApplier implements JobApplier {
   readonly credentialPlatform = 'hellowork';
@@ -18,7 +19,7 @@ export class HelloWorkApplier implements JobApplier {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await dismissCookieBanner(page);
 
-    const loginResult = await this.ensureLoggedIn(page, ctx);
+    const loginResult = await this.ensureLoggedIn(page);
     if (loginResult) return loginResult;
 
     const applyButton = page.getByRole('button', { name: /^postuler/i }).or(page.getByRole('link', { name: /^postuler/i })).first();
@@ -108,28 +109,18 @@ export class HelloWorkApplier implements JobApplier {
     };
   }
 
-  private async ensureLoggedIn(page: Page, ctx: ApplyContext): Promise<ApplyResult | null> {
-    const emailField = page.locator('input[type="email"], #email').first();
+  private async ensureLoggedIn(page: Page): Promise<ApplyResult | null> {
+    // HelloWork's login page has BOTH a signup form (input[name="email"])
+    // and a login form (input[name="email2"]) in the same DOM — confirmed
+    // live, kept here since the login-wall check reuses the same field.
+    const emailField = page.locator('input[name="email2"]').first();
     const onLoginWall = await emailField.isVisible().catch(() => false);
-    if (!onLoginWall) return null;
+    if (!onLoginWall) return null; // already have a valid, reused session
 
-    if (!ctx.credential) {
-      return { success: false, note: 'Session HelloWork expirée et aucun identifiant enregistré.' };
-    }
-
-    await emailField.fill(ctx.credential.email);
-    const passwordField = page.locator('input[type="password"], #password').first();
-    await passwordField.fill(ctx.credential.password);
-    await page.getByRole('button', { name: /se connecter|connexion/i }).first().click();
-    await page.waitForTimeout(2000);
-
-    if (/captcha|challenge|verification/i.test(page.url())) {
-      return {
-        success: false,
-        note: 'HelloWork demande une vérification de sécurité — connectez-vous manuellement une fois pour établir une session réutilisable.',
-      };
-    }
-
-    return null;
+    return {
+      success: false,
+      sessionExpired: true,
+      note: "Session HelloWork absente ou expirée — exécutez `npm run establish-session -- hellowork votre@email.com` sur votre machine pour la rétablir.",
+    };
   }
 }
