@@ -185,6 +185,24 @@ function sanitizeSkillGroups(original: any[], adapted: any, groundingTextNorm: s
   return validated.length ? validated : original;
 }
 
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// A raw substring check falsely matched short labels inside unrelated words
+// — confirmed live: the skill "TS" was ranked as offer-relevant for a
+// Java/Angular posting that never mentions TypeScript at all, purely because
+// "TS" is a substring of "Craftsmanship" in the offer text. Word-boundary
+// matching (treating any non-alphanumeric character, including "#"/"."
+// already inside labels like "C#"/".Net", as a boundary) avoids that without
+// needing a length cutoff that would also exclude legitimately short labels.
+function isSkillMentioned(offerTextNorm: string, item: string): boolean {
+  const normalizedItem = normalizeForCompare(item).trim();
+  if (!normalizedItem) return false;
+  const pattern = new RegExp(`(^|[^a-z0-9])${escapeRegExp(normalizedItem)}([^a-z0-9]|$)`, 'i');
+  return pattern.test(offerTextNorm);
+}
+
 // Deterministic, not left to the model: moves items whose name appears in
 // the offer's own text to the front of each group (stable otherwise) — a
 // pure reorder of an already-validated set, so it carries zero fabrication
@@ -193,8 +211,8 @@ function reorderSkillsForOffer(skillGroups: any[], offerTextNorm: string): any[]
   return (skillGroups || []).map((group) => ({
     ...group,
     items: [...(group.items || [])].sort((a: string, b: string) => {
-      const aRelevant = offerTextNorm.includes(normalizeForCompare(a)) ? 0 : 1;
-      const bRelevant = offerTextNorm.includes(normalizeForCompare(b)) ? 0 : 1;
+      const aRelevant = isSkillMentioned(offerTextNorm, a) ? 0 : 1;
+      const bRelevant = isSkillMentioned(offerTextNorm, b) ? 0 : 1;
       return aRelevant - bRelevant;
     }),
   }));
