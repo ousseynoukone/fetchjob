@@ -213,47 +213,61 @@ export class CampaignService {
     return perf;
   }
 
-  // Caps how many candidatures a single run is allowed to prepare from each
-  // source. Without this, one prolific source processed first exhausts the
-  // whole day's quota before a later, more productive source is ever tried —
-  // the loop below has no other point where a source's own budget runs out.
-  // A source proven (over enough attempts) to never convert is knocked down
-  // to a single probe per run; what it gives up is handed to the sources that
-  // do convert, evenly.
-  private async computeSourceQuotas(
-    campaignId: string,
-    sources: string[],
-    dailyLimit: number,
-  ): Promise<{ quotas: Map<string, number>; condemned: string[] }> {
-    const perf = await this.performanceBySource(campaignId);
-    const baseShare = Math.max(1, Math.ceil(dailyLimit / Math.max(sources.length, 1)));
+  // How many candidatures have already been prepared today for each source,
+  // across every run — a manual "Lancer" on top of the scheduled run must
+  // not let a source blow past its own daily limit just because the count
+  // resets per call instead of per day.
+  private async preparedTodayBySource(campaignId: string): Promise<Map<string, number>> {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
 
-    const quotas = new Map<string, number>();
+    const rows = await this.prisma.application.findMany({
+      where: { campaignId, createdAt: { gte: startOfDay } },
+      select: { jobOffer: { select: { source: true } } },
+    });
+
+    const counts = new Map<string, number>();
+    for (const row of rows) {
+      counts.set(row.jobOffer.source, (counts.get(row.jobOffer.source) || 0) + 1);
+    }
+    return counts;
+  }
+
+  // Each source's own remaining budget for today — completely independent
+  // of every other source. A source that exhausts its own limit never
+  // touches what any other source has left, and a slow/unproductive source
+  // can no longer starve a fast one just by being scanned first (the old
+  // shared-pool model this replaced). A source proven (over enough
+  // attempts, all-time) to never convert is capped at one probe per day
+  // regardless of its configured limit: platforms change (an anti-bot
+  // lifts, a redesign reopens a form), and giving up on them for good would
+  // mean never noticing.
+  private async computeSourceBudgets(
+    campaign: { id: string; maxApplicationsPerDay: number; sourceDailyLimits: unknown },
+    sources: string[],
+  ): Promise<{ remaining: Map<string, number>; condemned: string[] }> {
+    const [perf, preparedToday] = await Promise.all([
+      this.performanceBySource(campaign.id),
+      this.preparedTodayBySource(campaign.id),
+    ]);
+    const overrides = (campaign.sourceDailyLimits || {}) as Record<string, number>;
+
+    const remaining = new Map<string, number>();
     const condemned: string[] = [];
-    let freed = 0;
 
     for (const source of sources) {
       const stat = perf.get(source) || { essais: 0, succes: 0 };
       const isCondemned = stat.essais >= MIN_TRIALS_BEFORE_JUDGING && stat.succes === 0;
-      if (isCondemned) {
-        condemned.push(source);
-        freed += Math.max(0, baseShare - PROBE_QUOTA);
-        quotas.set(source, PROBE_QUOTA);
-      } else {
-        quotas.set(source, baseShare);
-      }
+      if (isCondemned) condemned.push(source);
+
+      const configuredLimit = Number(overrides[source]);
+      const dailyLimit = configuredLimit > 0 ? configuredLimit : campaign.maxApplicationsPerDay;
+      const effectiveLimit = isCondemned ? Math.min(dailyLimit, PROBE_QUOTA) : dailyLimit;
+      const alreadyToday = preparedToday.get(source) || 0;
+      remaining.set(source, Math.max(0, effectiveLimit - alreadyToday));
     }
 
-    const productive = sources.filter((s) => !condemned.includes(s));
-    if (freed > 0 && productive.length) {
-      const share = Math.floor(freed / productive.length);
-      const remainder = freed - share * productive.length;
-      productive.forEach((source, idx) => {
-        quotas.set(source, (quotas.get(source) || 0) + share + (idx < remainder ? 1 : 0));
-      });
-    }
-
-    return { quotas, condemned };
+    return { remaining, condemned };
   }
 
   private async executeRun(campaign: any, runId: string, userId: string) {
@@ -279,9 +293,9 @@ export class CampaignService {
       // Each keyword is run as its own separate search query (never ANDed
       // together — a query built from the full list would match nothing).
       // Capped at 50 as a safety net against an accidentally huge keyword
-      // list; the query-outer loop below already stops issuing further
-      // searches as soon as maxApplicationsPerDay is reached, so this cap
-      // is about guarding against degenerate input, not API-call budget.
+      // list; the loop below already stops searching a given source once
+      // its own daily budget runs out, so this cap is about guarding
+      // against degenerate input, not API-call budget.
       const searchQueries = targetKeywords.length
         ? targetKeywords.slice(0, 50)
         : campaign.jobTitle
@@ -294,34 +308,27 @@ export class CampaignService {
         return;
       }
 
-      // Redirects the day's quota away from sources that consume it without
-      // ever converting (a platform's anti-bot blocking every attempt, or an
-      // aggregator whose postings all turn out to redirect elsewhere) —
-      // without this, a source processed early can quietly starve every
-      // other source of budget it isn't actually using productively.
-      const { quotas: sourceQuotas, condemned } = await this.computeSourceQuotas(
-        campaign.id,
-        campaign.sources as string[],
-        campaign.maxApplicationsPerDay,
-      );
+      // Each source's daily limit is its own — see computeSourceBudgets.
+      // There is no shared/global cap across sources anymore: a source with
+      // budget left keeps going regardless of how much any other source has
+      // already used today.
+      const { remaining: sourceBudgets, condemned } = await this.computeSourceBudgets(campaign, campaign.sources as string[]);
       if (condemned.length) {
         await this.appendLog(
           runId,
-          `Quota réduit à ${PROBE_QUOTA} sonde pour : ${condemned.join(', ')} (0 succès sur au moins ${MIN_TRIALS_BEFORE_JUDGING} essais) — repris par les sources qui convertissent.`,
+          `Limite réduite à ${PROBE_QUOTA} sonde/jour pour : ${condemned.join(', ')} (0 succès sur au moins ${MIN_TRIALS_BEFORE_JUDGING} essais).`,
         );
       }
       const preparedPerSource = new Map<string, number>();
 
       // Query-outer, source-inner: each query is tried across every source
       // before moving to the next query. Looping sources-outer would let the
-      // first source alone exhaust the daily cap, so later sources (and
-      // later queries) would never even get tried in a given run.
+      // first source alone exhaust its budget before later sources (and
+      // later queries) are even tried in a given run.
       for (const query of searchQueries) {
         for (const source of campaign.sources as string[]) {
-          if (applicationsPrepared >= campaign.maxApplicationsPerDay) break;
-
-          const sourceQuota = sourceQuotas.get(source) ?? campaign.maxApplicationsPerDay;
-          if ((preparedPerSource.get(source) || 0) >= sourceQuota) continue;
+          const sourceBudget = sourceBudgets.get(source) ?? campaign.maxApplicationsPerDay;
+          if ((preparedPerSource.get(source) || 0) >= sourceBudget) continue;
 
           await this.appendLog(runId, `Recherche "${query}" sur ${source}...`);
 
@@ -335,8 +342,7 @@ export class CampaignService {
           await this.appendLog(runId, `${offers.length} offre(s) trouvée(s) sur ${source} pour "${query}"`);
 
           for (const rawOffer of offers) {
-            if (applicationsPrepared >= campaign.maxApplicationsPerDay) break;
-            if ((preparedPerSource.get(source) || 0) >= sourceQuota) break;
+            if ((preparedPerSource.get(source) || 0) >= sourceBudget) break;
 
             if (!isWithinIdf(rawOffer.source, rawOffer.location, campaign.location)) {
               offersFiltered++;

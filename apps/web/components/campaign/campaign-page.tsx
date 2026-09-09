@@ -47,6 +47,7 @@ export default function CampaignPage() {
     minMatchScore: 60,
     actionMode: 'prepare_only',
     sources: [] as string[],
+    sourceDailyLimits: {} as Record<string, number>,
     scheduleEnabled: false,
     scheduleHour: 8,
     autoApplyAts: true,
@@ -77,6 +78,7 @@ export default function CampaignPage() {
       minMatchScore: campaign.minMatchScore,
       actionMode: campaign.actionMode,
       sources: campaign.sources || [],
+      sourceDailyLimits: campaign.sourceDailyLimits || {},
       scheduleEnabled: campaign.scheduleEnabled ?? false,
       scheduleHour: campaign.scheduleHour ?? 8,
       autoApplyAts: campaign.autoApplyAts ?? true,
@@ -135,6 +137,7 @@ export default function CampaignPage() {
       minMatchScore: Number(form.minMatchScore),
       actionMode: form.actionMode as 'prepare_only' | 'auto_apply',
       sources: form.sources,
+      sourceDailyLimits: form.sourceDailyLimits,
       scheduleEnabled: form.scheduleEnabled,
       scheduleHour: Number(form.scheduleHour),
       autoApplyAts: form.autoApplyAts,
@@ -284,6 +287,39 @@ export default function CampaignPage() {
               <p className="text-xs text-base-content/40 mt-2">
                 Les offres sont récupérées automatiquement depuis les plateformes sélectionnées (LinkedIn, HelloWork, Indeed, France Travail, Adzuna, etc.).
               </p>
+
+              {form.sources.length > 0 && (
+                <div className="mt-3 space-y-1.5">
+                  <p className="text-xs text-base-content/40">
+                    Limite quotidienne par plateforme (indépendante d'une plateforme à l'autre — sans valeur, la limite par défaut ci-dessous s'applique) :
+                  </p>
+                  {form.sources.map((sourceId) => {
+                    const label = SOURCES.find((s) => s.id === sourceId)?.label || sourceId;
+                    return (
+                      <div key={sourceId} className="flex items-center justify-between gap-3 text-sm">
+                        <span className="text-base-content/70">{label}</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={100}
+                          placeholder={String(form.maxApplicationsPerDay)}
+                          className="input input-bordered input-xs w-20 text-right"
+                          value={form.sourceDailyLimits[sourceId] ?? ''}
+                          onChange={(e) => {
+                            const value = e.target.value ? Number(e.target.value) : undefined;
+                            setForm((f) => {
+                              const next = { ...f.sourceDailyLimits };
+                              if (value) next[sourceId] = value;
+                              else delete next[sourceId];
+                              return { ...f, sourceDailyLimits: next };
+                            });
+                          }}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </Field>
 
             <div className="grid grid-cols-2 gap-4">
@@ -297,7 +333,7 @@ export default function CampaignPage() {
                   onChange={(e) => setForm((f) => ({ ...f, minMatchScore: Number(e.target.value) }))}
                 />
               </Field>
-              <Field label="Max candidatures / jour">
+              <Field label="Limite par défaut / jour / plateforme">
                 <input
                   type="number"
                   min={1}

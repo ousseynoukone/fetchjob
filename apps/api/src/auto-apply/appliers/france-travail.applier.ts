@@ -4,27 +4,18 @@ import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
 import { dismissCookieBanner } from './ats-common';
 
-const FRANCE_TRAVAIL_DOMAIN = 'francetravail.fr';
-
 // France Travail aggregates postings from many partner sites — a large
 // share of `sourceUrl`s point at the employer's own external site
 // (`origineOffre.urlOrigine`, see ScrapingService), not at France Travail
-// itself. Only offers whose URL is actually on francetravail.fr have a
-// candidature form this applier can drive; everything else is exactly the
-// "unknown external form" case, handled the same as GenericRedirectApplier.
+// itself. This applier is only ever invoked for offers actually hosted on
+// francetravail.fr (see AutoApplyService's matchesOwnDomain) — everything
+// else routes straight to GenericApplier's best-effort form-filling instead.
 @Injectable()
 export class FranceTravailApplier implements JobApplier {
   readonly credentialPlatform = 'france_travail';
   private readonly logger = new Logger(FranceTravailApplier.name);
 
   async apply(page: Page, ctx: ApplyContext): Promise<ApplyResult> {
-    if (!ctx.application.sourceUrl.includes(FRANCE_TRAVAIL_DOMAIN)) {
-      return {
-        success: false,
-        note: `Offre agrégée par France Travail mais hébergée ailleurs — postulez manuellement via ${ctx.application.sourceUrl}`,
-      };
-    }
-
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await dismissCookieBanner(page);
 

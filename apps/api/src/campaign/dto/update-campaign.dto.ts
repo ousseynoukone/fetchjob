@@ -1,4 +1,4 @@
-import { IsArray, IsBoolean, IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsArray, IsBoolean, IsIn, IsInt, IsObject, IsOptional, IsString, Max, Min } from 'class-validator';
 
 export class UpdateCampaignDto {
   @IsString()
@@ -54,6 +54,12 @@ export class UpdateCampaignDto {
   @IsArray()
   @IsOptional()
   sources?: string[];
+
+  // Independent daily cap per platform, e.g. {"linkedin": 5, "indeed": 10} —
+  // a source with no entry here falls back to maxApplicationsPerDay.
+  @IsObject()
+  @IsOptional()
+  sourceDailyLimits?: Record<string, number>;
 
   @IsBoolean()
   @IsOptional()

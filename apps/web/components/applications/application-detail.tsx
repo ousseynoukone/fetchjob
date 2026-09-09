@@ -208,6 +208,19 @@ export default function ApplicationDetail({ id }: { id: string }) {
             </div>
           )}
 
+          {current.screenshotTakenAt && (
+            <details className="mt-5">
+              <summary className="cursor-pointer text-sm text-base-content/60 hover:text-base-content">
+                Capture de la tentative ({formatDateTime(current.screenshotTakenAt)})
+              </summary>
+              <img
+                src={`${apiClient.defaults.baseURL}/api/candidatures/${id}/screenshot`}
+                alt="Capture d'écran de la page au moment de la candidature"
+                className="mt-3 rounded-lg border border-base-300 max-w-full"
+              />
+            </details>
+          )}
+
           <div className="flex flex-wrap gap-2 mt-5">
             <a href={current.sourceUrl} target="_blank" rel="noopener noreferrer" className="btn btn-primary btn-sm gap-2">
               <ExternalLink className="w-4 h-4" /> Postuler

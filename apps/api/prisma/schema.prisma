@@ -2,7 +2,8 @@
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["omitApi"]
 }
 
 datasource db {
@@ -195,10 +196,20 @@ model Campaign {
   // "Tech Lead" or "Lead Developer".
   seniorityKeywords String[] @default(["senior", "lead", "staff", "principal", "architecte", "architect", "confirme", "expert", "manager", "directeur", "director"])
 
+  // Fallback per-platform daily cap for any source with no entry in
+  // sourceDailyLimits below — not a shared/global pool across sources
+  // anymore (a source that maxes out its own limit never eats into another
+  // source's budget, and vice versa).
   maxApplicationsPerDay Int      @default(10)
   minMatchScore         Int      @default(70)
   actionMode            String   @default("prepare_only") // prepare_only, auto_apply
   sources               String[] // linkedin, france_travail, adzuna, indeed
+
+  // Independent daily cap per platform, e.g. {"linkedin": 5, "indeed": 10} —
+  // a source not listed here falls back to maxApplicationsPerDay. Limits are
+  // per calendar day and per source: never redistributed to or shared with
+  // any other source.
+  sourceDailyLimits Json @default("{}")
 
   // Whether auto-apply is allowed to submit on an ATS detected by URL
   // (Greenhouse/Lever/Workday/SmartRecruiters), independently of the
@@ -341,6 +352,15 @@ model Application {
   // check comes back negative; verificationNote explains why for manual review.
   verifiedAt       DateTime?
   verificationNote String?   @db.Text
+
+  // Captured right after every auto-apply attempt, success or failure alike
+  // — visible proof of what the page actually showed (a confirmation
+  // message, a CAPTCHA, a validation error), since a headless run otherwise
+  // leaves no trace anyone can actually look at. Excluded from ordinary
+  // list/detail queries (Prisma `omit`) and served only via its own binary
+  // endpoint, so it never bloats a JSON response.
+  screenshot        Bytes?
+  screenshotTakenAt DateTime?
 
   appliedAt DateTime?
   createdAt DateTime  @default(now())

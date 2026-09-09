@@ -1,4 +1,4 @@
-import { Controller, Get, Patch, Post, Delete, Param, Query, Body, Res } from '@nestjs/common';
+import { Controller, Get, Patch, Post, Delete, Param, Query, Body, Res, NotFoundException } from '@nestjs/common';
 import type { Response } from 'express';
 import { ApplicationsService } from './applications.service';
 import { PdfService } from '../pdf/pdf.service';
@@ -63,6 +63,18 @@ export class ApplicationsController {
       'Content-Length': pdf.length,
     });
     res.send(pdf);
+  }
+
+  @Get(':id/screenshot')
+  async getScreenshot(@Param('id') id: string, @Res() res: Response) {
+    const screenshot = await this.applicationsService.getScreenshot(id);
+    if (!screenshot) throw new NotFoundException('Aucune capture disponible pour cette candidature');
+
+    res.set({
+      'Content-Type': 'image/jpeg',
+      'Cache-Control': 'private, max-age=3600',
+    });
+    res.send(screenshot);
   }
 
   @Get(':id/lettre')

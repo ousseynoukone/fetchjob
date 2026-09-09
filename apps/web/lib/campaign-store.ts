@@ -17,6 +17,7 @@ export interface Campaign {
   minMatchScore: number;
   actionMode: 'prepare_only' | 'auto_apply';
   sources: string[];
+  sourceDailyLimits: Record<string, number>;
   scheduleEnabled: boolean;
   scheduleHour: number | null;
   autoApplyAts: boolean;

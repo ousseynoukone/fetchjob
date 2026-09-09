@@ -16,7 +16,7 @@ import { GreenhouseApplier } from './appliers/greenhouse.applier';
 import { LeverApplier } from './appliers/lever.applier';
 import { WorkdayApplier } from './appliers/workday.applier';
 import { SmartRecruitersApplier } from './appliers/smartrecruiters.applier';
-import { GenericRedirectApplier } from './appliers/generic-redirect.applier';
+import { GenericApplier } from './appliers/generic.applier';
 import { JobApplier } from './appliers/applier.interface';
 import { scanInvalidFields } from './appliers/form-fields';
 import { resolveWelcomeToTheJungleApplyUrl, blockHeavyResources } from './appliers/ats-common';
@@ -42,6 +42,26 @@ function detectAtsKey(url: string): string | null {
     return ATS_HOST_PATTERNS.find(({ pattern }) => pattern.test(hostname))?.key || null;
   } catch {
     return null;
+  }
+}
+
+// Only France Travail actually needs this: it aggregates postings from
+// partner sites, so a `sourceUrl` scraped under source 'france_travail' can
+// point at some employer's own external page instead of francetravail.fr
+// itself (see ScrapingService's `origineOffre.urlOrigine`). LinkedIn/Indeed/
+// HelloWork sourceUrls are always constructed on their own domain, so they
+// have no entry here and are never second-guessed.
+const SOURCE_OWN_DOMAIN: Partial<Record<string, RegExp>> = {
+  france_travail: /(^|\.)francetravail\.fr$/i,
+};
+
+function matchesOwnDomain(source: string, sourceUrl: string): boolean {
+  const pattern = SOURCE_OWN_DOMAIN[source];
+  if (!pattern) return true;
+  try {
+    return pattern.test(new URL(sourceUrl).hostname);
+  } catch {
+    return false;
   }
 }
 
@@ -72,7 +92,7 @@ export class AutoApplyService {
     lever: LeverApplier,
     workday: WorkdayApplier,
     smartRecruiters: SmartRecruitersApplier,
-    private genericFallback: GenericRedirectApplier,
+    private genericFallback: GenericApplier,
   ) {
     this.appliers = {
       linkedin,
@@ -94,12 +114,20 @@ export class AutoApplyService {
   // scraped it — the source-keyed appliers below only cover offers actually
   // hosted on that platform's own domain. `atsEnabled` lets a campaign opt
   // out of ATS-based submission independently of the account-based platforms.
+  //
+  // Falling through to the generic best-effort applier (rather than giving
+  // up) covers two cases: a source with no dedicated applier at all
+  // (Adzuna, Remotive, manual offers, ...), and a source whose applier
+  // exists but doesn't own this particular URL (France Travail aggregating
+  // a posting hosted on some employer's own site — see matchesOwnDomain).
   private getApplier(source: string, sourceUrl: string, atsEnabled: boolean): { applier: JobApplier; platformKey: string } {
     if (atsEnabled) {
       const atsKey = detectAtsKey(sourceUrl);
       if (atsKey && this.atsAppliers[atsKey]) return { applier: this.atsAppliers[atsKey], platformKey: atsKey };
     }
-    if (this.appliers[source]) return { applier: this.appliers[source], platformKey: source };
+    if (this.appliers[source] && matchesOwnDomain(source, sourceUrl)) {
+      return { applier: this.appliers[source], platformKey: source };
+    }
     return { applier: this.genericFallback, platformKey: source };
   }
 
@@ -272,6 +300,10 @@ export class AutoApplyService {
           ),
       });
 
+      // Every attempt, success or failure, leaves a screenshot — the only
+      // record of what the page actually showed once the browser closes.
+      await this.captureScreenshot(page, application.id);
+
       // Belt-and-braces: even if an applier's own error branch didn't call
       // `reportUnknownFields` itself, a failed attempt often still leaves
       // the invalid field(s) visible on the page — catch those too so no
@@ -303,6 +335,22 @@ export class AutoApplyService {
     } finally {
       await context.close().catch(() => {});
       await unlink(cvPdfPath).catch(() => {});
+    }
+  }
+
+  // JPEG at moderate quality rather than PNG — a full-page screenshot is
+  // only ever looked at to confirm what happened (a success message, a
+  // CAPTCHA, a validation error), not inspected pixel-by-pixel, and this
+  // keeps each one well under 200KB in Postgres.
+  private async captureScreenshot(page: Page, applicationId: string): Promise<void> {
+    try {
+      const screenshot = await page.screenshot({ type: 'jpeg', quality: 60, fullPage: false });
+      await this.prisma.application.update({
+        where: { id: applicationId },
+        data: { screenshot, screenshotTakenAt: new Date() },
+      });
+    } catch (error: any) {
+      this.logger.warn(`Failed to capture screenshot for ${applicationId}: ${error.message}`);
     }
   }
 

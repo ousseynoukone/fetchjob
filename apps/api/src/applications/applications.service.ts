@@ -42,6 +42,7 @@ export class ApplicationsService {
     return this.prisma.application.findMany({
       where: { userId, ...(status ? { status } : {}), ...runFilter },
       include: { jobOffer: true },
+      omit: { screenshot: true },
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -50,6 +51,7 @@ export class ApplicationsService {
     const application = await this.prisma.application.findUnique({
       where: { id },
       include: { jobOffer: true },
+      omit: { screenshot: true },
     });
 
     if (!application) {
@@ -57,6 +59,17 @@ export class ApplicationsService {
     }
 
     return application;
+  }
+
+  // The screenshot itself is only ever fetched through its own binary
+  // endpoint (see ApplicationsController) — kept out of list()/getById() so
+  // an ordinary candidature fetch never drags a ~100-200KB image along.
+  async getScreenshot(id: string): Promise<Buffer | null> {
+    const application = await this.prisma.application.findUnique({
+      where: { id },
+      select: { screenshot: true },
+    });
+    return application?.screenshot ?? null;
   }
 
   async updateStatus(id: string, status: string) {

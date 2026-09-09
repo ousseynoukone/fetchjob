@@ -14,7 +14,7 @@ import { GreenhouseApplier } from './appliers/greenhouse.applier';
 import { LeverApplier } from './appliers/lever.applier';
 import { WorkdayApplier } from './appliers/workday.applier';
 import { SmartRecruitersApplier } from './appliers/smartrecruiters.applier';
-import { GenericRedirectApplier } from './appliers/generic-redirect.applier';
+import { GenericApplier } from './appliers/generic.applier';
 
 @Module({
   imports: [CommonModule, CvModule, PdfModule, PlatformCredentialsModule, CustomQuestionsModule],
@@ -29,7 +29,7 @@ import { GenericRedirectApplier } from './appliers/generic-redirect.applier';
     LeverApplier,
     WorkdayApplier,
     SmartRecruitersApplier,
-    GenericRedirectApplier,
+    GenericApplier,
   ],
   exports: [AutoApplyService, BrowserSessionService],
 })

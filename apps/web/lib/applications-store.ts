@@ -31,6 +31,7 @@ export interface Application {
   autoApplyNote?: string;
   verifiedAt?: string;
   verificationNote?: string;
+  screenshotTakenAt?: string;
   appliedAt?: string;
   createdAt: string;
   jobOffer: JobOffer;
