@@ -1,7 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
 import { AiService } from '../ai/ai.service';
-import { GithubService } from '../github/github.service';
+import { KnowledgeService } from '../knowledge/knowledge.service';
+import type { GithubRepoInfo } from '../github/github.service';
 
 export interface PrepResult {
   application: any;
@@ -23,15 +24,28 @@ export class ApplicationPrepService {
   constructor(
     private prisma: PrismaService,
     private ai: AiService,
-    private github: GithubService,
+    private knowledge: KnowledgeService,
   ) {}
 
-  async prepareMaterials(applicationId: string, cv: any, jobOffer: any): Promise<PrepResult> {
-    const github = await this.github.fetchContext(cv.githubUsername);
-    const extraContext = [cv.additionalContext, github.text].filter(Boolean).join('\n\n');
+  async prepareMaterials(applicationId: string, cv: any, jobOffer: any, userId: string): Promise<PrepResult> {
+    const context = await this.knowledge.getRelevantContext(userId, jobOffer);
+    const extraContext = [cv.additionalContext, context.text].filter(Boolean).join('\n\n');
+
+    // adaptCvBullets' anti-fabrication check needs the GitHub-shaped repo
+    // info (name/language/readmeExcerpt) to ground any new "project" bullet
+    // it proposes — reconstruct it from the ranked knowledge items instead
+    // of the old live, unauthenticated GitHub fetch.
+    const githubRepos: GithubRepoInfo[] = context.items
+      .filter((item) => item.source === 'github')
+      .map((item) => ({
+        name: item.title,
+        language: item.skills[0] || null,
+        url: item.url || '',
+        readmeExcerpt: item.summary,
+      }));
 
     const [adaptedCv, coverLetter, analysis] = await Promise.allSettled([
-      this.ai.adaptCvBullets(cv, jobOffer, cv.additionalContext, github.repos),
+      this.ai.adaptCvBullets(cv, jobOffer, cv.additionalContext, githubRepos),
       this.ai.generateCoverLetter(cv, jobOffer, extraContext),
       this.ai.analyzeOffer(cv, jobOffer, extraContext),
     ]);

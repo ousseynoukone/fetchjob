@@ -15,36 +15,122 @@ datasource db {
 // ============================================================================
 
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  password  String?
-  name      String?
-  plan      String   @default("free") // free, premium, pro
-  
+  id       String  @id @default(cuid())
+  email    String  @unique
+  password String?
+  name     String?
+  plan     String  @default("free") // free, premium, pro
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   // Relations
-  cvs                CV[]
-  linkedAccounts     LinkedAccount[]
-  campaigns          Campaign[]
-  applications       Application[]
-  campaignRuns       CampaignRun[]
+  cvs                 CV[]
+  linkedAccounts      LinkedAccount[]
+  campaigns           Campaign[]
+  applications        Application[]
+  campaignRuns        CampaignRun[]
+  platformCredentials PlatformCredential[]
+  knowledgeItems      KnowledgeItem[]
+  customQuestions     CustomQuestion[]
 
   @@map("users")
 }
 
+// A screening/custom question encountered on a job platform's application
+// form that auto-apply couldn't answer on its own (e.g. "How many years of
+// experience with Python?", a work-authorization checkbox...). Captured the
+// first time it blocks a candidature; once `answer` is filled in by the
+// user, every future occurrence of the same (normalized) question — on any
+// platform — is answered automatically instead of stopping the bot again.
+model CustomQuestion {
+  id                     String    @id @default(cuid())
+  userId                 String
+  platform               String // linkedin, indeed, hellowork, france_travail, greenhouse, lever, workday, smartrecruiters
+  questionText           String    @db.Text
+  questionTextNormalized String    @db.Text
+  fieldType              String // text, textarea, select, radio, checkbox, unknown
+  options                String[]  @default([])
+  answer                 String?   @db.Text
+  answeredAt             DateTime?
+  occurrenceCount        Int       @default(1)
+  lastSeenAt             DateTime  @default(now())
+  lastSourceUrl          String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, questionTextNormalized])
+  @@index([userId])
+  @@map("custom_questions")
+}
+
+// Login credentials for external job platforms (LinkedIn, Indeed) used by
+// the auto-apply browser automation. Distinct from `LinkedAccount`, which is
+// for OAuth token flows — job platforms don't expose an "apply on my behalf"
+// API, so the bot needs real account credentials to drive a browser session.
+model PlatformCredential {
+  id                    String    @id @default(cuid())
+  userId                String
+  platform              String // linkedin, indeed
+  emailEncrypted        String    @db.Text
+  passwordEncrypted     String    @db.Text
+  sessionStateEncrypted String?   @db.Text // Playwright storageState (cookies), reused to avoid re-login on every run
+  lastLoginAt           DateTime?
+  lastLoginError        String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, platform])
+  @@map("platform_credentials")
+}
+
+// Structured facts about the candidate pulled from external sources (GitHub
+// repos, private included) or entered manually, used as retrieval context
+// when adapting a CV/cover letter to a specific offer — richer and cheaper
+// than re-fetching GitHub on every candidature.
+model KnowledgeItem {
+  id         String   @id @default(cuid())
+  userId     String
+  source     String // github, manual
+  type       String // repo, note
+  externalId String? // e.g. GitHub repo id, for upsert/dedupe
+  title      String
+  summary    String   @db.Text
+  skills     String[] @default([])
+  url        String?
+  metadata   Json?
+  syncedAt   DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, source, externalId])
+  @@index([userId])
+  @@map("knowledge_items")
+}
+
 model LinkedAccount {
-  id              String   @id @default(cuid())
-  userId          String
-  platform        String   // linkedin, google, france_travail
-  accessToken     String   @db.Text
-  refreshToken    String?  @db.Text
-  platformEmail   String?
-  expiresAt       DateTime?
-  
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id            String    @id @default(cuid())
+  userId        String
+  platform      String // linkedin, google, france_travail
+  accessToken   String    @db.Text
+  refreshToken  String?   @db.Text
+  platformEmail String?
+  expiresAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -58,15 +144,15 @@ model LinkedAccount {
 // ============================================================================
 
 model CV {
-  id        String   @id @default(cuid())
-  userId    String
-  data      Json     // Full CV object stored as JSON
-  
+  id     String @id @default(cuid())
+  userId String
+  data   Json // Full CV object stored as JSON
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   // Relations
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@map("cvs")
@@ -77,36 +163,53 @@ model CV {
 // ============================================================================
 
 model Campaign {
-  id                      String   @id @default(cuid())
-  userId                  String
-  
-  status                  String   @default("active") // active, paused, running, completed
-  jobTitle                String
-  location                String
-  remote                  Boolean  @default(false)
-  contractTypes           String[] // CDI, CDD, Freelance, Stage, Alternance
-  keywords                String[]
-  excludeKeywords         String[] @default([])
-  maxAgeMonths            Int      @default(0) // 0 = no limit
+  id     String @id @default(cuid())
+  userId String
 
-  maxApplicationsPerDay   Int      @default(10)
-  minMatchScore           Int      @default(70)
-  actionMode              String   @default("prepare_only") // prepare_only, auto_apply
-  sources                 String[] // linkedin, france_travail, adzuna, indeed
-  
-  totalOffersScanned      Int      @default(0)
-  totalOffersFiltered     Int      @default(0)
-  totalApplicationsPrepared Int   @default(0)
-  totalApplicationsSent   Int      @default(0)
-  
-  lastRunAt               DateTime?
-  createdAt               DateTime @default(now())
-  updatedAt               DateTime @updatedAt
+  status          String   @default("active") // active, paused, running, completed
+  jobTitle        String
+  location        String
+  remote          Boolean  @default(false)
+  contractTypes   String[] // CDI, CDD, Freelance, Stage, Alternance
+  keywords        String[]
+  excludeKeywords String[] @default([])
+  maxAgeMonths    Int      @default(0) // 0 = no limit
+
+  maxApplicationsPerDay Int      @default(10)
+  minMatchScore         Int      @default(70)
+  actionMode            String   @default("prepare_only") // prepare_only, auto_apply
+  sources               String[] // linkedin, france_travail, adzuna, indeed
+
+  // Whether auto-apply is allowed to submit on an ATS detected by URL
+  // (Greenhouse/Lever/Workday/SmartRecruiters), independently of the
+  // account-based platforms (LinkedIn/Indeed/France Travail/HelloWork).
+  // Only relevant when actionMode is 'auto_apply'.
+  autoApplyAts Boolean @default(true)
+
+  // Random pacing between two auto-apply submissions, in seconds — a
+  // volume/rate-limiting control (avoid hammering a site), not an
+  // anti-detection measure. Only relevant when actionMode is 'auto_apply'.
+  autoApplyMinDelaySeconds Int @default(45)
+  autoApplyMaxDelaySeconds Int @default(150)
+
+  // Daily cron trigger, in addition to the manual POST /campagne/run — only
+  // meaningful alongside actionMode 'auto_apply' for a fully unattended flow.
+  scheduleEnabled Boolean @default(false)
+  scheduleHour    Int? // 0-23, server local time
+
+  totalOffersScanned        Int @default(0)
+  totalOffersFiltered       Int @default(0)
+  totalApplicationsPrepared Int @default(0)
+  totalApplicationsSent     Int @default(0)
+
+  lastRunAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   // Relations
-  user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  applications            Application[]
-  campaignRuns            CampaignRun[]
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  applications Application[]
+  campaignRuns CampaignRun[]
 
   @@index([userId])
   @@index([status])
@@ -114,25 +217,25 @@ model Campaign {
 }
 
 model CampaignRun {
-  id                      String   @id @default(cuid())
-  campaignId              String
-  userId                  String
-  
-  startedAt               DateTime @default(now())
-  finishedAt              DateTime?
-  
-  offersScanned           Int      @default(0)
-  offersFiltered          Int      @default(0)
-  applicationsPrepared    Int      @default(0)
-  applicationsSent        Int      @default(0)
-  error                   String?
-  
-  logs                    String[] @default([]) // Array of log messages
+  id         String @id @default(cuid())
+  campaignId String
+  userId     String
+
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  offersScanned        Int     @default(0)
+  offersFiltered       Int     @default(0)
+  applicationsPrepared Int     @default(0)
+  applicationsSent     Int     @default(0)
+  error                String?
+
+  logs String[] @default([]) // Array of log messages
 
   // Relations
-  campaign                Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  applications            Application[]
+  campaign     Campaign      @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  applications Application[]
 
   @@index([campaignId])
   @@index([userId])
@@ -144,24 +247,24 @@ model CampaignRun {
 // ============================================================================
 
 model JobOffer {
-  id          String   @id @default(cuid())
-  
-  externalId  String   // ID from the source (LinkedIn, France Travail, etc.)
-  source      String   // linkedin, france_travail, adzuna, indeed
-  
-  title       String
-  company     String
-  location    String?
-  description String   @db.Text
-  url         String
+  id String @id @default(cuid())
+
+  externalId String // ID from the source (LinkedIn, France Travail, etc.)
+  source     String // linkedin, france_travail, adzuna, indeed
+
+  title        String
+  company      String
+  location     String?
+  description  String  @db.Text
+  url          String
   contractType String?
-  salary      String?
-  
-  postedAt    DateTime?
-  scrapedAt   DateTime @default(now())
-  
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  salary       String?
+
+  postedAt  DateTime?
+  scrapedAt DateTime  @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
   applications Application[]
@@ -177,42 +280,47 @@ model JobOffer {
 // ============================================================================
 
 model Application {
-  id              String   @id @default(cuid())
-  userId          String
-  campaignId      String
-  jobOfferId      String
+  id            String  @id @default(cuid())
+  userId        String
+  campaignId    String
+  jobOfferId    String
   // Which campaign run prepared this candidature — null for manually-added
   // offers, or for candidatures created before this field existed. Used to
   // scope the "À postuler" view to the latest run only.
-  campaignRunId   String?
+  campaignRunId String?
 
   // Job details snapshot
-  jobTitle        String
-  company         String
-  location        String?
-  sourceUrl       String
-  
+  jobTitle  String
+  company   String
+  location  String?
+  sourceUrl String
+
   // Matching & Analysis
-  matchScore      Int      // 0-100
-  matchedSkills   String[]
-  missingSkills   String[]
-  aiAnalysis      Json?    // Structured analysis from OpenAI
-  
+  matchScore    Int // 0-100
+  matchedSkills String[]
+  missingSkills String[]
+  aiAnalysis    Json? // Structured analysis from OpenAI
+
   // Application materials
-  status          String   @default("to_apply") // to_apply, applied, interview, offer, rejected, ignored
-  adaptedCvUrl    String?  // URL to S3/R2 stored PDF
-  adaptedCvData   Json?    // Adapted CV content, rendered to PDF on demand
-  coverLetter     String?  @db.Text
-  
-  appliedAt       DateTime?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  status        String  @default("to_apply") // to_apply, applied, interview, offer, rejected, ignored, needs_review
+  adaptedCvUrl  String? // URL to S3/R2 stored PDF
+  adaptedCvData Json? // Adapted CV content, rendered to PDF on demand
+  coverLetter   String? @db.Text
+
+  // Set when auto-apply attempted this candidature but could not finish
+  // (CAPTCHA, 2FA, unrecognized form) — status becomes 'needs_review' and
+  // this explains why, for manual follow-up.
+  autoApplyNote String? @db.Text
+
+  appliedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   // Relations
-  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  campaign        Campaign    @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  jobOffer        JobOffer    @relation(fields: [jobOfferId], references: [id], onDelete: Cascade)
-  campaignRun     CampaignRun? @relation(fields: [campaignRunId], references: [id], onDelete: SetNull)
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaign    Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  jobOffer    JobOffer     @relation(fields: [jobOfferId], references: [id], onDelete: Cascade)
+  campaignRun CampaignRun? @relation(fields: [campaignRunId], references: [id], onDelete: SetNull)
 
   @@unique([campaignId, jobOfferId])
   @@index([userId])
@@ -228,35 +336,35 @@ model Application {
 // ============================================================================
 
 model Subscription {
-  id              String   @id @default(cuid())
-  userId          String   @unique
-  
-  plan            String   // free, premium, pro
-  stripeCustomerId String?
-  stripePriceId   String?
+  id     String @id @default(cuid())
+  userId String @unique
+
+  plan                 String // free, premium, pro
+  stripeCustomerId     String?
+  stripePriceId        String?
   stripeSubscriptionId String?
-  
+
   currentPeriodStart DateTime?
   currentPeriodEnd   DateTime?
   cancelledAt        DateTime?
-  
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("subscriptions")
 }
 
 model Invoice {
-  id              String   @id @default(cuid())
-  userId          String
-  
-  stripeInvoiceId String   @unique
-  amount          Int      // in cents
-  currency        String   @default("eur")
-  status          String   @default("draft") // draft, open, paid, void, uncollectible
-  
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id     String @id @default(cuid())
+  userId String
+
+  stripeInvoiceId String @unique
+  amount          Int // in cents
+  currency        String @default("eur")
+  status          String @default("draft") // draft, open, paid, void, uncollectible
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([userId])
   @@map("invoices")
@@ -269,12 +377,21 @@ model Invoice {
 // ============================================================================
 
 model Settings {
-  id                        String   @id @default(cuid())
+  id                        String  @id @default(cuid())
   deepseekApiKey            String?
   franceTravailClientId     String?
   franceTravailClientSecret String?
   adzunaAppId               String?
   adzunaApiKey              String?
+
+  // Email alerts (e.g. new custom questions captured during auto-apply),
+  // sent via generic SMTP (Gmail, SendGrid's SMTP relay, etc.). All four
+  // SMTP fields + notificationEmail are required for sending to happen.
+  smtpHost          String?
+  smtpPort          String? // stored as text (like every other Settings field) — parsed to a number where used
+  smtpUsername      String?
+  smtpPassword      String?
+  notificationEmail String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

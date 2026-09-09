@@ -14,6 +14,7 @@ export interface MatchResult {
   score: number;
   matchedSkills: string[];
   missingSkills: string[];
+  seniorityMismatch: boolean;
 }
 
 function normalize(text: string): string {
@@ -32,6 +33,28 @@ function extractKeywords(text: string): string[] {
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([w]) => w);
 }
 
+// Title-level seniority markers only — checking the full description would
+// false-positive on postings that merely mention working alongside senior
+// engineers. Deliberately excludes generic titles like "Ingénieur", which
+// are used for junior roles in France just as often as senior ones; only
+// an explicit seniority word should trigger the penalty.
+const SENIOR_TITLE_MARKERS = new RegExp(
+  '\\b(senior|sr\\.?|lead|tech\\s*lead|staff|principal|architecte|architect|head\\s+of|directeur|director|manager|confirme|expert)\\b',
+  'i',
+);
+
+const YEAR_REGEX = /\b(19|20)\d{2}\b/g;
+
+// `period` is free text (e.g. "2022 - 2024", "Sept. 2023 – Présent"), so
+// years of experience can only be estimated: earliest year mentioned across
+// every experience, compared to now. Good enough to separate "just starting
+// out" from "several years in" without requiring structured dates on the CV.
+function estimateYearsOfExperience(experiences?: { period?: string }[]): number {
+  const years = (experiences || []).flatMap((e) => (e.period || '').match(YEAR_REGEX) || []).map(Number);
+  if (!years.length) return 0;
+  return Math.max(0, new Date().getFullYear() - Math.min(...years));
+}
+
 function wordOverlap(a: string, b: string): number {
   const setA = new Set(normalize(a).match(/[a-z0-9]{3,}/g) || []);
   const setB = new Set(normalize(b).match(/[a-z0-9]{3,}/g) || []);
@@ -46,7 +69,12 @@ function wordOverlap(a: string, b: string): number {
 @Injectable()
 export class MatchingService {
   match(
-    cv: { headline?: string; location?: string; skillGroups?: { items: string[] }[] },
+    cv: {
+      headline?: string;
+      location?: string;
+      skillGroups?: { items: string[] }[];
+      experiences?: { period?: string }[];
+    },
     offer: { title: string; description: string; location?: string },
     targetKeywords: string[] = [],
   ): MatchResult {
@@ -93,13 +121,21 @@ export class MatchingService {
       ? { skill: 0.4, title: 0.1, location: 0.15, keyword: 0.35 }
       : { skill: 0.7, title: 0.15, location: 0.15, keyword: 0 };
 
-    const score = Math.round(
+    const rawScore =
       100 *
-        (weights.skill * skillCoverage +
-          weights.title * titleMatch +
-          weights.location * locationMatch +
-          weights.keyword * keywordCoverage),
-    );
+      (weights.skill * skillCoverage +
+        weights.title * titleMatch +
+        weights.location * locationMatch +
+        weights.keyword * keywordCoverage);
+
+    // A candidate still early in their career gets flooded with "Senior" /
+    // "Tech Lead" / "Staff" postings that happen to share the right stack —
+    // heavily discount those rather than let stack overlap alone rank them
+    // as a good match. Candidates with 3+ estimated years are assumed
+    // experienced enough that a senior title isn't a mismatch.
+    const candidateYears = estimateYearsOfExperience(cv.experiences);
+    const seniorityMismatch = candidateYears < 3 && SENIOR_TITLE_MARKERS.test(offer.title);
+    const score = Math.round(seniorityMismatch ? rawScore * 0.15 : rawScore);
 
     const combinedMatched = [...new Set([...matchedSkills, ...matchedTargets])];
     const combinedMatchedNorm = new Set(combinedMatched.map((s) => normalize(s)));
@@ -112,6 +148,7 @@ export class MatchingService {
       score: Math.min(100, Math.max(0, score)),
       matchedSkills: combinedMatched,
       missingSkills,
+      seniorityMismatch,
     };
   }
 }

@@ -104,6 +104,7 @@ export class ApplicationsService {
       id,
       cv,
       application.jobOffer,
+      userId,
     );
 
     if (failures.length === 3) {

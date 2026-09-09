@@ -1,0 +1,143 @@
+import { Injectable, Logger } from '@nestjs/common';
+import type { Page } from 'playwright';
+import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
+import { fillKnownFields, scanInvalidFields } from './form-fields';
+
+const FRANCE_TRAVAIL_DOMAIN = 'francetravail.fr';
+
+// France Travail aggregates postings from many partner sites — a large
+// share of `sourceUrl`s point at the employer's own external site
+// (`origineOffre.urlOrigine`, see ScrapingService), not at France Travail
+// itself. Only offers whose URL is actually on francetravail.fr have a
+// candidature form this applier can drive; everything else is exactly the
+// "unknown external form" case, handled the same as GenericRedirectApplier.
+@Injectable()
+export class FranceTravailApplier implements JobApplier {
+  readonly credentialPlatform = 'france_travail';
+  private readonly logger = new Logger(FranceTravailApplier.name);
+
+  async apply(page: Page, ctx: ApplyContext): Promise<ApplyResult> {
+    if (!ctx.application.sourceUrl.includes(FRANCE_TRAVAIL_DOMAIN)) {
+      return {
+        success: false,
+        note: `Offre agrégée par France Travail mais hébergée ailleurs — postulez manuellement via ${ctx.application.sourceUrl}`,
+      };
+    }
+
+    await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+    const loginResult = await this.ensureLoggedIn(page, ctx);
+    if (loginResult) return loginResult;
+
+    const applyButton = page.getByRole('button', { name: /^postuler/i }).or(page.getByRole('link', { name: /^postuler/i })).first();
+    const hasApplyButton = await applyButton.isVisible().catch(() => false);
+    if (!hasApplyButton) {
+      return {
+        success: false,
+        note: "Bouton de candidature France Travail introuvable sur cette offre — à traiter manuellement.",
+      };
+    }
+
+    await applyButton.click();
+    await page.waitForTimeout(1500);
+
+    const externalRedirectNotice = await page
+      .getByText(/site de l'employeur|candidature externe|vous allez être redirigé/i)
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (externalRedirectNotice) {
+      return {
+        success: false,
+        note: "Cette offre France Travail redirige vers le site de l'employeur — à traiter manuellement.",
+      };
+    }
+
+    const fileInput = page.locator('input[type="file"]').first();
+    if (await fileInput.isVisible().catch(() => false)) {
+      await fileInput.setInputFiles(ctx.cvPdfPath).catch(() => {});
+    }
+
+    if (ctx.coverLetter) {
+      const coverLetterField = page
+        .locator('textarea[id*="lettre" i], textarea[aria-label*="lettre" i], textarea[name*="message" i]')
+        .first();
+      if (await coverLetterField.isVisible().catch(() => false)) {
+        await coverLetterField.fill(ctx.coverLetter).catch(() => {});
+      }
+    }
+
+    for (let step = 0; step < 6; step++) {
+      await fillKnownFields(page, ctx.knownAnswers);
+
+      const errorVisible = await page
+        .locator('[role="alert"], [class*="error"]')
+        .first()
+        .isVisible()
+        .catch(() => false);
+      if (errorVisible) {
+        const unknownFields = await scanInvalidFields(page);
+        if (unknownFields.length) await ctx.reportUnknownFields(unknownFields);
+        return {
+          success: false,
+          note: 'Le formulaire de candidature France Travail contient un champ non renseigné — à finaliser manuellement.',
+        };
+      }
+
+      const submitButton = page.getByRole('button', { name: /envoyer( ma)? candidature|valider ma candidature/i }).first();
+      if (await submitButton.isVisible().catch(() => false)) {
+        await submitButton.click();
+        await page.waitForTimeout(2000);
+
+        const confirmed = await page
+          .getByText(/candidature envoyée|votre candidature a bien été (envoyée|transmise)/i)
+          .first()
+          .isVisible()
+          .catch(() => false);
+
+        return confirmed
+          ? { success: true }
+          : { success: false, note: "Soumission France Travail envoyée mais confirmation non détectée — à vérifier manuellement." };
+      }
+
+      const nextButton = page.getByRole('button', { name: /suivant|continuer/i }).first();
+      if (await nextButton.isVisible().catch(() => false)) {
+        await nextButton.click();
+        await page.waitForTimeout(1200);
+        continue;
+      }
+
+      break;
+    }
+
+    return {
+      success: false,
+      note: "Formulaire de candidature France Travail non reconnu (étape inattendue) — à finaliser manuellement.",
+    };
+  }
+
+  private async ensureLoggedIn(page: Page, ctx: ApplyContext): Promise<ApplyResult | null> {
+    const identifiantField = page.locator('#identifiant, input[name="identifiant"]').first();
+    const onLoginWall = await identifiantField.isVisible().catch(() => false);
+    if (!onLoginWall) return null;
+
+    if (!ctx.credential) {
+      return { success: false, note: 'Session France Travail expirée et aucun identifiant enregistré.' };
+    }
+
+    await identifiantField.fill(ctx.credential.email);
+    const passwordField = page.locator('#password, input[name="password"]').first();
+    await passwordField.fill(ctx.credential.password);
+    await page.getByRole('button', { name: /se connecter|connexion/i }).first().click();
+    await page.waitForTimeout(2000);
+
+    if (/captcha|challenge|verification/i.test(page.url())) {
+      return {
+        success: false,
+        note: 'France Travail demande une vérification de sécurité — connectez-vous manuellement une fois pour établir une session réutilisable.',
+      };
+    }
+
+    return null;
+  }
+}

@@ -13,13 +13,27 @@ export interface GithubContext {
   repos: GithubRepoInfo[];
 }
 
+export interface GithubFullRepoInfo {
+  externalId: string;
+  name: string;
+  description: string | null;
+  language: string | null;
+  topics: string[];
+  stars: number;
+  fork: boolean;
+  private: boolean;
+  url: string;
+  pushedAt: string | null;
+  readmeExcerpt: string;
+}
+
 const EMPTY_CONTEXT: GithubContext = { text: '', repos: [] };
 
 // Plain .slice(0, n) can land in the middle of a surrogate pair (READMEs
 // are full of emoji) and leave a lone/unpaired code unit at the cut, which
 // DeepSeek's JSON parser then rejects the whole request body over
 // ("unexpected end of hex escape") — trim the extra unit instead.
-function truncateSafely(text: string, maxLength: number): string {
+export function truncateSafely(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   let end = maxLength;
   const code = text.charCodeAt(end - 1);
@@ -27,7 +41,7 @@ function truncateSafely(text: string, maxLength: number): string {
   return text.slice(0, end);
 }
 
-function cleanReadme(raw: string): string {
+export function cleanReadme(raw: string): string {
   const cleaned = raw
     .replace(/```[\s\S]*?```/g, ' ') // code blocks
     .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ') // images/badges
@@ -92,10 +106,10 @@ export class GithubService {
     }
   }
 
-  private async fetchReadme(owner: string, repo: string): Promise<string> {
+  private async fetchReadme(owner: string, repo: string, token?: string): Promise<string> {
     try {
       const response = await axios.get(`https://api.github.com/repos/${owner}/${repo}/readme`, {
-        headers: this.headers,
+        headers: token ? { ...this.headers, Authorization: `Bearer ${token}` } : this.headers,
         timeout: 4000,
       });
 
@@ -104,5 +118,44 @@ export class GithubService {
     } catch {
       return '';
     }
+  }
+
+  // Full sync for the knowledge base — authenticated with a personal access
+  // token so private repos are included, not just the public top-5 used for
+  // the lightweight `fetchContext` above. Bounded to 10 pages (1000 repos)
+  // as a safety net; a real account will exhaust relevance long before that.
+  async listAllRepos(token: string): Promise<GithubFullRepoInfo[]> {
+    const authHeaders = { ...this.headers, Authorization: `Bearer ${token}` };
+    const repos: any[] = [];
+
+    for (let page = 1; page <= 10; page++) {
+      const response = await axios.get('https://api.github.com/user/repos', {
+        params: { visibility: 'all', affiliation: 'owner', sort: 'updated', per_page: 100, page },
+        headers: authHeaders,
+        timeout: 8000,
+      });
+      const batch = response.data || [];
+      repos.push(...batch);
+      if (batch.length < 100) break;
+    }
+
+    const nonForks = repos.filter((r) => !r.fork);
+    const readmes = await Promise.allSettled(
+      nonForks.map((r) => this.fetchReadme(r.owner.login, r.name, token)),
+    );
+
+    return nonForks.map((r, idx) => ({
+      externalId: String(r.id),
+      name: r.name,
+      description: r.description || null,
+      language: r.language || null,
+      topics: r.topics || [],
+      stars: r.stargazers_count || 0,
+      fork: r.fork,
+      private: r.private,
+      url: r.html_url,
+      pushedAt: r.pushed_at || null,
+      readmeExcerpt: readmes[idx].status === 'fulfilled' ? (readmes[idx] as PromiseFulfilledResult<string>).value : '',
+    }));
   }
 }

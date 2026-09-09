@@ -16,6 +16,11 @@ export interface Campaign {
   minMatchScore: number;
   actionMode: 'prepare_only' | 'auto_apply';
   sources: string[];
+  scheduleEnabled: boolean;
+  scheduleHour: number | null;
+  autoApplyAts: boolean;
+  autoApplyMinDelaySeconds: number;
+  autoApplyMaxDelaySeconds: number;
   totalOffersScanned: number;
   totalOffersFiltered: number;
   totalApplicationsPrepared: number;

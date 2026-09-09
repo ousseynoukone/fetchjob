@@ -50,4 +50,30 @@ export class UpdateCampaignDto {
   @IsArray()
   @IsOptional()
   sources?: string[];
+
+  @IsBoolean()
+  @IsOptional()
+  scheduleEnabled?: boolean;
+
+  @IsInt()
+  @Min(0)
+  @Max(23)
+  @IsOptional()
+  scheduleHour?: number;
+
+  @IsBoolean()
+  @IsOptional()
+  autoApplyAts?: boolean;
+
+  @IsInt()
+  @Min(10)
+  @Max(3600)
+  @IsOptional()
+  autoApplyMinDelaySeconds?: number;
+
+  @IsInt()
+  @Min(10)
+  @Max(3600)
+  @IsOptional()
+  autoApplyMaxDelaySeconds?: number;
 }

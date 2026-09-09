@@ -5,6 +5,7 @@ import { CvService } from '../cv/cv.service';
 import { ScrapingService } from '../scraping/scraping.service';
 import { MatchingService } from '../matching/matching.service';
 import { ApplicationPrepService } from '../applications/application-prep.service';
+import { AutoApplyService } from '../auto-apply/auto-apply.service';
 import { UpdateCampaignDto } from './dto/update-campaign.dto';
 
 const IDF_LOCATION_TERMS = [
@@ -77,6 +78,7 @@ export class CampaignService {
     private scraping: ScrapingService,
     private matching: MatchingService,
     private prep: ApplicationPrepService,
+    private autoApply: AutoApplyService,
   ) {}
 
   async getOrCreateCampaign() {
@@ -171,6 +173,7 @@ export class CampaignService {
     let offersScanned = 0;
     let offersFiltered = 0;
     let applicationsPrepared = 0;
+    const createdApplicationIds: string[] = [];
 
     try {
       const cv = await this.cvService.getCV(userId);
@@ -311,6 +314,12 @@ export class CampaignService {
 
             if (result.score < campaign.minMatchScore) {
               offersFiltered++;
+              if (result.seniorityMismatch) {
+                await this.appendLog(
+                  runId,
+                  `Filtré (niveau senior/lead, profil junior): ${jobOffer.title} chez ${jobOffer.company}`,
+                );
+              }
               continue;
             }
 
@@ -332,13 +341,14 @@ export class CampaignService {
 
             seenJobKeys.add(jobKey);
             applicationsPrepared++;
+            createdApplicationIds.push(application.id);
             await this.appendLog(
               runId,
               `Candidature préparée: ${jobOffer.title} chez ${jobOffer.company} (score ${result.score})`,
             );
 
             try {
-              const { failures, errorMessage } = await this.prep.prepareMaterials(application.id, cv, jobOffer);
+              const { failures, errorMessage } = await this.prep.prepareMaterials(application.id, cv, jobOffer, userId);
               if (failures.length) {
                 await this.appendLog(
                   runId,
@@ -353,11 +363,17 @@ export class CampaignService {
         }
       }
 
-      if (campaign.actionMode === 'auto_apply') {
-        await this.appendLog(
-          runId,
-          "Mode auto-apply activé mais non implémenté (soumission automatique désactivée par sécurité) — candidatures laissées en 'à postuler'.",
-        );
+      if (campaign.actionMode === 'auto_apply' && createdApplicationIds.length) {
+        await this.appendLog(runId, `Auto-apply: soumission de ${createdApplicationIds.length} candidature(s)...`);
+        const { applied, needsReview } = await this.autoApply.run({
+          userId,
+          applicationIds: createdApplicationIds,
+          atsEnabled: campaign.autoApplyAts,
+          minDelaySeconds: campaign.autoApplyMinDelaySeconds,
+          maxDelaySeconds: campaign.autoApplyMaxDelaySeconds,
+          appendLog: (message) => this.appendLog(runId, message),
+        });
+        await this.appendLog(runId, `Auto-apply terminé: ${applied} envoyée(s), ${needsReview} à vérifier.`);
       }
 
       await this.appendLog(runId, `Terminé: ${applicationsPrepared} candidature(s) préparée(s).`);

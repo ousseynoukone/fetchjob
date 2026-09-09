@@ -13,6 +13,7 @@ const TABS: { id: string; label: string; status?: string; scope?: 'current' | 'h
   { id: 'to_apply', label: 'À postuler', status: 'to_apply', scope: 'current' },
   { id: 'to_apply_history', label: 'Historique', status: 'to_apply', scope: 'history' },
   { id: 'applied', label: 'Envoyées' },
+  { id: 'needs_review', label: 'À vérifier' },
   { id: 'interview', label: 'Entretien' },
   { id: 'offer', label: 'Offre' },
   { id: 'rejected', label: 'Refusées' },
@@ -22,6 +23,7 @@ const TABS: { id: string; label: string; status?: string; scope?: 'current' | 'h
 const STATUS_STYLE: Record<string, string> = {
   to_apply: 'badge-info',
   applied: 'badge-primary',
+  needs_review: 'badge-warning',
   interview: 'badge-warning',
   offer: 'badge-success',
   rejected: 'badge-error',

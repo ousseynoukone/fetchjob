@@ -28,6 +28,7 @@ export interface Application {
   aiAnalysis?: { strengths?: string[]; gaps?: string[]; advice?: string; recommendation?: number };
   status: string;
   coverLetter?: string;
+  autoApplyNote?: string;
   appliedAt?: string;
   createdAt: string;
   jobOffer: JobOffer;

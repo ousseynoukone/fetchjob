@@ -44,6 +44,11 @@ export default function CampaignPage() {
     minMatchScore: 60,
     actionMode: 'prepare_only',
     sources: [] as string[],
+    scheduleEnabled: false,
+    scheduleHour: 8,
+    autoApplyAts: true,
+    autoApplyMinDelaySeconds: 45,
+    autoApplyMaxDelaySeconds: 150,
   });
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -68,6 +73,11 @@ export default function CampaignPage() {
       minMatchScore: campaign.minMatchScore,
       actionMode: campaign.actionMode,
       sources: campaign.sources || [],
+      scheduleEnabled: campaign.scheduleEnabled ?? false,
+      scheduleHour: campaign.scheduleHour ?? 8,
+      autoApplyAts: campaign.autoApplyAts ?? true,
+      autoApplyMinDelaySeconds: campaign.autoApplyMinDelaySeconds ?? 45,
+      autoApplyMaxDelaySeconds: campaign.autoApplyMaxDelaySeconds ?? 150,
     });
   }, [campaign]);
 
@@ -107,6 +117,11 @@ export default function CampaignPage() {
       minMatchScore: Number(form.minMatchScore),
       actionMode: form.actionMode as 'prepare_only' | 'auto_apply',
       sources: form.sources,
+      scheduleEnabled: form.scheduleEnabled,
+      scheduleHour: Number(form.scheduleHour),
+      autoApplyAts: form.autoApplyAts,
+      autoApplyMinDelaySeconds: Number(form.autoApplyMinDelaySeconds),
+      autoApplyMaxDelaySeconds: Number(form.autoApplyMaxDelaySeconds),
     });
   };
 
@@ -286,10 +301,81 @@ export default function CampaignPage() {
                   active={form.actionMode === 'auto_apply'}
                   onClick={() => setForm((f) => ({ ...f, actionMode: 'auto_apply' }))}
                   label="Auto-apply"
-                  description="Non implémenté : la soumission automatique reste désactivée."
+                  description="Le bot postule à votre place (LinkedIn, Indeed, France Travail, HelloWork — identifiants requis dans Paramètres — plus Greenhouse/Lever/Workday/SmartRecruiters sans identifiants)."
                 />
               </div>
             </Field>
+
+            {form.actionMode === 'auto_apply' && (
+              <Field label="Planification automatique">
+                <div className="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    className="toggle toggle-primary"
+                    checked={form.scheduleEnabled}
+                    onChange={(e) => setForm((f) => ({ ...f, scheduleEnabled: e.target.checked }))}
+                  />
+                  <span className="text-sm">Lancer automatiquement chaque jour à</span>
+                  <select
+                    className="select select-bordered select-sm"
+                    value={form.scheduleHour}
+                    disabled={!form.scheduleEnabled}
+                    onChange={(e) => setForm((f) => ({ ...f, scheduleHour: Number(e.target.value) }))}
+                  >
+                    {Array.from({ length: 24 }, (_, h) => (
+                      <option key={h} value={h}>
+                        {String(h).padStart(2, '0')}h
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </Field>
+            )}
+
+            {form.actionMode === 'auto_apply' && (
+              <>
+                <Field label="Soumission automatique sur Greenhouse / Lever / Workday / SmartRecruiters">
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      className="toggle toggle-primary"
+                      checked={form.autoApplyAts}
+                      onChange={(e) => setForm((f) => ({ ...f, autoApplyAts: e.target.checked }))}
+                    />
+                    <span className="text-sm text-base-content/60">
+                      {form.autoApplyAts
+                        ? 'Activé : postule aussi sur ces sites quand une offre y redirige, sans identifiants.'
+                        : "Désactivé : ces offres sont laissées en 'à vérifier' pour une candidature manuelle."}
+                    </span>
+                  </div>
+                </Field>
+
+                <Field label="Délai entre deux candidatures (secondes)">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min={10}
+                      max={3600}
+                      className="input input-bordered input-sm w-24"
+                      value={form.autoApplyMinDelaySeconds}
+                      onChange={(e) => setForm((f) => ({ ...f, autoApplyMinDelaySeconds: Number(e.target.value) }))}
+                    />
+                    <span className="text-sm text-base-content/60">à</span>
+                    <input
+                      type="number"
+                      min={10}
+                      max={3600}
+                      className="input input-bordered input-sm w-24"
+                      value={form.autoApplyMaxDelaySeconds}
+                      onChange={(e) => setForm((f) => ({ ...f, autoApplyMaxDelaySeconds: Number(e.target.value) }))}
+                    />
+                    <span className="text-sm text-base-content/60">
+                      (un délai aléatoire est tiré dans cette fourchette avant chaque candidature)
+                    </span>
+                  </div>
+                </Field>
+              </>
+            )}
 
             <button className="btn btn-outline btn-sm" disabled={saving} onClick={handleSave}>
               {saving ? 'Enregistrement...' : 'Enregistrer les réglages'}

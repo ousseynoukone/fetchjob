@@ -41,6 +41,7 @@ const STATUS_LABEL: Record<string, string> = {
   offer: 'Offre',
   rejected: 'Refusée',
   ignored: 'Ignorée',
+  needs_review: 'À vérifier',
 };
 
 const STATUS_STYLE: Record<string, string> = {
@@ -50,6 +51,7 @@ const STATUS_STYLE: Record<string, string> = {
   offer: 'badge-success',
   rejected: 'badge-error',
   ignored: 'badge-ghost',
+  needs_review: 'badge-warning',
 };
 
 export default function ApplicationDetail({ id }: { id: string }) {
@@ -176,6 +178,15 @@ export default function ApplicationDetail({ id }: { id: string }) {
               </span>
             </div>
           </div>
+
+          {current.status === 'needs_review' && current.autoApplyNote && (
+            <div className="alert alert-warning mt-5 text-sm">
+              <AlertCircle className="w-4 h-4" />
+              <span>
+                <strong>Auto-apply incomplet :</strong> {current.autoApplyNote}
+              </span>
+            </div>
+          )}
 
           <div className="flex flex-wrap gap-2 mt-5">
             <a href={current.sourceUrl} target="_blank" rel="noopener noreferrer" className="btn btn-primary btn-sm gap-2">

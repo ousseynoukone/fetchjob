@@ -8,6 +8,11 @@ export interface SettingsFields {
   franceTravailClientSecret?: string;
   adzunaAppId?: string;
   adzunaApiKey?: string;
+  smtpHost?: string;
+  smtpPort?: string;
+  smtpUsername?: string;
+  smtpPassword?: string;
+  notificationEmail?: string;
 }
 
 const FIELD_TO_ENV_FALLBACK: Record<keyof SettingsFields, string> = {
@@ -16,6 +21,11 @@ const FIELD_TO_ENV_FALLBACK: Record<keyof SettingsFields, string> = {
   franceTravailClientSecret: 'FRANCE_TRAVAIL_CLIENT_SECRET',
   adzunaAppId: 'ADZUNA_APP_ID',
   adzunaApiKey: 'ADZUNA_API_KEY',
+  smtpHost: 'SMTP_HOST',
+  smtpPort: 'SMTP_PORT',
+  smtpUsername: 'SMTP_USERNAME',
+  smtpPassword: 'SMTP_PASSWORD',
+  notificationEmail: 'NOTIFICATION_EMAIL',
 };
 
 @Injectable()

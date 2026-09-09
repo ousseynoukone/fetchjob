@@ -8,6 +8,11 @@ export interface SettingsStatus {
   franceTravailClientSecret: boolean;
   adzunaAppId: boolean;
   adzunaApiKey: boolean;
+  smtpHost: boolean;
+  smtpPort: boolean;
+  smtpUsername: boolean;
+  smtpPassword: boolean;
+  notificationEmail: boolean;
 }
 
 interface Store {

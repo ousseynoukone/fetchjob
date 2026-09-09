@@ -20,4 +20,24 @@ export class UpdateSettingsDto {
   @IsString()
   @IsOptional()
   adzunaApiKey?: string;
+
+  @IsString()
+  @IsOptional()
+  smtpHost?: string;
+
+  @IsString()
+  @IsOptional()
+  smtpPort?: string;
+
+  @IsString()
+  @IsOptional()
+  smtpUsername?: string;
+
+  @IsString()
+  @IsOptional()
+  smtpPassword?: string;
+
+  @IsString()
+  @IsOptional()
+  notificationEmail?: string;
 }
