@@ -41,17 +41,22 @@ function techTermsIn(text: string): Set<string> {
 }
 
 // Safety net behind the prompt: if an adapted experience introduces a tech
-// term that wasn't anywhere in that same experience's original bullets,
-// revert that whole experience's bullets to the original rather than risk
-// shipping a fabricated tech stack.
-function sanitizeAdaptedExperiences(original: any[], adapted: any[]): any[] {
+// term that wasn't anywhere in that same experience's original bullets NOR
+// in the candidate's own additional notes, revert that whole experience's
+// bullets to the original rather than risk shipping a fabricated tech
+// stack. The notes are the one extra source trusted here — they're the
+// candidate's own self-reported facts about themselves (the same trust
+// level as the rest of their CV), unlike a GitHub personal project, which
+// proves nothing about what a specific past employer actually used.
+function sanitizeAdaptedExperiences(original: any[], adapted: any[], additionalContextTerms: Set<string>): any[] {
   return adapted.map((exp: any, idx: number) => {
     const originalExp = original[idx];
     if (!originalExp) return exp;
 
     const originalTerms = techTermsIn((originalExp.bullets || []).join(' '));
+    const allowedTerms = new Set([...originalTerms, ...additionalContextTerms]);
     const adaptedTerms = techTermsIn((exp.bullets || []).join(' '));
-    const hasFabrication = [...adaptedTerms].some((term) => !originalTerms.has(term));
+    const hasFabrication = [...adaptedTerms].some((term) => !allowedTerms.has(term));
 
     return hasFabrication ? { ...exp, bullets: originalExp.bullets } : exp;
   });
@@ -96,8 +101,11 @@ function sanitizeOneNewProject(
   };
 }
 
-// Up to 2 — enough to actually surface real GitHub work when several repos
-// are genuinely relevant to an offer, without turning the CV into a repo list.
+// Up to 4 — the candidate has real GitHub work sitting unused; surface
+// meaningfully more of it when genuinely relevant, without turning the CV
+// into an exhaustive repo list.
+const MAX_NEW_PROJECTS = 4;
+
 function sanitizeNewProjects(
   repos: GithubRepoInfo[] | undefined,
   existingProjects: any[],
@@ -110,7 +118,7 @@ function sanitizeNewProjects(
   for (const candidate of candidates) {
     const project = sanitizeOneNewProject(repos, existingProjects, alreadyAdded, candidate);
     if (project) sanitized.push(project);
-    if (sanitized.length >= 2) break;
+    if (sanitized.length >= MAX_NEW_PROJECTS) break;
   }
 
   return sanitized;
@@ -136,25 +144,52 @@ function sanitizeSummary(cv: any, newProjects: any[], summary: unknown): string 
   return hasFabrication ? cv.summary || '' : summary.trim();
 }
 
-// Skills can be reordered/regrouped to surface what's relevant to this
-// offer, but never added or removed — validated as a strict same-multiset
-// check per the flattened item list; any mismatch reverts to the original
-// order entirely rather than risk silently dropping or inventing a skill.
-function sanitizeSkillGroups(original: any[], adapted: any): any[] {
+// Skills can never be *removed*, but they CAN be added — as long as the
+// added skill is actually traceable to real evidence (the candidate's own
+// GitHub repos, or already mentioned elsewhere in their CV/notes) rather
+// than invented outright. A skill that's genuinely evidenced by real work
+// but was never added to the declared list is a real gap to fix, not a lie;
+// a skill with zero trace anywhere in the candidate's actual data is.
+function sanitizeSkillGroups(original: any[], adapted: any, groundingTextNorm: string): any[] {
   if (!Array.isArray(adapted) || !adapted.length) return original;
 
-  const flatten = (groups: any[]) =>
-    (groups || [])
-      .flatMap((g) => g?.items || [])
-      .map((s: string) => normalizeForCompare(s))
-      .sort();
+  const flattenNorm = (groups: any[]) =>
+    new Set((groups || []).flatMap((g) => g?.items || []).map((s: string) => normalizeForCompare(s)));
 
-  const originalFlat = flatten(original);
-  const adaptedFlat = flatten(adapted);
-  const sameSet =
-    originalFlat.length === adaptedFlat.length && originalFlat.every((s, i) => s === adaptedFlat[i]);
+  const originalSet = flattenNorm(original);
+  const adaptedSet = flattenNorm(adapted);
 
-  return sameSet ? adapted : original;
+  // Every original skill must still be present somewhere — if the AI
+  // silently dropped one, reject the whole response rather than risk it.
+  const droppedSomething = [...originalSet].some((s) => !adaptedSet.has(s));
+  if (droppedSomething) return original;
+
+  const validated = (adapted as any[])
+    .map((group) => ({
+      ...group,
+      items: (group.items || []).filter((item: string) => {
+        const norm = normalizeForCompare(item);
+        return originalSet.has(norm) || groundingTextNorm.includes(norm);
+      }),
+    }))
+    .filter((group) => group.items.length > 0);
+
+  return validated.length ? validated : original;
+}
+
+// Deterministic, not left to the model: moves items whose name appears in
+// the offer's own text to the front of each group (stable otherwise) — a
+// pure reorder of an already-validated set, so it carries zero fabrication
+// risk and always actually happens, unlike asking the AI to reorder.
+function reorderSkillsForOffer(skillGroups: any[], offerTextNorm: string): any[] {
+  return (skillGroups || []).map((group) => ({
+    ...group,
+    items: [...(group.items || [])].sort((a: string, b: string) => {
+      const aRelevant = offerTextNorm.includes(normalizeForCompare(a)) ? 0 : 1;
+      const bRelevant = offerTextNorm.includes(normalizeForCompare(b)) ? 0 : 1;
+      return aRelevant - bRelevant;
+    }),
+  }));
 }
 
 @Injectable()
@@ -196,11 +231,11 @@ EXPERIENCES ACTUELLES (JSON): ${JSON.stringify(cv.experiences || [])}
 COMPETENCES ACTUELLES (JSON): ${JSON.stringify(cv.skillGroups || [])}
 RESUME ACTUEL: ${cv.summary || '(vide)'}
 PROJETS DEJA SUR LE CV (JSON, ne pas dupliquer): ${JSON.stringify(cv.projects || [])}
-${additionalContext ? `\nNOTES COMPLEMENTAIRES DU CANDIDAT (a utiliser uniquement pour mieux formuler, jamais pour ajouter une technologie ou un projet qui n'est pas deja dans les donnees ci-dessus) :\n${additionalContext}\n` : ''}
-${reposBlock ? `\nDEPOTS GITHUB DU CANDIDAT AVEC EXTRAIT REEL DE LEUR README (source de verite si tu ajoutes un projet) :\n${reposBlock}\n\nSi et SEULEMENT SI un ou deux de ces depots sont clairement pertinents pour l'offre ET absents des "PROJETS DEJA SUR LE CV", propose-les dans le champ "newProjects" (tableau, 0 a 2 elements). Pour chaque projet, ecris un bullet de type realisation professionnelle : QUOI (ce que fait concretement le projet/l'application) et AVEC QUOI (stack technique), en une phrase percutante — jamais une paraphrase des instructions d'installation, badges, licence ou table des matieres du README. Si le README ne decrit pas clairement une fonctionnalite ou un objectif exploitable (ex: seulement des instructions de setup), ne propose PAS ce projet plutot que d'inventer un objectif. Si aucun depot n'est clairement pertinent, mets "newProjects": [].\n` : '\nAucun depot GitHub exploitable n\'a ete fourni : mets systematiquement "newProjects": [].\n'}
+${additionalContext ? `\nNOTES COMPLEMENTAIRES DU CANDIDAT (faits reels declares par le candidat lui-meme — source de verite valable pour enrichir une experience ou une competence, au meme titre que le reste du CV) :\n${additionalContext}\n` : ''}
+${reposBlock ? `\nDEPOTS GITHUB DU CANDIDAT AVEC EXTRAIT REEL DE LEUR README (source de verite si tu ajoutes un projet ou une competence) :\n${reposBlock}\n\nSi et SEULEMENT SI certains de ces depots sont clairement pertinents pour l'offre ET absents des "PROJETS DEJA SUR LE CV", propose-les dans le champ "newProjects" (tableau, jusqu'a 4 elements). Pour chaque projet, ecris un bullet de type realisation professionnelle : QUOI (ce que fait concretement le projet/l'application) et AVEC QUOI (stack technique), en une phrase percutante — jamais une paraphrase des instructions d'installation, badges, licence ou table des matieres du README. Si le README ne decrit pas clairement une fonctionnalite ou un objectif exploitable (ex: seulement des instructions de setup), ne propose PAS ce projet plutot que d'inventer un objectif. Si aucun depot n'est clairement pertinent, mets "newProjects": [].\n` : '\nAucun depot GitHub exploitable n\'a ete fourni : mets systematiquement "newProjects": [].\n'}
 INSTRUCTIONS PAR CHAMP :
-- "experiences" : reformule les "bullets" de chaque experience pour mettre en avant les elements deja presents et pertinents pour cette offre. Garde le meme nombre d'experiences et de bullets par experience.
-- "skillGroups" : renvoie EXACTEMENT les memes competences (aucun ajout, aucune suppression), simplement reordonnees pour faire apparaitre en premier celles pertinentes pour cette offre, dans chaque groupe et entre les groupes.
+- "experiences" : reformule les "bullets" de chaque experience pour mettre en avant les elements deja presents et pertinents pour cette offre. Tu peux aussi enrichir un bullet avec un fait reel tire des NOTES COMPLEMENTAIRES s'il concerne clairement cette experience (ex: une techno que le candidat dit avoir utilisee a ce poste mais qu'il a oublie de detailler) — jamais avec un fait tire des depots GitHub, qui sont des projets personnels sans lien avec un employeur. Garde le meme nombre d'experiences et de bullets par experience.
+- "skillGroups" : ne supprime JAMAIS une competence existante. Tu PEUX en ajouter une nouvelle si et seulement si elle apparait clairement dans les DEPOTS GITHUB ci-dessus (langage, dependance reelle, sujet) ou dans les NOTES COMPLEMENTAIRES du candidat — une competence prouvee par du vrai travail mais absente de la liste est un oubli a corriger, pas une invention. N'ajoute jamais une competence qui n'apparait nulle part dans les donnees fournies. L'ordre au sein de chaque groupe n'a pas d'importance, il sera recalcule automatiquement.
 - "summary" : 2 a 3 phrases d'accroche ciblees sur cette offre, basees uniquement sur les faits reels du CV (experiences/competences/projets) — jamais de metrique ou technologie non presente ailleurs dans les donnees fournies.
 - "newProjects" : voir instructions ci-dessus.
 
@@ -215,13 +250,23 @@ Reponds uniquement avec un JSON de la forme { "experiences": [...], "skillGroups
     const result = JSON.parse(response.choices[0].message.content || '{}');
     const adaptedExperiences = result.experiences || cv.experiences;
     const sanitizedNewProjects = sanitizeNewProjects(githubRepos, cv.projects || [], result.newProjects);
-    const sanitizedSkillGroups = sanitizeSkillGroups(cv.skillGroups || [], result.skillGroups);
     const sanitizedSummary = sanitizeSummary(cv, sanitizedNewProjects, result.summary);
+
+    // Real evidence a new skill can be grounded in: the candidate's own
+    // GitHub repos (language/dependencies/README) and their own notes —
+    // never another job's stack, and never thin air.
+    const groundingTextNorm = normalizeForCompare(`${reposBlock} ${additionalContext || ''}`);
+    const skillGroupsWithAdditions = sanitizeSkillGroups(cv.skillGroups || [], result.skillGroups, groundingTextNorm);
+
+    const offerTextNorm = normalizeForCompare(`${offer.title} ${offer.description}`);
+    const reorderedSkillGroups = reorderSkillsForOffer(skillGroupsWithAdditions, offerTextNorm);
+
+    const additionalContextTerms = techTermsIn(additionalContext || '');
 
     return {
       ...cv,
-      experiences: sanitizeAdaptedExperiences(cv.experiences || [], adaptedExperiences),
-      skillGroups: sanitizedSkillGroups,
+      experiences: sanitizeAdaptedExperiences(cv.experiences || [], adaptedExperiences, additionalContextTerms),
+      skillGroups: reorderedSkillGroups,
       summary: sanitizedSummary,
       projects: sanitizedNewProjects.length ? [...(cv.projects || []), ...sanitizedNewProjects] : cv.projects,
     };
