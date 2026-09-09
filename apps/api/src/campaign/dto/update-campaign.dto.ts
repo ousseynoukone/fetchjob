@@ -25,6 +25,10 @@ export class UpdateCampaignDto {
   @IsOptional()
   excludeKeywords?: string[];
 
+  @IsArray()
+  @IsOptional()
+  seniorityKeywords?: string[];
+
   @IsInt()
   @Min(0)
   @Max(60)

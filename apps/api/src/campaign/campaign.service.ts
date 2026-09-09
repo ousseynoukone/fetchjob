@@ -310,6 +310,7 @@ export class CampaignService {
                 location: jobOffer.location || '',
               },
               targetKeywords,
+              (campaign.seniorityKeywords as string[]) || [],
             );
 
             if (result.score < campaign.minMatchScore) {

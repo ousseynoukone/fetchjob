@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
+import { dismissCookieBanner } from './ats-common';
 
 const LOGIN_URL = 'https://www.linkedin.com/login';
 const SECURITY_CHECK_MARKERS = /checkpoint|challenge|two-step|verification|puzzle|captcha/i;
@@ -19,6 +20,7 @@ export class LinkedInApplier implements JobApplier {
 
   async apply(page: Page, ctx: ApplyContext): Promise<ApplyResult> {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await dismissCookieBanner(page);
 
     const loginResult = await this.ensureLoggedIn(page, ctx);
     if (loginResult) return loginResult;
@@ -119,6 +121,7 @@ export class LinkedInApplier implements JobApplier {
     }
 
     await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await dismissCookieBanner(page);
     await page.locator('#username').fill(ctx.credential.email);
     await page.locator('#password').fill(ctx.credential.password);
     await page.getByRole('button', { name: /sign in|se connecter/i }).click();

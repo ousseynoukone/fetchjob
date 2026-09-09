@@ -156,6 +156,7 @@ export class ApplicationsService {
         location: jobOffer.location || '',
       },
       (campaign.keywords as string[]) || [],
+      (campaign.seniorityKeywords as string[]) || [],
     );
 
     return this.prisma.application.create({

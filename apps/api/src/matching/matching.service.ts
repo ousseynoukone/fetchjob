@@ -33,15 +33,22 @@ function extractKeywords(text: string): string[] {
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([w]) => w);
 }
 
-// Title-level seniority markers only — checking the full description would
-// false-positive on postings that merely mention working alongside senior
-// engineers. Deliberately excludes generic titles like "Ingénieur", which
-// are used for junior roles in France just as often as senior ones; only
-// an explicit seniority word should trigger the penalty.
-const SENIOR_TITLE_MARKERS = new RegExp(
-  '\\b(senior|sr\\.?|lead|tech\\s*lead|staff|principal|architecte|architect|head\\s+of|directeur|director|manager|confirme|expert)\\b',
-  'i',
-);
+const REGEX_SPECIAL_CHARS = /[.*+?^${}()|[\]\\]/g;
+
+// Builds the seniority-title regex from the campaign's own configurable
+// `seniorityKeywords` (edited in the UI, same as excludeKeywords) rather
+// than a fixed list in code — checked against the title only, since
+// checking the full description would false-positive on postings that
+// merely mention working alongside senior engineers.
+function buildSeniorityRegex(keywords: string[]): RegExp | null {
+  const parts = keywords
+    .map((kw) => normalize(kw.trim()))
+    .filter(Boolean)
+    .map((kw) => kw.replace(REGEX_SPECIAL_CHARS, '\\$&').replace(/\s+/g, '\\s+'));
+
+  if (!parts.length) return null;
+  return new RegExp(`\\b(${parts.join('|')})\\b`, 'i');
+}
 
 const YEAR_REGEX = /\b(19|20)\d{2}\b/g;
 
@@ -77,6 +84,7 @@ export class MatchingService {
     },
     offer: { title: string; description: string; location?: string },
     targetKeywords: string[] = [],
+    seniorityKeywords: string[] = [],
   ): MatchResult {
     const cvSkills = (cv.skillGroups || []).flatMap((g) => g.items || []);
     const cvSkillsNorm = cvSkills.map((s) => normalize(s));
@@ -134,7 +142,8 @@ export class MatchingService {
     // as a good match. Candidates with 3+ estimated years are assumed
     // experienced enough that a senior title isn't a mismatch.
     const candidateYears = estimateYearsOfExperience(cv.experiences);
-    const seniorityMismatch = candidateYears < 3 && SENIOR_TITLE_MARKERS.test(offer.title);
+    const seniorityRegex = buildSeniorityRegex(seniorityKeywords);
+    const seniorityMismatch = candidateYears < 3 && !!seniorityRegex && seniorityRegex.test(normalize(offer.title));
     const score = Math.round(seniorityMismatch ? rawScore * 0.15 : rawScore);
 
     const combinedMatched = [...new Set([...matchedSkills, ...matchedTargets])];

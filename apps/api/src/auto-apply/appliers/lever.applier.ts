@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { fillIfVisible } from './ats-common';
+import { fillIfVisible, dismissCookieBanner } from './ats-common';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
 
 // Lever-hosted application forms (jobs.lever.co) are public, no account
@@ -13,6 +13,7 @@ export class LeverApplier implements JobApplier {
 
   async apply(page: Page, ctx: ApplyContext): Promise<ApplyResult> {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await dismissCookieBanner(page);
 
     const revealFormLink = page.getByRole('link', { name: /apply for this job/i }).first();
     if (await revealFormLink.isVisible().catch(() => false)) {

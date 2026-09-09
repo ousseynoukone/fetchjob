@@ -11,6 +11,7 @@ export interface Campaign {
   contractTypes: string[];
   keywords: string[];
   excludeKeywords: string[];
+  seniorityKeywords: string[];
   maxAgeMonths: number;
   maxApplicationsPerDay: number;
   minMatchScore: number;

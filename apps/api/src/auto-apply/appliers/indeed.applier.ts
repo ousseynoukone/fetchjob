@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
+import { dismissCookieBanner } from './ats-common';
 
 // Same best-effort/defensive posture as the LinkedIn applier: Indeed's
 // "Indeed Apply" flow sometimes runs inline, sometimes in a popup on
@@ -15,6 +16,7 @@ export class IndeedApplier implements JobApplier {
 
   async apply(page: Page, ctx: ApplyContext): Promise<ApplyResult> {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await dismissCookieBanner(page);
 
     const loginResult = await this.ensureLoggedIn(page, ctx);
     if (loginResult) return loginResult;
@@ -33,6 +35,7 @@ export class IndeedApplier implements JobApplier {
     const popup = await popupPromise;
     const target = popup || page;
     await target.waitForTimeout(1500);
+    if (popup) await dismissCookieBanner(popup);
 
     const fileInput = target.locator('input[type="file"]').first();
     if (await fileInput.isVisible().catch(() => false)) {

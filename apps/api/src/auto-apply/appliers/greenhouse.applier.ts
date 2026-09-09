@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { splitName, fillIfVisible } from './ats-common';
+import { splitName, fillIfVisible, dismissCookieBanner } from './ats-common';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
 
 // Greenhouse-hosted application forms (boards.greenhouse.io, job-boards.
@@ -14,6 +14,7 @@ export class GreenhouseApplier implements JobApplier {
 
   async apply(page: Page, ctx: ApplyContext): Promise<ApplyResult> {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await dismissCookieBanner(page);
 
     const revealFormLink = page
       .getByRole('link', { name: /apply for this job|apply now/i })

@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
+import { dismissCookieBanner } from './ats-common';
 
 // Workday (company.wd*.myworkdayjobs.com) is the hardest ATS to automate
 // generically: every company runs its own tenant, the flow is a multi-page
@@ -18,6 +19,7 @@ export class WorkdayApplier implements JobApplier {
 
   async apply(page: Page, ctx: ApplyContext): Promise<ApplyResult> {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await dismissCookieBanner(page);
 
     const applyButton = page.getByRole('button', { name: /^apply$/i }).or(page.getByRole('link', { name: /^apply$/i })).first();
     if (await applyButton.isVisible().catch(() => false)) {

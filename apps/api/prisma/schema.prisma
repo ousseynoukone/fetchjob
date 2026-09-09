@@ -181,6 +181,14 @@ model Campaign {
   excludeKeywords String[] @default([])
   maxAgeMonths    Int      @default(0) // 0 = no limit
 
+  // Job-title words that flag an offer as "too senior" for the matching
+  // score penalty (see MatchingService) — only applied when the candidate's
+  // estimated years of experience (from their CV) is under 3. Editable in
+  // the UI like excludeKeywords, rather than fixed in code, since a plain
+  // substring exclude list (e.g. "team lead") misses close variants like
+  // "Tech Lead" or "Lead Developer".
+  seniorityKeywords String[] @default(["senior", "lead", "staff", "principal", "architecte", "architect", "confirme", "expert", "manager", "directeur", "director"])
+
   maxApplicationsPerDay Int      @default(10)
   minMatchScore         Int      @default(70)
   actionMode            String   @default("prepare_only") // prepare_only, auto_apply

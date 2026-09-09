@@ -39,6 +39,7 @@ export default function CampaignPage() {
     contractTypes: [] as string[],
     keywordsText: '',
     excludeKeywordsText: '',
+    seniorityKeywordsText: '',
     maxAgeMonths: 0,
     maxApplicationsPerDay: 10,
     minMatchScore: 60,
@@ -68,6 +69,7 @@ export default function CampaignPage() {
       contractTypes: campaign.contractTypes || [],
       keywordsText: (campaign.keywords || []).join(', '),
       excludeKeywordsText: (campaign.excludeKeywords || []).join(', '),
+      seniorityKeywordsText: (campaign.seniorityKeywords || []).join(', '),
       maxAgeMonths: campaign.maxAgeMonths ?? 0,
       maxApplicationsPerDay: campaign.maxApplicationsPerDay,
       minMatchScore: campaign.minMatchScore,
@@ -112,6 +114,7 @@ export default function CampaignPage() {
       contractTypes: form.contractTypes,
       keywords: form.keywordsText.split(',').map((k) => k.trim()).filter(Boolean),
       excludeKeywords: form.excludeKeywordsText.split(',').map((k) => k.trim()).filter(Boolean),
+      seniorityKeywords: form.seniorityKeywordsText.split(',').map((k) => k.trim()).filter(Boolean),
       maxAgeMonths: Number(form.maxAgeMonths),
       maxApplicationsPerDay: Number(form.maxApplicationsPerDay),
       minMatchScore: Number(form.minMatchScore),
@@ -202,6 +205,19 @@ export default function CampaignPage() {
                 value={form.excludeKeywordsText}
                 onChange={(e) => setForm((f) => ({ ...f, excludeKeywordsText: e.target.value }))}
               />
+            </Field>
+
+            <Field label="Mots-clés séniorité à pénaliser si profil junior (séparés par des virgules)">
+              <input
+                className="input input-bordered w-full"
+                placeholder="senior, lead, staff, manager..."
+                value={form.seniorityKeywordsText}
+                onChange={(e) => setForm((f) => ({ ...f, seniorityKeywordsText: e.target.value }))}
+              />
+              <p className="text-xs text-base-content/40 mt-1">
+                Si un titre d'offre contient l'un de ces mots et que ton CV montre moins de 3 ans
+                d'expérience, son score est fortement réduit. Sans effet si tu as 3 ans ou plus.
+              </p>
             </Field>
 
             <label className="flex items-center gap-3 cursor-pointer w-fit">

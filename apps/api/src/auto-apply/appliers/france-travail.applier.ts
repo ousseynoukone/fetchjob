@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
+import { dismissCookieBanner } from './ats-common';
 
 const FRANCE_TRAVAIL_DOMAIN = 'francetravail.fr';
 
@@ -25,6 +26,7 @@ export class FranceTravailApplier implements JobApplier {
     }
 
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await dismissCookieBanner(page);
 
     const loginResult = await this.ensureLoggedIn(page, ctx);
     if (loginResult) return loginResult;
@@ -38,8 +40,24 @@ export class FranceTravailApplier implements JobApplier {
       };
     }
 
+    // On some offers "Postuler" is a dropdown toggle (aria-haspopup) rather
+    // than a direct link — clicking it just reveals a menu with the real
+    // action instead of navigating (confirmed live: id="detail-apply",
+    // data-toggle="dropdown"). Click through to the actual item if so.
+    const isDropdownToggle = (await applyButton.getAttribute('aria-haspopup').catch(() => null)) === 'true';
     await applyButton.click();
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(800);
+
+    if (isDropdownToggle) {
+      const menuItem = page
+        .locator('.dropdown-menu:visible a, .dropdown-menu:visible button, [role="menu"]:visible a, [role="menu"]:visible button')
+        .filter({ hasText: /postuler/i })
+        .first();
+      if (await menuItem.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await menuItem.click();
+        await page.waitForTimeout(1200);
+      }
+    }
 
     const externalRedirectNotice = await page
       .getByText(/site de l'employeur|candidature externe|vous allez être redirigé/i)
