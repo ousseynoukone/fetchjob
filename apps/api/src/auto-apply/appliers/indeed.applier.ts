@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
-import { dismissCookieBanner } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS } from './ats-common';
 
 // Same best-effort/defensive posture as the LinkedIn applier: Indeed's
 // "Indeed Apply" flow sometimes runs inline, sometimes in a popup on
@@ -106,8 +106,7 @@ export class IndeedApplier implements JobApplier {
   }
 
   private async ensureLoggedIn(page: Page): Promise<ApplyResult | null> {
-    const loginEmailField = page.locator('#login-email-input, input[name="__email"]').first();
-    const onLoginWall = await loginEmailField.isVisible().catch(() => false);
+    const onLoginWall = await SESSION_CHECKS.indeed.isLoginWallVisible(page);
     if (!onLoginWall) return null; // already have a valid, reused session
 
     return {

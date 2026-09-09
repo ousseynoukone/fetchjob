@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
-import { dismissCookieBanner } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS } from './ats-common';
 
 // France Travail aggregates postings from many partner sites — a large
 // share of `sourceUrl`s point at the employer's own external site
@@ -126,8 +126,7 @@ export class FranceTravailApplier implements JobApplier {
   }
 
   private async ensureLoggedIn(page: Page): Promise<ApplyResult | null> {
-    const identifiantField = page.locator('#identifiant, input[name="identifiant"]').first();
-    const onLoginWall = await identifiantField.isVisible().catch(() => false);
+    const onLoginWall = await SESSION_CHECKS.france_travail.isLoginWallVisible(page);
     if (!onLoginWall) return null; // already have a valid, reused session
 
     return {

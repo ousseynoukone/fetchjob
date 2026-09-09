@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
-import { dismissCookieBanner } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS } from './ats-common';
 
 // Same best-effort/defensive posture as the other account-based appliers.
 // Login is NOT automated — HelloWork runs a real bot-detection check
@@ -110,11 +110,7 @@ export class HelloWorkApplier implements JobApplier {
   }
 
   private async ensureLoggedIn(page: Page): Promise<ApplyResult | null> {
-    // HelloWork's login page has BOTH a signup form (input[name="email"])
-    // and a login form (input[name="email2"]) in the same DOM — confirmed
-    // live, kept here since the login-wall check reuses the same field.
-    const emailField = page.locator('input[name="email2"]').first();
-    const onLoginWall = await emailField.isVisible().catch(() => false);
+    const onLoginWall = await SESSION_CHECKS.hellowork.isLoginWallVisible(page);
     if (!onLoginWall) return null; // already have a valid, reused session
 
     return {

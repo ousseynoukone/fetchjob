@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
-import { dismissCookieBanner } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS } from './ats-common';
 
 // Best-effort automation of LinkedIn's own UI — LinkedIn does not offer an
 // "apply on my behalf" API. Logging in is NOT automated: LinkedIn actively
@@ -108,11 +108,7 @@ export class LinkedInApplier implements JobApplier {
   }
 
   private async ensureLoggedIn(page: Page): Promise<ApplyResult | null> {
-    const onLoginWall =
-      page.url().includes('/login') ||
-      page.url().includes('/uas/login') ||
-      (await page.locator('#username').isVisible().catch(() => false));
-
+    const onLoginWall = await SESSION_CHECKS.linkedin.isLoginWallVisible(page);
     if (!onLoginWall) return null; // already have a valid, reused session
 
     return {

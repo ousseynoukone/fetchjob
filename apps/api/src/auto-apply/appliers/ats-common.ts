@@ -60,6 +60,50 @@ export async function hasSecurityCheck(page: Page): Promise<boolean> {
   return SECURITY_CHECK_TEXT.test(bodyText);
 }
 
+export interface SessionCheck {
+  // A page that requires being logged in, with no side effect from just
+  // visiting it (never a candidature form) — safe to load on a schedule,
+  // not just when an actual apply attempt happens to need it.
+  homeUrl: string;
+  isLoginWallVisible: (page: Page) => Promise<boolean>;
+}
+
+// One definition per platform, shared between each applier's own
+// `ensureLoggedIn` (checked organically, right before it would try to use
+// the session) and SessionHealthService's proactive daily check (visits
+// `homeUrl` directly, so a dead/expiring session is caught and emailed
+// about before a real campaign run ever stumbles into it). A single source
+// of truth here means a selector fix only has to happen once. Every one of
+// these URL+selector pairs was confirmed live (anonymous, logged-out
+// request each correctly lands on the platform's real login page).
+export const SESSION_CHECKS: Record<string, SessionCheck> = {
+  linkedin: {
+    homeUrl: 'https://www.linkedin.com/feed/',
+    isLoginWallVisible: async (page) =>
+      page.url().includes('/login') ||
+      page.url().includes('/uas/login') ||
+      (await page.locator('#username').isVisible().catch(() => false)),
+  },
+  indeed: {
+    homeUrl: 'https://myjobs.indeed.com/',
+    isLoginWallVisible: async (page) =>
+      page.locator('#login-email-input, input[name="__email"]').first().isVisible().catch(() => false),
+  },
+  hellowork: {
+    homeUrl: 'https://www.hellowork.com/fr-fr/candidat/mon-espace.html',
+    // HelloWork's login page has BOTH a signup form (input[name="email"])
+    // and a login form (input[name="email2"]) in the same DOM — confirmed
+    // live, kept here since this is the same check the applier itself uses.
+    isLoginWallVisible: async (page) =>
+      page.locator('input[name="email2"]').first().isVisible().catch(() => false),
+  },
+  france_travail: {
+    homeUrl: 'https://candidat.francetravail.fr/espacepersonnel/',
+    isLoginWallVisible: async (page) =>
+      page.locator('#identifiant, input[name="identifiant"]').first().isVisible().catch(() => false),
+  },
+};
+
 // Used by the verification pass (see verification.service.ts) to confirm a
 // candidature the apply flow already reported as sent actually got recorded
 // by the platform — revisiting the offer's own page with its stored session

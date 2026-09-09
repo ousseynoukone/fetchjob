@@ -10,6 +10,7 @@ import { PlatformCredentialsModule } from './platform-credentials/platform-crede
 import { KnowledgeModule } from './knowledge/knowledge.module';
 import { CustomQuestionsModule } from './custom-questions/custom-questions.module';
 import { VerificationModule } from './verification/verification.module';
+import { SessionHealthModule } from './session-health/session-health.module';
 import { VersionController } from './version.controller';
 
 @Module({
@@ -28,6 +29,7 @@ import { VersionController } from './version.controller';
     KnowledgeModule,
     CustomQuestionsModule,
     VerificationModule,
+    SessionHealthModule,
   ],
   controllers: [VersionController],
   providers: [],
