@@ -9,6 +9,7 @@ import { SettingsModule } from './settings/settings.module';
 import { PlatformCredentialsModule } from './platform-credentials/platform-credentials.module';
 import { KnowledgeModule } from './knowledge/knowledge.module';
 import { CustomQuestionsModule } from './custom-questions/custom-questions.module';
+import { VersionController } from './version.controller';
 
 @Module({
   imports: [
@@ -26,7 +27,7 @@ import { CustomQuestionsModule } from './custom-questions/custom-questions.modul
     KnowledgeModule,
     CustomQuestionsModule,
   ],
-  controllers: [],
+  controllers: [VersionController],
   providers: [],
 })
 export class AppModule {}
