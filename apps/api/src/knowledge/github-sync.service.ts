@@ -39,13 +39,25 @@ export class GithubSyncService {
     // usage bounded, and a personal GitHub account's repo count is small
     // enough that the extra latency doesn't matter.
     for (const repo of repos) {
+      const skills = [...new Set([repo.language, ...repo.topics, ...repo.dependencies].filter((v): v is string => !!v))];
+
+      // README/description first; when neither exists (common for repos
+      // without a written README), fall back to the real dependencies list
+      // so the repo still contributes *something* rather than nothing.
+      const baseSummary = [repo.description, repo.readmeExcerpt].filter(Boolean).join(' — ');
+      const fallbackSummary = repo.dependencies.length
+        ? `Dépendances détectées : ${repo.dependencies.slice(0, 8).join(', ')}`
+        : '';
+      const structureNote = repo.structureSignals.length ? repo.structureSignals.join(', ') : '';
+      const summary = [baseSummary || fallbackSummary, structureNote].filter(Boolean).join(' — ');
+
       await this.knowledge.upsertItem(userId, {
         source: 'github',
         type: 'repo',
         externalId: repo.externalId,
         title: repo.name,
-        summary: [repo.description, repo.readmeExcerpt].filter(Boolean).join(' — '),
-        skills: [repo.language, ...repo.topics].filter((v): v is string => !!v),
+        summary,
+        skills,
         url: repo.url,
         metadata: { stars: repo.stars, private: repo.private, pushedAt: repo.pushedAt },
       });
