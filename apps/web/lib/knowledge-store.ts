@@ -9,12 +9,26 @@ export interface KnowledgeStatus {
   lastSyncedAt: string | null;
 }
 
+export interface KnowledgeItem {
+  id: string;
+  source: string;
+  type: string;
+  title: string;
+  summary: string;
+  skills: string[];
+  url: string | null;
+  metadata: Record<string, any> | null;
+  syncedAt: string;
+}
+
 interface Store {
   status: KnowledgeStatus | null;
+  items: KnowledgeItem[];
   loading: boolean;
   saving: boolean;
   syncing: boolean;
   fetchStatus: () => Promise<void>;
+  fetchItems: () => Promise<void>;
   saveGithubToken: (token: string, username?: string) => Promise<void>;
   removeGithubToken: () => Promise<void>;
   sync: () => Promise<void>;
@@ -22,6 +36,7 @@ interface Store {
 
 export const useKnowledgeStore = create<Store>((set, get) => ({
   status: null,
+  items: [],
   loading: false,
   saving: false,
   syncing: false,
@@ -34,6 +49,17 @@ export const useKnowledgeStore = create<Store>((set, get) => ({
     } catch (error: any) {
       set({ loading: false });
       toast.error(error.response?.data?.message || 'Échec du chargement de la base de connaissance');
+    }
+  },
+
+  fetchItems: async () => {
+    try {
+      set({ loading: true });
+      const response = await apiClient.get('/api/knowledge');
+      set({ items: response.data, loading: false });
+    } catch (error: any) {
+      set({ loading: false });
+      toast.error(error.response?.data?.message || 'Échec du chargement des connaissances');
     }
   },
 
@@ -65,7 +91,7 @@ export const useKnowledgeStore = create<Store>((set, get) => ({
       const response = await apiClient.post('/api/knowledge/sync');
       toast.success(`Synchronisation terminée : ${response.data.synced} dépôt(s)`);
       set({ syncing: false });
-      await get().fetchStatus();
+      await Promise.all([get().fetchStatus(), get().fetchItems()]);
     } catch (error: any) {
       set({ syncing: false });
       toast.error(error.response?.data?.message || 'Échec de la synchronisation');
