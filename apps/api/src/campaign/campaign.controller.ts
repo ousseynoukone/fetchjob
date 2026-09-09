@@ -1,4 +1,5 @@
-import { Controller, Get, Put, Post, Body } from '@nestjs/common';
+import { Controller, Get, Put, Post, Body, Sse, MessageEvent } from '@nestjs/common';
+import { Observable, map } from 'rxjs';
 import { CampaignService } from './campaign.service';
 import { UpdateCampaignDto } from './dto/update-campaign.dto';
 
@@ -29,6 +30,15 @@ export class CampaignController {
   @Get('logs')
   async getLogs() {
     return this.campaignService.getLatestRun();
+  }
+
+  // Pushes each candidature-by-candidature log line the moment it's written,
+  // instead of the frontend re-polling /campagne/logs on a timer — a real
+  // "suivre en direct" view instead of a few-seconds-stale snapshot. Plain
+  // SSE (not a websocket) since this is one-way, server-to-browser only.
+  @Sse('stream')
+  streamLogs(): Observable<MessageEvent> {
+    return this.campaignService.streamLogs().pipe(map((event) => ({ data: event })));
   }
 
   @Get('runs')

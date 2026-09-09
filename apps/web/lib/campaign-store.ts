@@ -53,6 +53,7 @@ interface Store {
   runCampaign: () => Promise<void>;
   pauseCampaign: () => Promise<void>;
   fetchLatestRun: () => Promise<void>;
+  connectStream: () => () => void;
 }
 
 export const useCampaignStore = create<Store>((set, get) => ({
@@ -122,5 +123,45 @@ export const useCampaignStore = create<Store>((set, get) => ({
     } catch {
       // ignore polling failures
     }
+  },
+
+  // Live feed of the current run's log lines, pushed the moment each
+  // candidature is scanned/prepared/sent — replaces re-polling /campagne/logs
+  // on a timer. Returns a cleanup function so the caller's effect can close
+  // the connection on unmount.
+  connectStream: () => {
+    const source = new EventSource(`${apiClient.defaults.baseURL}/api/campagne/stream`);
+
+    source.onmessage = (event) => {
+      let payload: { runId: string; type: 'log' | 'done'; message: string; at: string };
+      try {
+        payload = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+
+      const current = get().latestRun;
+      // Ignore lines from a run other than the one currently displayed (e.g.
+      // a stale event delivered right as a brand-new run just started).
+      if (current && current.id && current.id !== payload.runId) return;
+
+      if (payload.type === 'done') {
+        set({ running: false });
+        get().fetchLatestRun();
+        return;
+      }
+
+      if (current) {
+        set({ latestRun: { ...current, logs: [...(current.logs || []), payload.message] } });
+      } else {
+        get().fetchLatestRun();
+      }
+    };
+
+    // The browser auto-reconnects a dropped EventSource on its own; nothing
+    // to do here beyond not crashing the tab over a transient network blip.
+    source.onerror = () => {};
+
+    return () => source.close();
   },
 }));

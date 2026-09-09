@@ -46,3 +46,33 @@ export async function hasSecurityCheck(page: Page): Promise<boolean> {
   const bodyText = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
   return SECURITY_CHECK_TEXT.test(bodyText);
 }
+
+// Welcome to the Jungle hosts the job posting itself, but the real "Postuler"
+// action almost always points out to whatever ATS the employer actually uses
+// (Greenhouse, Lever, Workday, SmartRecruiters, or something else entirely) —
+// confirmed live on a real posting: its apply button links to a Beetween
+// form, nothing to do with WTTJ's own domain. That target only exists as a
+// link's href on the rendered page, so it has to be visited once before the
+// usual ATS-by-URL routing (see auto-apply.service.ts's detectAtsKey) can
+// even see it.
+//
+// Returns null — meaning "nothing better than the job page itself" — in two
+// cases, both confirmed live: no apply link at all (page didn't render in
+// time), or the link stays on welcometothejungle.com (some postings route
+// through a WTTJ account sign-in instead of an external ATS: the href is
+// `/fr/authenticate/signin`, which is no more automatable than the job page
+// itself). Only a genuine off-WTTJ redirect is worth returning.
+export async function resolveWelcomeToTheJungleApplyUrl(page: Page, jobPageUrl: string): Promise<string | null> {
+  await page.goto(jobPageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await dismissCookieBanner(page);
+  await page.waitForTimeout(2000); // same WAF-challenge/SPA-hydration delay as the scraper's enrichment step
+  const href = await page.locator('a[data-role="job:apply"]').first().getAttribute('href').catch(() => null);
+  if (!href) return null;
+
+  try {
+    const resolved = new URL(href, jobPageUrl);
+    return resolved.hostname.endsWith('welcometothejungle.com') ? null : resolved.toString();
+  } catch {
+    return null;
+  }
+}

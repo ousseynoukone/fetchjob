@@ -19,6 +19,7 @@ import { SmartRecruitersApplier } from './appliers/smartrecruiters.applier';
 import { GenericRedirectApplier } from './appliers/generic-redirect.applier';
 import { JobApplier } from './appliers/applier.interface';
 import { scanInvalidFields } from './appliers/form-fields';
+import { resolveWelcomeToTheJungleApplyUrl } from './appliers/ats-common';
 import { CustomQuestionsService } from '../custom-questions/custom-questions.service';
 import type { CVData } from '../pdf/templates/cv-document';
 import type { Page } from 'playwright';
@@ -195,13 +196,36 @@ export class AutoApplyService {
     return { applied, needsReview };
   }
 
+  // Welcome to the Jungle hosts the posting but rarely the actual apply
+  // form — the real target only appears as a link on the rendered page (see
+  // resolveWelcomeToTheJungleApplyUrl). Resolved once, in a disposable
+  // context, before the ATS-by-URL routing below ever runs: `sourceUrl`
+  // as stored is WTTJ's own page, so detecting greenhouse.io/lever.co/etc.
+  // against it directly would never match.
+  private async resolveEffectiveSourceUrl(source: string, sourceUrl: string): Promise<string> {
+    if (source !== 'welcome_to_the_jungle') return sourceUrl;
+
+    const context = await this.browserSession.createContext(null);
+    try {
+      const page = await context.newPage();
+      const resolved = await resolveWelcomeToTheJungleApplyUrl(page, sourceUrl);
+      return resolved || sourceUrl;
+    } catch (error: any) {
+      this.logger.warn(`Welcome to the Jungle apply-link resolution failed for ${sourceUrl}: ${error.message}`);
+      return sourceUrl;
+    } finally {
+      await context.close().catch(() => {});
+    }
+  }
+
   private async applyToOne(
     userId: string,
     application: { id: string; jobTitle: string; company: string; sourceUrl: string; coverLetter: string | null; jobOffer: { source: string } },
     atsEnabled: boolean,
     knownAnswers: Map<string, string>,
   ) {
-    const { applier, platformKey } = this.getApplier(application.jobOffer.source, application.sourceUrl, atsEnabled);
+    const effectiveSourceUrl = await this.resolveEffectiveSourceUrl(application.jobOffer.source, application.sourceUrl);
+    const { applier, platformKey } = this.getApplier(application.jobOffer.source, effectiveSourceUrl, atsEnabled);
     const platform = applier.credentialPlatform as SupportedPlatform | null;
 
     let sessionState: string | null = null;
@@ -227,7 +251,7 @@ export class AutoApplyService {
           id: application.id,
           jobTitle: application.jobTitle,
           company: application.company,
-          sourceUrl: application.sourceUrl,
+          sourceUrl: effectiveSourceUrl,
         },
         cv,
         cvPdfPath,
@@ -236,7 +260,7 @@ export class AutoApplyService {
         reportUnknownFields: (fields) =>
           this.customQuestions.recordUnknown(
             userId,
-            fields.map((f) => ({ ...f, platform: platformKey, sourceUrl: application.sourceUrl })),
+            fields.map((f) => ({ ...f, platform: platformKey, sourceUrl: effectiveSourceUrl })),
           ),
       });
 
@@ -245,7 +269,7 @@ export class AutoApplyService {
       // the invalid field(s) visible on the page — catch those too so no
       // blocking question goes unrecorded.
       if (!result.success) {
-        await this.captureUnknownFields(page, platformKey, application.sourceUrl, userId);
+        await this.captureUnknownFields(page, platformKey, effectiveSourceUrl, userId);
       }
 
       if (platform) {

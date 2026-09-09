@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { Subject, Observable } from 'rxjs';
 import { PrismaService } from '../common/prisma.service';
 import { LocalUserService } from '../common/local-user.service';
 import { CvService } from '../cv/cv.service';
@@ -63,13 +64,35 @@ const DEFAULT_CAMPAIGN = {
   maxApplicationsPerDay: 10,
   minMatchScore: 60,
   actionMode: 'prepare_only',
-  sources: ['linkedin', 'hellowork', 'indeed', 'france_travail', 'adzuna'] as string[],
+  sources: ['linkedin', 'hellowork', 'indeed', 'france_travail', 'adzuna', 'welcome_to_the_jungle'] as string[],
 };
+
+// A candidature only tells us something about its source once it's past the
+// "just prepared" stage — either it got sent (by the bot or by the user
+// clicking through manually) or the bot tried and got blocked.
+const ATTEMPTED_STATUSES = ['applied', 'needs_review'];
+
+// Below this many attempts, a 0% success rate proves nothing — could just be
+// bad luck on the first couple of postings.
+const MIN_TRIALS_BEFORE_JUDGING = 8;
+// A condemned source still gets one offer per run: platforms change (an
+// anti-bot lifts, a redesign reopens a form), and giving up on them for good
+// would mean never noticing.
+const PROBE_QUOTA = 1;
 
 @Injectable()
 export class CampaignService {
   private readonly logger = new Logger(CampaignService.name);
   private runningCampaigns = new Set<string>();
+  // In-process only: this is a single-instance, single-user tool, so an
+  // RxJS Subject is enough to fan a run's log lines out to any number of
+  // connected browser tabs live, with no external broker needed. `done` lets
+  // the frontend know the run ended without having to re-poll for it.
+  private readonly logStream = new Subject<{ runId: string; type: 'log' | 'done'; message: string; at: string }>();
+
+  streamLogs(): Observable<{ runId: string; type: 'log' | 'done'; message: string; at: string }> {
+    return this.logStream.asObservable();
+  }
 
   constructor(
     private prisma: PrismaService,
@@ -167,6 +190,70 @@ export class CampaignService {
     const run = await this.prisma.campaignRun.findUnique({ where: { id: runId } });
     const logs = [...(run?.logs || []), message];
     await this.prisma.campaignRun.update({ where: { id: runId }, data: { logs } });
+    this.logStream.next({ runId, type: 'log', message, at: new Date().toISOString() });
+  }
+
+  // What each source has actually produced for this campaign so far — read
+  // from the applications themselves rather than a separate counter, so it
+  // can never drift from what really happened (an application deleted or
+  // corrected by hand doesn't need to be reconciled anywhere else).
+  private async performanceBySource(campaignId: string): Promise<Map<string, { essais: number; succes: number }>> {
+    const rows = await this.prisma.application.findMany({
+      where: { campaignId, status: { in: ATTEMPTED_STATUSES } },
+      select: { status: true, jobOffer: { select: { source: true } } },
+    });
+
+    const perf = new Map<string, { essais: number; succes: number }>();
+    for (const row of rows) {
+      const current = perf.get(row.jobOffer.source) || { essais: 0, succes: 0 };
+      current.essais += 1;
+      if (row.status === 'applied') current.succes += 1;
+      perf.set(row.jobOffer.source, current);
+    }
+    return perf;
+  }
+
+  // Caps how many candidatures a single run is allowed to prepare from each
+  // source. Without this, one prolific source processed first exhausts the
+  // whole day's quota before a later, more productive source is ever tried —
+  // the loop below has no other point where a source's own budget runs out.
+  // A source proven (over enough attempts) to never convert is knocked down
+  // to a single probe per run; what it gives up is handed to the sources that
+  // do convert, evenly.
+  private async computeSourceQuotas(
+    campaignId: string,
+    sources: string[],
+    dailyLimit: number,
+  ): Promise<{ quotas: Map<string, number>; condemned: string[] }> {
+    const perf = await this.performanceBySource(campaignId);
+    const baseShare = Math.max(1, Math.ceil(dailyLimit / Math.max(sources.length, 1)));
+
+    const quotas = new Map<string, number>();
+    const condemned: string[] = [];
+    let freed = 0;
+
+    for (const source of sources) {
+      const stat = perf.get(source) || { essais: 0, succes: 0 };
+      const isCondemned = stat.essais >= MIN_TRIALS_BEFORE_JUDGING && stat.succes === 0;
+      if (isCondemned) {
+        condemned.push(source);
+        freed += Math.max(0, baseShare - PROBE_QUOTA);
+        quotas.set(source, PROBE_QUOTA);
+      } else {
+        quotas.set(source, baseShare);
+      }
+    }
+
+    const productive = sources.filter((s) => !condemned.includes(s));
+    if (freed > 0 && productive.length) {
+      const share = Math.floor(freed / productive.length);
+      const remainder = freed - share * productive.length;
+      productive.forEach((source, idx) => {
+        quotas.set(source, (quotas.get(source) || 0) + share + (idx < remainder ? 1 : 0));
+      });
+    }
+
+    return { quotas, condemned };
   }
 
   private async executeRun(campaign: any, runId: string, userId: string) {
@@ -207,6 +294,24 @@ export class CampaignService {
         return;
       }
 
+      // Redirects the day's quota away from sources that consume it without
+      // ever converting (a platform's anti-bot blocking every attempt, or an
+      // aggregator whose postings all turn out to redirect elsewhere) —
+      // without this, a source processed early can quietly starve every
+      // other source of budget it isn't actually using productively.
+      const { quotas: sourceQuotas, condemned } = await this.computeSourceQuotas(
+        campaign.id,
+        campaign.sources as string[],
+        campaign.maxApplicationsPerDay,
+      );
+      if (condemned.length) {
+        await this.appendLog(
+          runId,
+          `Quota réduit à ${PROBE_QUOTA} sonde pour : ${condemned.join(', ')} (0 succès sur au moins ${MIN_TRIALS_BEFORE_JUDGING} essais) — repris par les sources qui convertissent.`,
+        );
+      }
+      const preparedPerSource = new Map<string, number>();
+
       // Query-outer, source-inner: each query is tried across every source
       // before moving to the next query. Looping sources-outer would let the
       // first source alone exhaust the daily cap, so later sources (and
@@ -214,6 +319,9 @@ export class CampaignService {
       for (const query of searchQueries) {
         for (const source of campaign.sources as string[]) {
           if (applicationsPrepared >= campaign.maxApplicationsPerDay) break;
+
+          const sourceQuota = sourceQuotas.get(source) ?? campaign.maxApplicationsPerDay;
+          if ((preparedPerSource.get(source) || 0) >= sourceQuota) continue;
 
           await this.appendLog(runId, `Recherche "${query}" sur ${source}...`);
 
@@ -228,6 +336,7 @@ export class CampaignService {
 
           for (const rawOffer of offers) {
             if (applicationsPrepared >= campaign.maxApplicationsPerDay) break;
+            if ((preparedPerSource.get(source) || 0) >= sourceQuota) break;
 
             if (!isWithinIdf(rawOffer.source, rawOffer.location, campaign.location)) {
               offersFiltered++;
@@ -342,6 +451,7 @@ export class CampaignService {
 
             seenJobKeys.add(jobKey);
             applicationsPrepared++;
+            preparedPerSource.set(source, (preparedPerSource.get(source) || 0) + 1);
             createdApplicationIds.push(application.id);
             await this.appendLog(
               runId,
@@ -388,6 +498,7 @@ export class CampaignService {
       });
       await this.prisma.campaign.update({ where: { id: campaign.id }, data: { status: 'active' } });
       this.runningCampaigns.delete(campaign.id);
+      this.logStream.next({ runId, type: 'done', message: error.message, at: new Date().toISOString() });
     }
   }
 
@@ -413,5 +524,6 @@ export class CampaignService {
     });
 
     this.runningCampaigns.delete(campaignId);
+    this.logStream.next({ runId, type: 'done', message: '', at: new Date().toISOString() });
   }
 }

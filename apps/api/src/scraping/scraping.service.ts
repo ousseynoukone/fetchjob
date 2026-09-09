@@ -113,6 +113,17 @@ const FRANCE_TRAVAIL_REGION_CODES: Record<string, string> = {
   'provence alpes cote d azur': '93',
 };
 
+// Welcome to the Jungle's own frontend calls Algolia directly from the
+// browser — this app-id/key pair ships in that public JS bundle to every
+// visitor and is scoped to search-only (read) access, restricted to
+// requests carrying WTTJ's own Referer/Origin. Same nature as the LinkedIn
+// guest-jobs endpoint above: a public, unauthenticated, already-client-side
+// API, not an extracted secret.
+const WTTJ_ALGOLIA_URL = 'https://csekhvms53-dsn.algolia.net/1/indexes/*/queries';
+const WTTJ_ALGOLIA_APP_ID = 'CSEKHVMS53';
+const WTTJ_ALGOLIA_SEARCH_KEY = '4bd8f6215d0cc52b26430765769e65a0';
+const WTTJ_JOBS_INDEX = 'wk_cms_jobs_production';
+
 const DIACRITICS_REGEX = new RegExp('[\\u0300-\\u036f]', 'g');
 
 function normalizeLocation(text: string): string {
@@ -195,6 +206,8 @@ export class ScrapingService {
           return await this.fetchIndeedOffers(params);
         case 'france_travail':
           return await this.fetchFranceTravailOffers(params);
+        case 'welcome_to_the_jungle':
+          return await this.fetchWelcomeToTheJungleOffers(params);
         case 'adzuna':
           return await this.fetchAdzunaOffers(params);
         case 'remotive':
@@ -231,6 +244,8 @@ export class ScrapingService {
         return this.enrichHelloWorkDescription(offer);
       case 'linkedin':
         return this.enrichLinkedInDescription(offer);
+      case 'welcome_to_the_jungle':
+        return this.enrichWelcomeToTheJungleDescription(offer);
       default:
         return offer;
     }
@@ -267,6 +282,38 @@ export class ScrapingService {
     } catch (error: any) {
       this.logger.warn(`LinkedIn detail fetch failed for ${offer.url}: ${error.message}`);
       return offer;
+    }
+  }
+
+  // Welcome to the Jungle's job pages sit behind an AWS WAF challenge —
+  // confirmed live: a plain GET gets back an empty 202 with
+  // `x-amzn-waf-action: challenge`, no HTML at all. A real browser resolves
+  // that challenge's JS on its own just by rendering the page (verified
+  // live: the same URL loaded through Playwright comes back with the full
+  // page, JobPosting JSON-LD included) — exactly the reason Indeed already
+  // goes through Playwright above, not a CAPTCHA bypass of any kind.
+  private async enrichWelcomeToTheJungleDescription(offer: ScrapedOffer): Promise<ScrapedOffer> {
+    let browser;
+    try {
+      browser = await chromium.launch({
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+      });
+      const context = await browser.newContext({ userAgent: DETAIL_PAGE_USER_AGENT, locale: 'fr-FR' });
+      const page = await context.newPage();
+      await page.goto(offer.url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      // Gives the WAF challenge's JS time to resolve and the SPA time to
+      // hydrate the JobPosting JSON-LD into the DOM.
+      await page.waitForTimeout(2500);
+      const html = await page.content();
+      const jobPosting = extractJobPostingJsonLd(html);
+      if (!jobPosting?.description) return offer;
+      return { ...offer, description: stripHtml(jobPosting.description) };
+    } catch (error: any) {
+      this.logger.warn(`Welcome to the Jungle detail fetch failed for ${offer.url}: ${error.message}`);
+      return offer;
+    } finally {
+      if (browser) await browser.close().catch(() => {});
     }
   }
 
@@ -560,6 +607,63 @@ export class ScrapingService {
       salary: offer.salaire?.libelle,
       postedAt: offer.dateCreation ? new Date(offer.dateCreation) : undefined,
     }));
+  }
+
+  // Welcome to the Jungle — same Algolia index its own search page queries,
+  // called directly rather than scraping the (WAF-challenged, JS-rendered)
+  // search results page. `office`/`remote`/`contract_type_names` are already
+  // structured fields on the hit; the full description only exists on the
+  // job's own page, fetched later via enrichDescription.
+  private async fetchWelcomeToTheJungleOffers(params: SearchParams): Promise<ScrapedOffer[]> {
+    const response = await axios.post(
+      WTTJ_ALGOLIA_URL,
+      {
+        requests: [
+          {
+            indexName: WTTJ_JOBS_INDEX,
+            params: `hitsPerPage=20&page=0&query=${encodeURIComponent(params.keywords)}`,
+          },
+        ],
+      },
+      {
+        headers: {
+          'x-algolia-application-id': WTTJ_ALGOLIA_APP_ID,
+          'x-algolia-api-key': WTTJ_ALGOLIA_SEARCH_KEY,
+          'Content-Type': 'application/json',
+          Referer: 'https://www.welcometothejungle.com/',
+          Origin: 'https://www.welcometothejungle.com',
+        },
+        timeout: 10000,
+      },
+    );
+
+    const hits: any[] = response.data?.results?.[0]?.hits || [];
+
+    return hits
+      .filter((hit) => hit.organization?.slug && hit.slug)
+      .slice(0, 20)
+      .map((hit) => {
+        const city = hit.office?.city;
+        const state = hit.office?.state;
+        const location = city
+          ? [city, state].filter(Boolean).join(', ')
+          : hit.remote && hit.remote !== 'no'
+            ? 'Télétravail'
+            : undefined;
+
+        return {
+          externalId: hit.objectID,
+          source: 'welcome_to_the_jungle',
+          title: decodeHtmlEntities(hit.name || ''),
+          company: hit.organization?.name || 'Entreprise non précisée',
+          location,
+          contractType: hit.contract_type_names?.fr || hit.contract_type || undefined,
+          salary: hit.salary_yearly_minimum ? `${Math.round(hit.salary_yearly_minimum)}€+` : undefined,
+          description: stripHtml(hit.profile || hit.name || ''),
+          url: `https://www.welcometothejungle.com/fr/companies/${hit.organization.slug}/jobs/${hit.slug}`,
+          postedAt: hit.published_at ? new Date(hit.published_at) : undefined,
+        };
+      });
   }
 
   private async fetchAdzunaOffers(params: SearchParams): Promise<ScrapedOffer[]> {

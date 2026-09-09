@@ -11,6 +11,7 @@ const SOURCES = [
   { id: 'hellowork', label: 'HelloWork' },
   { id: 'indeed', label: 'Indeed' },
   { id: 'france_travail', label: 'France Travail' },
+  { id: 'welcome_to_the_jungle', label: 'Welcome to the Jungle' },
   { id: 'adzuna', label: 'Adzuna' },
   { id: 'remotive', label: 'Remotive (remote)' },
   { id: 'arbeitnow', label: 'Arbeitnow' },
@@ -30,6 +31,7 @@ export default function CampaignPage() {
     runCampaign,
     pauseCampaign,
     fetchLatestRun,
+    connectStream,
   } = useCampaignStore();
 
   const [form, setForm] = useState({
@@ -83,9 +85,22 @@ export default function CampaignPage() {
     });
   }, [campaign]);
 
+  // Live stream is kept open for the whole page visit (not just while a run
+  // is active) so the very first log line of the *next* run — including one
+  // fired by the cron scheduler rather than the "Lancer" button — shows up
+  // immediately instead of waiting for a fallback poll to notice it started.
+  useEffect(() => {
+    const disconnect = connectStream();
+    return disconnect;
+  }, [connectStream]);
+
+  // Fallback safety net: if the SSE connection is ever silently stuck (proxy
+  // buffering, a dropped connection the browser hasn't retried yet), this
+  // still catches up within a few seconds instead of leaving the view stale
+  // indefinitely.
   useEffect(() => {
     if (running) {
-      pollRef.current = setInterval(fetchLatestRun, 2500);
+      pollRef.current = setInterval(fetchLatestRun, 8000);
     } else if (pollRef.current) {
       clearInterval(pollRef.current);
       pollRef.current = null;
