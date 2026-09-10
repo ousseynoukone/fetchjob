@@ -26,7 +26,19 @@ export class LinkedInApplier implements JobApplier {
   async apply(page: Page, ctx: ApplyContext): Promise<ApplyResult> {
     await ctx.appendLog?.(`Navigation vers l'offre LinkedIn : ${ctx.application.jobTitle}...`);
     const targetUrl = ctx.application.sourceUrl.replace(/https?:\/\/[a-z]{2}\.linkedin\.com/i, 'https://www.linkedin.com');
-    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    try {
+      await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    } catch (err: any) {
+      if (err.message && err.message.includes('ERR_TOO_MANY_REDIRECTS')) {
+        await ctx.appendLog?.('Session LinkedIn révoquée ou invalide (boucle de redirection détectée).');
+        return {
+          success: false,
+          sessionExpired: true,
+          note: 'Session LinkedIn expirée -- connectez votre compte pour la rétablir.',
+        };
+      }
+      throw err;
+    }
     await dismissCookieBanner(page);
 
     const loginResult = await this.ensureLoggedIn(page, ctx);

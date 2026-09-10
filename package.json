@@ -10,7 +10,8 @@
     "test": "turbo run test",
     "lint": "turbo run lint",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
-    "type-check": "turbo run type-check"
+    "type-check": "turbo run type-check",
+    "establish-session": "npm --workspace=apps/api run establish-session --"
   },
   "devDependencies": {
     "prettier": "^3.2.0",

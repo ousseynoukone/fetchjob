@@ -20,7 +20,20 @@
 // PlatformCredential anymore; login itself always happens in the real
 // browser window below.
 
-require('dotenv').config({ path: require('path').join(__dirname, '..', '.env.production.local') });
+const fs = require('fs');
+const path = require('path');
+
+const envCandidates = [
+  path.join(__dirname, '..', '.env.production.local'),
+  path.join(process.cwd(), 'apps', 'api', '.env.production.local'),
+  path.join(process.cwd(), '.env.production.local'),
+];
+for (const cand of envCandidates) {
+  if (fs.existsSync(cand)) {
+    require('dotenv').config({ path: cand });
+    break;
+  }
+}
 
 if (!process.env.DATABASE_URL) {
   console.error(
@@ -86,7 +99,19 @@ async function main() {
       '--lang=fr-FR',
     ],
   });
-  const context = await browser.newContext();
+  const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36';
+  const context = await browser.newContext({
+    userAgent,
+    viewport: { width: 1280, height: 800 },
+    locale: 'fr-FR',
+    timezoneId: 'Europe/Paris',
+    extraHTTPHeaders: {
+      'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
+      'Accept-Encoding': 'gzip, deflate, br',
+      DNT: '1',
+      'Upgrade-Insecure-Requests': '1',
+    },
+  });
   const page = await context.newPage();
   await page.goto(LOGIN_URLS[platform]);
 
@@ -94,6 +119,13 @@ async function main() {
 
   const storageState = await context.storageState();
   if (platform === 'linkedin' && Array.isArray(storageState.cookies)) {
+    const hasLiAt = storageState.cookies.some((c) => c.name === 'li_at');
+    if (!hasLiAt) {
+      console.warn('\n⚠️ ATTENTION : Le cookie de session "li_at" n\'a pas été détecté !');
+      console.warn('Êtes-vous bien connecté sur LinkedIn dans la fenêtre ouverte ?');
+    } else {
+      console.log('✅ Cookie li_at détecté avec succès !');
+    }
     storageState.cookies = storageState.cookies.map((c) => {
       if (c.domain && c.domain.includes('linkedin.com')) {
         return { ...c, domain: '.linkedin.com' };
