@@ -91,55 +91,55 @@ export default function ApplicationsList() {
                 <RotateCcw className="w-4 h-4" /> Réessayer tout
               </button>
             )}
-            {applications.length > 0 && (
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setDropdownOpen((v) => !v)}
-                  className="btn btn-outline btn-sm gap-1.5 inline-flex flex-nowrap items-center whitespace-nowrap"
-                >
-                  <Trash2 className="w-4 h-4 shrink-0" />
-                  <span>Nettoyer</span>
-                  <ChevronDown className="w-3.5 h-3.5 shrink-0" />
-                </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setDropdownOpen((v) => !v)}
+                className="btn btn-outline btn-sm gap-1.5 inline-flex flex-nowrap items-center whitespace-nowrap"
+                title="Options de nettoyage des candidatures"
+              >
+                <Trash2 className="w-4 h-4 shrink-0" />
+                <span>Nettoyer</span>
+                <ChevronDown className="w-3.5 h-3.5 shrink-0" />
+              </button>
 
-                {dropdownOpen && (
-                  <>
-                    <div
-                      className="fixed inset-0 z-20"
-                      onClick={() => setDropdownOpen(false)}
-                    />
-                    <ul className="absolute right-0 top-full mt-2 z-30 p-1.5 shadow-xl bg-base-200 border border-base-300 rounded-xl w-64 menu">
-                      {tab && (
-                        <li>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setDropdownOpen(false);
-                              setClearTarget('tab');
-                            }}
-                          >
-                            Supprimer "{activeTab?.label}"
-                          </button>
-                        </li>
-                      )}
+              {dropdownOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-20"
+                    onClick={() => setDropdownOpen(false)}
+                  />
+                  <ul className="absolute right-0 top-full mt-2 z-30 p-1.5 shadow-xl bg-base-200 border border-base-300 rounded-xl w-64 menu">
+                    {tab && (
                       <li>
                         <button
                           type="button"
-                          className="text-error"
+                          disabled={applications.length === 0}
                           onClick={() => {
                             setDropdownOpen(false);
-                            setClearTarget('all');
+                            setClearTarget('tab');
                           }}
                         >
-                          Tout supprimer
+                          Supprimer cet onglet ({applications.length})
                         </button>
                       </li>
-                    </ul>
-                  </>
-                )}
-              </div>
-            )}
+                    )}
+                    <li>
+                      <button
+                        type="button"
+                        className="text-error font-medium"
+                        onClick={() => {
+                          setDropdownOpen(false);
+                          setClearTarget('all');
+                        }}
+                      >
+                        Tout supprimer (tous onglets)
+                      </button>
+                    </li>
+                  </ul>
+                </>
+              )}
+            </div>
             <button className="btn btn-primary btn-sm gap-2" onClick={() => setShowAddModal(true)}>
               <Plus className="w-4 h-4" /> Ajouter une offre
             </button>
@@ -188,7 +188,10 @@ export default function ApplicationsList() {
                       } else {
                         await removeAll();
                       }
+                      await fetchList(activeTab?.status, activeTab?.scope);
                       setClearTarget(null);
+                    } catch (err) {
+                      console.error('Erreur suppression:', err);
                     } finally {
                       setClearing(false);
                     }
