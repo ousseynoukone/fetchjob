@@ -39,8 +39,9 @@ export class LinkedInApplier implements JobApplier {
       // giving up, so ATS-by-URL routing (or the generic fallback) gets a
       // real shot at the real form.
       const externalApplyButton = page
-        .getByRole('link', { name: /^postuler$|^apply$/i })
-        .or(page.getByRole('button', { name: /^postuler$|^apply$/i }))
+        .getByRole('link', { name: /postuler|apply/i })
+        .or(page.getByRole('button', { name: /postuler|apply/i }))
+        .or(page.locator('a[href*="/safety/go/"], a[data-tracking-control-name*="apply"]'))
         .first();
 
       if (!(await externalApplyButton.isVisible().catch(() => false))) {

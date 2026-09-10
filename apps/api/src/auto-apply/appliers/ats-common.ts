@@ -141,6 +141,22 @@ export async function hasAlreadyAppliedIndicator(page: Page): Promise<boolean> {
 // Returns null when the click didn't actually leave the platform's own
 // domain — meaning this wasn't really an external-redirect case after all.
 export async function resolveExternalApplyUrl(page: Page, clickable: Locator, ownDomain: RegExp): Promise<string | null> {
+  // 1. Direct href check (e.g. LinkedIn safety redirect href="/safety/go/?url=...")
+  const href = await clickable.getAttribute('href').catch(() => null);
+  if (href) {
+    try {
+      const parsed = new URL(href, page.url());
+      const targetParam = parsed.searchParams.get('url');
+      if (targetParam) {
+        const decoded = decodeURIComponent(targetParam);
+        if (!ownDomain.test(decoded)) return decoded;
+      }
+      if (!ownDomain.test(parsed.href) && !parsed.pathname.includes('/safety/go')) {
+        return parsed.href;
+      }
+    } catch { /* ignore */ }
+  }
+
   const popupPromise = page.waitForEvent('popup', { timeout: 5000 }).catch(() => null);
   await clickable.click().catch(() => {});
   const popup = await popupPromise;
