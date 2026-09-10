@@ -54,7 +54,6 @@ export default function ApplicationsList() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [clearTarget, setClearTarget] = useState<'tab' | 'all' | null>(null);
-  const [clearing, setClearing] = useState(false);
   const activeTab = TABS.find((t) => t.id === tab);
 
   useEffect(() => {
@@ -149,7 +148,7 @@ export default function ApplicationsList() {
         {showAddModal && <AddOfferModal onClose={() => setShowAddModal(false)} />}
 
         {clearTarget && (
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4" onClick={() => !clearing && setClearTarget(null)}>
+          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4" onClick={() => setClearTarget(null)}>
             <div
               className="bg-base-200 border border-base-300 rounded-2xl p-6 w-full max-w-md shadow-2xl"
               onClick={(e) => e.stopPropagation()}
@@ -171,7 +170,6 @@ export default function ApplicationsList() {
                 <button
                   type="button"
                   className="btn btn-ghost btn-sm"
-                  disabled={clearing}
                   onClick={() => setClearTarget(null)}
                 >
                   Annuler
@@ -179,25 +177,18 @@ export default function ApplicationsList() {
                 <button
                   type="button"
                   className="btn btn-error btn-sm gap-1.5"
-                  disabled={clearing}
-                  onClick={async () => {
-                    setClearing(true);
-                    try {
-                      if (clearTarget === 'tab') {
-                        await removeAll(activeTab?.status, activeTab?.scope);
-                      } else {
-                        await removeAll();
-                      }
-                      await fetchList(activeTab?.status, activeTab?.scope);
-                      setClearTarget(null);
-                    } catch (err) {
-                      console.error('Erreur suppression:', err);
-                    } finally {
-                      setClearing(false);
+                  onClick={() => {
+                    const target = clearTarget;
+                    // Dismiss modal immediately for instant feedback
+                    setClearTarget(null);
+                    if (target === 'tab') {
+                      removeAll(activeTab?.status, activeTab?.scope);
+                    } else {
+                      removeAll();
                     }
                   }}
                 >
-                  {clearing ? <span className="loading loading-spinner loading-xs" /> : <Trash2 className="w-4 h-4" />}
+                  <Trash2 className="w-4 h-4" />
                   Confirmer la suppression
                 </button>
               </div>

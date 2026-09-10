@@ -141,13 +141,23 @@ export const useApplicationsStore = create<Store>((set, get) => ({
   // held in state, so the only way to end up with an accurate list is to
   // ask the server again with the exact same filter that was just deleted.
   removeAll: async (status, scope) => {
+    const previous = get().applications;
+    // Optimistically empty the view immediately so the user gets an instant 0ms response
+    if (!status) {
+      set({ applications: [] });
+    } else {
+      set({ applications: previous.filter((a) => a.status !== status) });
+    }
+
     try {
       await apiClient.delete('/api/candidatures', {
         params: { ...(status ? { status } : {}), ...(scope ? { scope } : {}) },
       });
+      // Silent sync with server in background
       await get().fetchList(status, scope);
       toast.success('Candidatures supprimées');
     } catch (error: any) {
+      set({ applications: previous });
       toast.error(error.response?.data?.message || 'Failed to delete applications');
       throw error;
     }
