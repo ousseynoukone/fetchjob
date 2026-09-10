@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { Subject, Observable } from 'rxjs';
 import { PrismaService } from '../common/prisma.service';
 import { LocalUserService } from '../common/local-user.service';
@@ -193,6 +193,89 @@ export class CampaignService {
     });
 
     return run;
+  }
+
+  // Re-attempts every candidature currently marked "à vérifier" — most
+  // useful right after answering whatever question or fixing whatever
+  // problem blocked it the first time (see CustomQuestionsService: a
+  // learned answer is reused automatically the next time the same
+  // question comes up, on any platform). Reuses AutoApplyService.run()
+  // directly rather than the whole scrape-and-prepare pipeline, and the
+  // exact same CampaignRun/log-stream/live-view infrastructure a normal
+  // run uses, so nothing new was needed on the frontend to watch it happen.
+  async retryFailed() {
+    const campaign = await this.getOrCreateCampaign();
+
+    if (this.runningCampaigns.has(campaign.id)) {
+      return this.getLatestRun();
+    }
+
+    const userId = await this.localUser.getDefaultUserId();
+    const failed = await this.prisma.application.findMany({
+      where: { userId, status: 'needs_review' },
+      select: { id: true },
+    });
+
+    if (!failed.length) {
+      throw new BadRequestException('Aucune candidature "à vérifier" pour le moment.');
+    }
+
+    const run = await this.prisma.campaignRun.create({
+      data: {
+        campaignId: campaign.id,
+        userId,
+        logs: [`Nouvelle tentative sur ${failed.length} candidature(s) à vérifier...`],
+      },
+    });
+
+    this.runningCampaigns.add(campaign.id);
+    this.cancelledCampaigns.delete(campaign.id);
+    await this.prisma.campaign.update({ where: { id: campaign.id }, data: { status: 'running' } });
+
+    this.executeRetry(campaign, run.id, userId, failed.map((a) => a.id)).catch((err) => {
+      this.logger.error(`Retry run ${run.id} crashed: ${err.message}`);
+    });
+
+    return run;
+  }
+
+  private async executeRetry(campaign: any, runId: string, userId: string, applicationIds: string[]) {
+    try {
+      const { applied, needsReview, cancelled } = await this.autoApply.run({
+        userId,
+        applicationIds,
+        atsEnabled: campaign.autoApplyAts,
+        minDelaySeconds: campaign.autoApplyMinDelaySeconds,
+        maxDelaySeconds: campaign.autoApplyMaxDelaySeconds,
+        appendLog: (message) => this.appendLog(runId, message),
+        isCancelled: () => this.cancelledCampaigns.has(campaign.id),
+      });
+
+      await this.appendLog(
+        runId,
+        `Terminé : ${applied} envoyée(s), ${needsReview} toujours à vérifier.${cancelled ? ' (arrêté)' : ''}`,
+      );
+      await this.finishRun(
+        campaign.id,
+        runId,
+        { offersScanned: 0, offersFiltered: 0, applicationsPrepared: 0 },
+        cancelled ? 'paused' : 'active',
+      );
+    } catch (error: any) {
+      this.logger.error(error);
+      await this.appendLog(runId, `Erreur : ${error.message}`);
+      await this.prisma.campaignRun.update({
+        where: { id: runId },
+        data: { finishedAt: new Date(), error: error.message },
+      });
+      await this.prisma.campaign.update({
+        where: { id: campaign.id },
+        data: { status: this.cancelledCampaigns.has(campaign.id) ? 'paused' : 'active' },
+      });
+      this.runningCampaigns.delete(campaign.id);
+      this.cancelledCampaigns.delete(campaign.id);
+      this.logStream.next({ runId, type: 'done', message: error.message, at: new Date().toISOString() });
+    }
   }
 
   private async appendLog(runId: string, message: string) {

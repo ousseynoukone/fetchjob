@@ -31,6 +31,15 @@ export class CampaignController {
     return this.campaignService.pause();
   }
 
+  // Re-attempts every candidature currently "à vérifier" — typically run
+  // right after answering whatever question blocked it (see /api/questions)
+  // or fixing whatever else was wrong. Shows up in the same Journal/live-view
+  // panels as a normal run, since it's backed by the same CampaignRun.
+  @Post('retry-failed')
+  async retryFailed() {
+    return this.campaignService.retryFailed();
+  }
+
   @Get('logs')
   async getLogs() {
     return this.campaignService.getLatestRun();

@@ -4,9 +4,10 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useApplicationsStore } from '@/lib/applications-store';
+import { useCampaignStore } from '@/lib/campaign-store';
 import AppShell from '@/components/layout/app-shell';
 import AddOfferModal from './add-offer-modal';
-import { MapPin, Building2, Plus, Trash2, ChevronDown, CalendarClock, CalendarCheck } from 'lucide-react';
+import { MapPin, Building2, Plus, Trash2, ChevronDown, CalendarClock, CalendarCheck, RotateCcw } from 'lucide-react';
 
 const TABS: { id: string; label: string; status?: string; scope?: 'current' | 'history' }[] = [
   { id: '', label: 'Toutes' },
@@ -43,6 +44,7 @@ function scoreColor(score: number) {
 
 export default function ApplicationsList() {
   const { applications, loading, fetchList, removeAll } = useApplicationsStore();
+  const { retryFailed, running: campaignRunning } = useCampaignStore();
   const router = useRouter();
   const searchParams = useSearchParams();
   // Tab lives in the URL (not local state) so the browser back button from a
@@ -70,6 +72,11 @@ export default function ApplicationsList() {
     await removeAll();
   };
 
+  const handleRetryFailed = async () => {
+    await retryFailed();
+    router.push('/campagne');
+  };
+
   return (
     <AppShell>
       <div className="max-w-6xl mx-auto px-8 py-10">
@@ -81,6 +88,16 @@ export default function ApplicationsList() {
             </p>
           </div>
           <div className="flex gap-2">
+            {tab === 'needs_review' && applications.length > 0 && (
+              <button
+                className="btn btn-outline btn-sm gap-1.5"
+                disabled={campaignRunning}
+                onClick={handleRetryFailed}
+                title="Réessaie chaque candidature 'à vérifier' — utile juste après avoir répondu à une question dans l'onglet Questions"
+              >
+                <RotateCcw className="w-4 h-4" /> Réessayer tout
+              </button>
+            )}
             {applications.length > 0 && (
               <div className="dropdown dropdown-end">
                 <label tabIndex={0} className="btn btn-outline btn-sm gap-1.5">

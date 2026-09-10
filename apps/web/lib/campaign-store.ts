@@ -55,6 +55,7 @@ interface Store {
   updateCampaign: (data: Partial<Campaign>) => Promise<void>;
   runCampaign: () => Promise<void>;
   pauseCampaign: () => Promise<void>;
+  retryFailed: () => Promise<void>;
   fetchLatestRun: () => Promise<void>;
   connectStream: () => () => void;
   connectLiveView: () => () => void;
@@ -102,6 +103,20 @@ export const useCampaignStore = create<Store>((set, get) => ({
       toast.success('Campagne lancée');
     } catch (error: any) {
       const message = error.response?.data?.message || 'Failed to start campaign';
+      set({ error: message, running: false });
+      toast.error(message);
+    }
+  },
+
+  retryFailed: async () => {
+    try {
+      set({ running: true, error: null });
+      const response = await apiClient.post('/api/campagne/retry-failed');
+      set({ latestRun: response.data });
+      await get().fetchCampaign();
+      toast.success('Nouvelle tentative lancée');
+    } catch (error: any) {
+      const message = error.response?.data?.message || 'Failed to retry';
       set({ error: message, running: false });
       toast.error(message);
     }
