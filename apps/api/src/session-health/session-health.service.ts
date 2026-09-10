@@ -65,6 +65,10 @@ export class SessionHealthService {
 
       if (await check.isLoginWallVisible(page)) {
         await this.credentials.recordSessionExpired(userId, platform);
+      } else {
+        const freshState = await context.storageState();
+        await this.credentials.saveSessionState(userId, platform, JSON.stringify(freshState));
+        this.logger.log(`Session successfully refreshed for ${platform}`);
       }
     } finally {
       await context.close().catch(() => {});
