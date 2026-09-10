@@ -688,11 +688,22 @@ export class CampaignService implements OnModuleInit {
         return;
       }
 
-      if (campaign.actionMode === 'auto_apply' && createdApplicationIds.length) {
-        await this.appendLog(runId, `Auto-apply: soumission de ${createdApplicationIds.length} candidature(s)...`);
+      // Also pick up any existing unattempted candidatures in 'to_apply'
+      // so an interrupted run or previous batch doesn't get left behind.
+      const pendingApps = await this.prisma.application.findMany({
+        where: {
+          campaignId: campaign.id,
+          status: 'to_apply',
+        },
+        select: { id: true },
+      });
+      const toApplyIds = [...new Set([...createdApplicationIds, ...pendingApps.map((a) => a.id)])];
+
+      if (campaign.actionMode === 'auto_apply' && toApplyIds.length) {
+        await this.appendLog(runId, `Auto-apply: soumission de ${toApplyIds.length} candidature(s)...`);
         const { applied, needsReview, cancelled: autoApplyCancelled } = await this.autoApply.run({
           userId,
-          applicationIds: createdApplicationIds,
+          applicationIds: toApplyIds,
           atsEnabled: campaign.autoApplyAts,
           minDelaySeconds: campaign.autoApplyMinDelaySeconds,
           maxDelaySeconds: campaign.autoApplyMaxDelaySeconds,
