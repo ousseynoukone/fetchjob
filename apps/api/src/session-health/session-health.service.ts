@@ -28,9 +28,17 @@ export class SessionHealthService {
   // Before the campaign scheduler's own daily runs (see
   // campaign-scheduler.service.ts) — a dead session is worth knowing about
   // before, not after, today's auto-apply attempts start failing on it.
-  @Cron('0 5 * * *')
+  // Runs in the morning window (between 6:30 and 8:00) with randomized jitter
+  // to avoid fixed periodic bot fingerprints on anti-scraping systems.
+  @Cron('30 6 * * *')
   async checkAll() {
     try {
+      // Add random jitter between 2 and 45 minutes so it never fires at the exact same minute
+      const jitterMs = Math.floor((2 + Math.random() * 43) * 60 * 1000);
+      const jitterMinutes = Math.round(jitterMs / 60000);
+      this.logger.log(`Session health check triggered. Sleeping ${jitterMinutes}m jitter to mimic human routine...`);
+      await new Promise((resolve) => setTimeout(resolve, jitterMs));
+
       await this.run();
     } catch (error: any) {
       this.logger.warn(`Session health check failed: ${error.message}`);
@@ -46,6 +54,8 @@ export class SessionHealthService {
       await this.checkOne(credential.userId, credential.platform as SupportedPlatform).catch((error: any) => {
         this.logger.warn(`Session health check failed for ${credential.platform}: ${error.message}`);
       });
+      // Pause between platforms to mimic human browsing behavior
+      await this.browserSession.randomDelay(15000, 45000);
     }
   }
 
@@ -61,7 +71,17 @@ export class SessionHealthService {
       await blockHeavyResources(context);
       const page = await context.newPage();
       await page.goto(check.homeUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.waitForTimeout(1500);
+      await page.waitForTimeout(2000 + Math.random() * 2000);
+
+      // Simulate natural human glance and smooth scrolling on feed
+      await page.evaluate(() => {
+        const doc = (globalThis as any).document;
+        const win = (globalThis as any).window;
+        if (win && win.scrollBy) {
+          win.scrollBy({ top: 300 + Math.random() * 250, behavior: 'smooth' });
+        }
+      }).catch(() => {});
+      await page.waitForTimeout(2000 + Math.random() * 1500);
 
       if (await check.isLoginWallVisible(page)) {
         await this.credentials.recordSessionExpired(userId, platform);
