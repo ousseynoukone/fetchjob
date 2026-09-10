@@ -193,8 +193,15 @@ export class CampaignService implements OnModuleInit {
   async run() {
     const campaign = await this.getOrCreateCampaign();
 
+    const latestRun = await this.getLatestRun();
     if (this.runningCampaigns.has(campaign.id)) {
-      return this.getLatestRun();
+      if (latestRun && latestRun.finishedAt) {
+        this.logger.log(`Clearing stale in-memory runningCampaigns flag for campaign ${campaign.id}`);
+        this.runningCampaigns.delete(campaign.id);
+        this.cancelledCampaigns.delete(campaign.id);
+      } else {
+        return latestRun;
+      }
     }
     // Reset ghost-running state left in DB after a server restart
     if (campaign.status === 'running') {
@@ -237,8 +244,15 @@ export class CampaignService implements OnModuleInit {
   async retryFailed() {
     const campaign = await this.getOrCreateCampaign();
 
+    const latestRun = await this.getLatestRun();
     if (this.runningCampaigns.has(campaign.id)) {
-      return this.getLatestRun();
+      if (latestRun && latestRun.finishedAt) {
+        this.logger.log(`Clearing stale in-memory runningCampaigns flag for retryFailed ${campaign.id}`);
+        this.runningCampaigns.delete(campaign.id);
+        this.cancelledCampaigns.delete(campaign.id);
+      } else {
+        return latestRun;
+      }
     }
     // Also reset ghost-running state left in DB after a restart
     if (campaign.status === 'running') {
