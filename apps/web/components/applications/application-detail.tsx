@@ -16,6 +16,7 @@ import {
   Building2,
   MapPin,
   AlertCircle,
+  RotateCcw,
   HelpCircle,
   Copy,
   FileText,
@@ -58,7 +59,7 @@ const STATUS_STYLE: Record<string, string> = {
 
 export default function ApplicationDetail({ id }: { id: string }) {
   const router = useRouter();
-  const { current, loading, error, fetchById, updateStatus, markApplied, regenerate } = useApplicationsStore();
+  const { current, loading, error, fetchById, updateStatus, markApplied, regenerate, retryOne } = useApplicationsStore();
   const [tab, setTab] = useState('Offre');
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -189,9 +190,18 @@ export default function ApplicationDetail({ id }: { id: string }) {
                   <strong>Auto-apply incomplet :</strong> {current.autoApplyNote}
                 </span>
               </div>
-              <Link href="/questions" className="btn btn-warning btn-xs gap-1.5 shrink-0 self-start sm:self-auto">
-                <HelpCircle className="w-3.5 h-3.5" /> Voir les questions manquantes
-              </Link>
+              <div className="flex items-center gap-2 shrink-0 self-start sm:self-auto">
+                <button
+                  className="btn btn-warning btn-xs gap-1.5"
+                  disabled={busy === 'retry'}
+                  onClick={() => handleAction('retry', () => retryOne(id), 'Auto-apply relancé')}
+                >
+                  <RotateCcw className="w-3.5 h-3.5" /> Réessayer cette offre
+                </button>
+                <Link href="/questions" className="btn btn-outline btn-warning btn-xs gap-1.5">
+                  <HelpCircle className="w-3.5 h-3.5" /> Questions manquantes
+                </Link>
+              </div>
             </div>
           )}
 
@@ -229,6 +239,14 @@ export default function ApplicationDetail({ id }: { id: string }) {
           )}
 
           <div className="flex flex-wrap gap-2 mt-5">
+            <button
+              className="btn btn-warning btn-sm gap-2"
+              disabled={busy === 'retry'}
+              onClick={() => handleAction('retry', () => retryOne(id), 'Auto-apply relancé')}
+              title="Relance l'auto-apply uniquement pour cette candidature"
+            >
+              <RotateCcw className="w-4 h-4" /> Réessayer l'auto-apply
+            </button>
             <a href={current.sourceUrl} target="_blank" rel="noopener noreferrer" className="btn btn-primary btn-sm gap-2">
               <ExternalLink className="w-4 h-4" /> Postuler
             </a>

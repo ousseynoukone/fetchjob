@@ -43,7 +43,7 @@ function scoreColor(score: number) {
 }
 
 export default function ApplicationsList() {
-  const { applications, loading, fetchList, removeAll } = useApplicationsStore();
+  const { applications, loading, fetchList, removeAll, retryOne } = useApplicationsStore();
   const { retryFailed, running: campaignRunning } = useCampaignStore();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -175,9 +175,25 @@ export default function ApplicationsList() {
               >
                 <div className="flex justify-between items-start mb-3">
                   <div className={`text-2xl font-bold ${scoreColor(app.matchScore)}`}>{app.matchScore}</div>
-                  <span className={`badge ${STATUS_STYLE[app.status] || 'badge-ghost'} badge-sm`}>
-                    {app.status.replace('_', ' ')}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {app.status === 'needs_review' && (
+                      <button
+                        type="button"
+                        className="btn btn-warning btn-xs gap-1"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          retryOne(app.id);
+                        }}
+                        title="Réessayer cette offre"
+                      >
+                        <RotateCcw className="w-3 h-3" /> Réessayer
+                      </button>
+                    )}
+                    <span className={`badge ${STATUS_STYLE[app.status] || 'badge-ghost'} badge-sm`}>
+                      {app.status.replace('_', ' ')}
+                    </span>
+                  </div>
                 </div>
                 <h3 className="font-semibold leading-snug">{app.jobTitle}</h3>
                 <div className="flex items-center gap-1.5 text-sm text-base-content/50 mt-1">

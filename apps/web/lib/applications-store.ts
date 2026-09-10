@@ -46,6 +46,7 @@ interface Store {
   fetchById: (id: string) => Promise<void>;
   updateStatus: (id: string, status: string) => Promise<void>;
   markApplied: (id: string) => Promise<void>;
+  retryOne: (id: string) => Promise<void>;
   regenerate: (id: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
   removeAll: (status?: string, scope?: 'current' | 'history') => Promise<void>;
@@ -148,6 +149,15 @@ export const useApplicationsStore = create<Store>((set, get) => ({
       toast.success('Candidatures supprimées');
     } catch (error: any) {
       toast.error(error.response?.data?.message || 'Failed to delete applications');
+      throw error;
+    }
+  },
+  retryOne: async (id: string) => {
+    try {
+      await apiClient.post(`/api/candidatures/${id}/retry`);
+      toast.success('Auto-apply relancé pour cette offre !');
+    } catch (error: any) {
+      toast.error(error.response?.data?.message || 'Échec de la relance');
       throw error;
     }
   },

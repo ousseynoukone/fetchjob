@@ -1,4 +1,4 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
 import { Subject, Observable } from 'rxjs';
 import { PrismaService } from '../common/prisma.service';
 import { LocalUserService } from '../common/local-user.service';
@@ -233,6 +233,43 @@ export class CampaignService {
     await this.prisma.campaign.update({ where: { id: campaign.id }, data: { status: 'running' } });
 
     this.executeRetry(campaign, run.id, userId, failed.map((a) => a.id)).catch((err) => {
+      this.logger.error(`Retry run ${run.id} crashed: ${err.message}`);
+    });
+
+    return run;
+  }
+
+  // Re-attempts a SINGLE targeted candidature on demand
+  async retryOne(applicationId: string) {
+    const campaign = await this.getOrCreateCampaign();
+
+    if (this.runningCampaigns.has(campaign.id)) {
+      return this.getLatestRun();
+    }
+
+    const userId = await this.localUser.getDefaultUserId();
+    const app = await this.prisma.application.findFirst({
+      where: { id: applicationId, userId },
+      select: { id: true, jobTitle: true, company: true },
+    });
+
+    if (!app) {
+      throw new NotFoundException('Candidature introuvable.');
+    }
+
+    const run = await this.prisma.campaignRun.create({
+      data: {
+        campaignId: campaign.id,
+        userId,
+        logs: [`Nouvelle tentative ciblée sur : ${app.jobTitle} chez ${app.company}...`],
+      },
+    });
+
+    this.runningCampaigns.add(campaign.id);
+    this.cancelledCampaigns.delete(campaign.id);
+    await this.prisma.campaign.update({ where: { id: campaign.id }, data: { status: 'running' } });
+
+    this.executeRetry(campaign, run.id, userId, [app.id]).catch((err) => {
       this.logger.error(`Retry run ${run.id} crashed: ${err.message}`);
     });
 

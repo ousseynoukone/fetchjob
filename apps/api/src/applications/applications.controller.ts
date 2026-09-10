@@ -1,3 +1,4 @@
+import { CampaignService } from '../campaign/campaign.service';
 import { Controller, Get, Patch, Post, Delete, Param, Query, Body, Res, NotFoundException } from '@nestjs/common';
 import type { Response } from 'express';
 import { ApplicationsService } from './applications.service';
@@ -10,6 +11,7 @@ export class ApplicationsController {
   constructor(
     private applicationsService: ApplicationsService,
     private pdfService: PdfService,
+    private campaignService: CampaignService,
   ) {}
 
   @Get()
@@ -40,6 +42,11 @@ export class ApplicationsController {
   @Post(':id/apply')
   async apply(@Param('id') id: string) {
     return this.applicationsService.markApplied(id);
+  }
+
+  @Post(':id/retry')
+  async retryOne(@Param('id') id: string) {
+    return this.campaignService.retryOne(id);
   }
 
   @Post(':id/regen')
