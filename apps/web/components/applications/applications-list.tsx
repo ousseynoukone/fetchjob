@@ -100,9 +100,15 @@ export default function ApplicationsList() {
             )}
             {applications.length > 0 && (
               <div className="dropdown dropdown-end">
-                <label tabIndex={0} className="btn btn-outline btn-sm gap-1.5">
-                  <Trash2 className="w-4 h-4" /> Nettoyer <ChevronDown className="w-3.5 h-3.5" />
-                </label>
+                <div
+                  role="button"
+                  tabIndex={0}
+                  className="btn btn-outline btn-sm gap-1.5 inline-flex flex-nowrap items-center whitespace-nowrap"
+                >
+                  <Trash2 className="w-4 h-4 shrink-0" />
+                  <span>Nettoyer</span>
+                  <ChevronDown className="w-3.5 h-3.5 shrink-0" />
+                </div>
                 <ul tabIndex={0} className="dropdown-content menu z-10 mt-2 p-1.5 shadow-xl bg-base-200 border border-base-300 rounded-xl w-64">
                   {tab && (
                     <li>
