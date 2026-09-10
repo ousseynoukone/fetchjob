@@ -49,12 +49,15 @@ interface Store {
   saving: boolean;
   running: boolean;
   error: string | null;
+  liveFrame: string | null;
+  liveFrameApplicationId: string | null;
   fetchCampaign: () => Promise<void>;
   updateCampaign: (data: Partial<Campaign>) => Promise<void>;
   runCampaign: () => Promise<void>;
   pauseCampaign: () => Promise<void>;
   fetchLatestRun: () => Promise<void>;
   connectStream: () => () => void;
+  connectLiveView: () => () => void;
 }
 
 export const useCampaignStore = create<Store>((set, get) => ({
@@ -64,6 +67,8 @@ export const useCampaignStore = create<Store>((set, get) => ({
   saving: false,
   running: false,
   error: null,
+  liveFrame: null,
+  liveFrameApplicationId: null,
 
   fetchCampaign: async () => {
     try {
@@ -161,6 +166,28 @@ export const useCampaignStore = create<Store>((set, get) => ({
 
     // The browser auto-reconnects a dropped EventSource on its own; nothing
     // to do here beyond not crashing the tab over a transient network blip.
+    source.onerror = () => {};
+
+    return () => source.close();
+  },
+
+  // Live view of the browser during an auto-apply attempt — a stream of
+  // screenshots (data URLs), not a video file: each one just replaces the
+  // last as it arrives. Stays quiet (liveFrame never updates) whenever no
+  // candidature is actively being applied to.
+  connectLiveView: () => {
+    const source = new EventSource(`${apiClient.defaults.baseURL}/api/campagne/live-view`);
+
+    source.onmessage = (event) => {
+      let payload: { applicationId: string; dataUrl: string };
+      try {
+        payload = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      set({ liveFrame: payload.dataUrl, liveFrameApplicationId: payload.applicationId });
+    };
+
     source.onerror = () => {};
 
     return () => source.close();

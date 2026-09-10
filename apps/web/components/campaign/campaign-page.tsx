@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useCampaignStore } from '@/lib/campaign-store';
 import AppShell from '@/components/layout/app-shell';
-import { Play, Pause, Loader2, Terminal } from 'lucide-react';
+import { Play, Pause, Loader2, Terminal, Eye } from 'lucide-react';
 
 const CONTRACT_TYPES = ['CDI', 'CDD', 'Freelance', 'Stage', 'Alternance'];
 const SOURCES = [
@@ -32,6 +32,8 @@ export default function CampaignPage() {
     pauseCampaign,
     fetchLatestRun,
     connectStream,
+    connectLiveView,
+    liveFrame,
   } = useCampaignStore();
 
   const [form, setForm] = useState({
@@ -95,6 +97,11 @@ export default function CampaignPage() {
     const disconnect = connectStream();
     return disconnect;
   }, [connectStream]);
+
+  useEffect(() => {
+    const disconnect = connectLiveView();
+    return disconnect;
+  }, [connectLiveView]);
 
   // Fallback safety net: if the SSE connection is ever silently stuck (proxy
   // buffering, a dropped connection the browser hasn't retried yet), this
@@ -465,6 +472,26 @@ export default function CampaignPage() {
                 <Stat label="Offres filtrées" value={campaign?.totalOffersFiltered ?? 0} />
                 <Stat label="Candidatures préparées" value={campaign?.totalApplicationsPrepared ?? 0} />
                 <Stat label="Candidatures envoyées" value={campaign?.totalApplicationsSent ?? 0} />
+              </div>
+            </div>
+
+            <div className="bg-base-200 border border-base-300 rounded-2xl p-5">
+              <div className="flex items-center gap-2 mb-3">
+                <Eye className="w-4 h-4 text-primary" />
+                <p className="text-xs uppercase tracking-wider text-base-content/40 font-semibold">
+                  Vue en direct {liveFrame && <span className="text-primary">(en cours)</span>}
+                </p>
+              </div>
+              <div className="bg-base-100 rounded-xl overflow-hidden aspect-video flex items-center justify-center">
+                {liveFrame ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={liveFrame} alt="Vue en direct du navigateur" className="w-full h-full object-contain" />
+                ) : (
+                  <p className="text-base-content/30 text-sm px-4 text-center">
+                    Rien à afficher pour l'instant — cette vue ne s'anime que pendant qu'une candidature est
+                    activement en train d'être soumise (mode auto-apply).
+                  </p>
+                )}
               </div>
             </div>
 

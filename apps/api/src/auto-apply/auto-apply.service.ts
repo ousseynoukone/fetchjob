@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { Subject, Observable } from 'rxjs';
 import { writeFile, unlink } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -22,7 +23,7 @@ import { scanInvalidFields } from './appliers/form-fields';
 import { resolveWelcomeToTheJungleApplyUrl, blockHeavyResources } from './appliers/ats-common';
 import { CustomQuestionsService } from '../custom-questions/custom-questions.service';
 import type { CVData } from '../pdf/templates/cv-document';
-import type { Page } from 'playwright';
+import type { Page, BrowserContext, CDPSession } from 'playwright';
 
 // Matched against `sourceUrl`'s hostname regardless of which source scraped
 // the offer (Adzuna, Remotive, The Muse... are aggregators that redirect to
@@ -79,6 +80,16 @@ export class AutoApplyService {
   private readonly appliers: Record<string, JobApplier>;
 
   private readonly atsAppliers: Record<string, JobApplier>;
+
+  // Live view of whatever the headless browser is currently rendering
+  // during an apply attempt — a CDP screencast (Page.startScreencast),
+  // not a saved video file: frames are pushed here the moment Chromium
+  // produces them and never persisted, purely for watching a run happen.
+  private readonly frameStream = new Subject<{ applicationId: string; dataUrl: string }>();
+
+  streamFrames(): Observable<{ applicationId: string; dataUrl: string }> {
+    return this.frameStream.asObservable();
+  }
 
   constructor(
     private prisma: PrismaService,
@@ -307,8 +318,10 @@ export class AutoApplyService {
     await writeFile(cvPdfPath, pdfBuffer);
 
     const context = await this.browserSession.createContext(sessionState);
+    let cdpSession: CDPSession | null = null;
     try {
       const page = await context.newPage();
+      cdpSession = await this.startScreencast(context, page, application.id);
       let finalUrl = effectiveSourceUrl;
       let finalPlatformKey = platformKey;
       let result = await applier.apply(page, {
@@ -392,9 +405,43 @@ export class AutoApplyService {
 
       return result;
     } finally {
+      await this.stopScreencast(cdpSession);
       await context.close().catch(() => {});
       await unlink(cvPdfPath).catch(() => {});
     }
+  }
+
+  // Chrome DevTools Protocol screencast — pushes JPEG frames of whatever
+  // Chromium is actually rendering as it renders them, live, whether the
+  // browser is headed or headless (this is exactly how remote-debugging
+  // "live view" tools show a headless session; it needs no visible
+  // display). Frames are relayed through frameStream and never saved
+  // anywhere — this is a live view, not a recording.
+  private async startScreencast(context: BrowserContext, page: Page, applicationId: string): Promise<CDPSession | null> {
+    try {
+      const cdpSession = await context.newCDPSession(page);
+      await cdpSession.send('Page.startScreencast', {
+        format: 'jpeg',
+        quality: 50,
+        maxWidth: 960,
+        maxHeight: 640,
+        everyNthFrame: 1,
+      });
+      cdpSession.on('Page.screencastFrame', (frame: any) => {
+        this.frameStream.next({ applicationId, dataUrl: `data:image/jpeg;base64,${frame.data}` });
+        cdpSession.send('Page.screencastFrameAck', { sessionId: frame.sessionId }).catch(() => {});
+      });
+      return cdpSession;
+    } catch (error: any) {
+      this.logger.warn(`Failed to start live-view screencast: ${error.message}`);
+      return null;
+    }
+  }
+
+  private async stopScreencast(cdpSession: CDPSession | null): Promise<void> {
+    if (!cdpSession) return;
+    await cdpSession.send('Page.stopScreencast').catch(() => {});
+    await cdpSession.detach().catch(() => {});
   }
 
   // JPEG at moderate quality rather than PNG — a full-page screenshot is

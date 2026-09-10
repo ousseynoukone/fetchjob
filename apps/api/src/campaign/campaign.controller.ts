@@ -1,11 +1,15 @@
 import { Controller, Get, Put, Post, Body, Sse, MessageEvent } from '@nestjs/common';
 import { Observable, map } from 'rxjs';
 import { CampaignService } from './campaign.service';
+import { AutoApplyService } from '../auto-apply/auto-apply.service';
 import { UpdateCampaignDto } from './dto/update-campaign.dto';
 
 @Controller('campagne')
 export class CampaignController {
-  constructor(private campaignService: CampaignService) {}
+  constructor(
+    private campaignService: CampaignService,
+    private autoApplyService: AutoApplyService,
+  ) {}
 
   @Get()
   async getCampaign() {
@@ -39,6 +43,16 @@ export class CampaignController {
   @Sse('stream')
   streamLogs(): Observable<MessageEvent> {
     return this.campaignService.streamLogs().pipe(map((event) => ({ data: event })));
+  }
+
+  // Live view of the browser during an auto-apply attempt — a stream of
+  // screenshots taken as fast as Chromium renders them (CDP screencast),
+  // not a saved recording. Frames only exist while a candidature is
+  // actively being applied to; between attempts (or in prepare_only mode)
+  // this stream simply stays quiet.
+  @Sse('live-view')
+  streamLiveView(): Observable<MessageEvent> {
+    return this.autoApplyService.streamFrames().pipe(map((event) => ({ data: event })));
   }
 
   @Get('runs')
