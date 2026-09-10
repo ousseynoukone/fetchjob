@@ -284,18 +284,12 @@ export class ScrapingService {
   }
 
   private async enrichLinkedInDescription(offer: ScrapedOffer): Promise<ScrapedOffer> {
-    try {
-      const response = await axios.get(offer.url, {
-        headers: { 'User-Agent': DETAIL_PAGE_USER_AGENT, 'Accept-Language': 'fr-FR,fr;q=0.9' },
-        timeout: 10000,
-      });
-      const jobPosting = extractJobPostingJsonLd(response.data);
-      if (!jobPosting?.description) return offer;
-      return { ...offer, description: stripHtml(jobPosting.description) };
-    } catch (error: any) {
-      this.logger.warn(`LinkedIn detail fetch failed for ${offer.url}: ${error.message}`);
+    // If the offer is already enriched by scrapeLinkedInWithStealth, keep it directly!
+    if (offer.description && offer.description.length > 150) {
       return offer;
     }
+    // Never use plain axios for LinkedIn (consistently blocked with 429/999)
+    return offer;
   }
 
   // Welcome to the Jungle's job pages sit behind an AWS WAF challenge —

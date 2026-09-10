@@ -2,7 +2,8 @@
  * linkedin-stealth.ts
  * ===================
  * LinkedIn-specific scraper built on top of stealth-browser.ts.
- * Re-exports the shared stealth utilities so existing callers still work.
+ * Features multi-page pagination, clean HTML entity decoding,
+ * structured JSON-LD detail extraction (contractType, salary, datePosted).
  */
 
 export {
@@ -36,6 +37,7 @@ export interface LinkedInSearchParams {
   /** LinkedIn date-posted token: r86400=24h, r604800=7d, r2592000=30d */
   datePosted?: 'r86400' | 'r604800' | 'r2592000';
   proxy?: ProxyConfig;
+  maxPages?: number;
 }
 
 export interface LinkedInOffer {
@@ -52,9 +54,40 @@ export interface LinkedInOffer {
 
 const log = new Logger('LinkedInStealth');
 
+export function cleanJobDescription(html: string): string {
+  if (!html) return '';
+  let text = html;
+  if (text.includes('&lt;') || text.includes('&gt;') || text.includes('&amp;')) {
+    text = cheerio.load(text).text();
+  }
+  const $ = cheerio.load(text);
+  $('br').replaceWith('\n');
+  $('p, div, h1, h2, h3, h4, li').each((_, elem) => {
+    $(elem).append('\n');
+  });
+  return $.text()
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n\s*\n+/g, '\n\n')
+    .trim();
+}
+
+function mapEmploymentType(type?: string, titleAndDesc?: string): string | undefined {
+  if (type === 'FULL_TIME') return 'CDI';
+  if (type === 'CONTRACTOR') return 'Freelance';
+  if (type === 'TEMPORARY') return 'CDD';
+  if (type === 'INTERN') return 'Stage';
+  if (titleAndDesc) {
+    if (/\b(cdi)\b/i.test(titleAndDesc)) return 'CDI';
+    if (/\b(cdd)\b/i.test(titleAndDesc)) return 'CDD';
+    if (/\b(stage|internship)\b/i.test(titleAndDesc)) return 'Stage';
+    if (/\b(alternance|apprentissage)\b/i.test(titleAndDesc)) return 'Alternance';
+    if (/\b(freelance|indépendant)\b/i.test(titleAndDesc)) return 'Freelance';
+  }
+  return undefined;
+}
+
 /**
- * Scrapes LinkedIn public job listings using the stealth browser.
- * No proxy required — fingerprint spoofing alone is highly effective.
+ * Scrapes LinkedIn public job listings using the stealth browser with multi-page pagination.
  */
 export async function scrapeLinkedInWithStealth(params: LinkedInSearchParams): Promise<LinkedInOffer[]> {
   const { browser, context } = await createStealthContext({
@@ -66,54 +99,106 @@ export async function scrapeLinkedInWithStealth(params: LinkedInSearchParams): P
     const page = await context.newPage();
     await blockUnnecessaryResources(context);
 
-    const searchUrl = new URL('https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search');
-    searchUrl.searchParams.set('keywords', params.keywords);
-    searchUrl.searchParams.set('location', params.location ?? 'France');
-    searchUrl.searchParams.set('start', '0');
-    if (params.datePosted) searchUrl.searchParams.set('f_TPR', params.datePosted);
-
     // Warm-up: homepage visit sets cookies + session signals
     await page.goto('https://www.linkedin.com', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
-    await jitter(1200, 3000);
+    await jitter(1000, 2500);
     await simulateHumanMouse(page);
 
-    await page.goto(searchUrl.toString(), { waitUntil: 'networkidle', timeout: 30000 });
-    await jitter(500, 1500);
+    const allOffers: LinkedInOffer[] = [];
+    const seenIds = new Set<string>();
 
-    if (await isBotChallengePage(page)) {
-      log.warn('LinkedIn returned a challenge page — aborting and saving cookies');
-      await persistCookies(context, 'linkedin');
-      return [];
+    // Paginate through start = 0, 10, 25 to collect 25-35 fresh listings
+    const pageOffsets = [0, 10, 25];
+    for (const start of pageOffsets) {
+      const searchUrl = new URL('https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search');
+      searchUrl.searchParams.set('keywords', params.keywords);
+      searchUrl.searchParams.set('location', params.location ?? 'France');
+      searchUrl.searchParams.set('start', String(start));
+      if (params.datePosted) searchUrl.searchParams.set('f_TPR', params.datePosted);
+
+      await page.goto(searchUrl.toString(), { waitUntil: 'networkidle', timeout: 25000 }).catch(() => {});
+      await jitter(500, 1200);
+
+      if (await isBotChallengePage(page)) {
+        log.warn('LinkedIn returned a challenge page — aborting and saving cookies');
+        await persistCookies(context, 'linkedin');
+        break;
+      }
+
+      const html = await page.content();
+      const pageOffers = parseLinkedInJobCards(html);
+      if (!pageOffers.length) break;
+
+      for (const o of pageOffers) {
+        if (!seenIds.has(o.externalId)) {
+          seenIds.add(o.externalId);
+          allOffers.push(o);
+        }
+      }
+
+      if (allOffers.length >= 25) break;
     }
 
-    const offers = parseLinkedInJobCards(await page.content());
-    log.log(`Parsed ${offers.length} LinkedIn job cards`);
+    log.log(`Collected ${allOffers.length} unique LinkedIn job cards, enriching details...`);
 
-    const enriched = await mapWithConcurrency(offers, 3, async (offer) => {
+    // Enrich detail pages with concurrency limit
+    const enriched = await mapWithConcurrency(allOffers, 3, async (offer) => {
       try {
-        await jitter(600, 2000);
+        await jitter(500, 1500);
         const p = await context.newPage();
         await p.goto(offer.url, { waitUntil: 'domcontentloaded', timeout: 20000 });
 
-        // Extract from JSON-LD (Google-indexed structured data — most reliable)
-        const desc: string = await (p as any).evaluate(`
+        const detail: any = await (p as any).evaluate(`
           (() => {
             const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'));
+            let rawDesc = '';
+            let employmentType = '';
+            let datePosted = '';
+            let salaryText = '';
+
             for (const s of scripts) {
               try {
                 const data = JSON.parse(s.textContent || '');
                 const items = Array.isArray(data) ? data : [data];
                 const jp = items.find(i => i && i['@type'] === 'JobPosting');
-                if (jp && jp.description) return jp.description.replace(/<[^>]*>/g,' ').replace(/\\s+/g,' ').trim();
+                if (jp) {
+                  if (jp.description) rawDesc = jp.description;
+                  if (jp.employmentType) employmentType = jp.employmentType;
+                  if (jp.datePosted) datePosted = jp.datePosted;
+                  if (jp.baseSalary) {
+                    const val = jp.baseSalary.value;
+                    const cur = jp.baseSalary.currency || '€';
+                    if (typeof val === 'number') salaryText = val + ' ' + cur;
+                    else if (val && (val.minValue || val.maxValue)) {
+                      salaryText = (val.minValue || '') + ' - ' + (val.maxValue || '') + ' ' + cur;
+                    }
+                  }
+                  break;
+                }
               } catch(e) {}
             }
-            const el = document.querySelector('.show-more-less-html__markup,.description__text,[data-test="job-description"]');
-            return el ? el.innerText.trim() : '';
+
+            if (!rawDesc) {
+              const el = document.querySelector('.show-more-less-html__markup, .description__text, [data-test="job-description"]');
+              rawDesc = el ? el.innerHTML : '';
+            }
+
+            return { rawDesc, employmentType, datePosted, salaryText };
           })()
         `);
 
         await p.close();
-        return desc ? { ...offer, description: desc } : offer;
+
+        const cleanDesc = cleanJobDescription(detail.rawDesc);
+        const contractType = mapEmploymentType(detail.employmentType, `${offer.title} ${cleanDesc}`);
+
+        return {
+          ...offer,
+          description: cleanDesc || offer.description,
+          contractType: contractType || offer.contractType,
+          salary: detail.salaryText || offer.salary,
+          postedAt: detail.datePosted ? new Date(detail.datePosted) : offer.postedAt,
+        };
       } catch {
         return offer;
       }
@@ -139,7 +224,7 @@ function parseLinkedInJobCards(html: string): LinkedInOffer[] {
     const title = card.find('.base-search-card__title').text().trim();
     if (!title) return;
 
-    const company = card.find('.base-search-card__subtitle').text().trim() || 'Entreprise non precis\u00e9e';
+    const company = card.find('.base-search-card__subtitle').text().trim() || 'Entreprise non précisée';
     const location = card.find('.job-search-card__location').text().trim() || undefined;
     const rawLink = card.find('.base-card__full-link').attr('href') || '';
     const cleanUrl = rawLink.split('?')[0];
@@ -149,17 +234,21 @@ function parseLinkedInJobCards(html: string): LinkedInOffer[] {
     const dateStr = card.find('time').attr('datetime');
     const salary = card.find('.job-search-card__salary-info').text().trim().replace(/\s+/g, ' ') || undefined;
 
+    const titleAndDesc = `${title} ${location || ''}`;
+    const contractType = mapEmploymentType(undefined, titleAndDesc);
+
     offers.push({
       externalId,
       title,
       company,
       location,
       salary,
-      description: `${title} chez ${company}${location ? ` \u2014 ${location}` : ''}`,
+      contractType,
+      description: `${title} chez ${company}${location ? ` — ${location}` : ''}`,
       url: cleanUrl || `https://www.linkedin.com/jobs/view/${externalId}`,
       postedAt: dateStr ? new Date(dateStr) : undefined,
     });
   });
 
-  return offers.slice(0, 20);
+  return offers;
 }
