@@ -1,5 +1,7 @@
 'use client';
 
+import buildInfo from '@/lib/build-info.json';
+
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { LayoutDashboard, FileText, Rocket, Briefcase, Sparkles, Settings, HelpCircle, BookOpen, ShieldCheck } from 'lucide-react';
@@ -51,8 +53,17 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           })}
         </nav>
 
-        <div className="px-6 py-4 text-xs text-base-content/40">
-          Copilote de candidatures IA
+        <div className="px-5 py-3.5 border-t border-base-300 flex items-center justify-between text-xs">
+          <div className="flex flex-col">
+            <span className="text-[11px] text-base-content/60 font-medium">Copilote IA</span>
+            <span className="text-[10px] text-base-content/40 font-mono">{buildInfo.date}</span>
+          </div>
+          <span
+            className="badge badge-sm badge-neutral border border-base-300 font-mono font-semibold text-primary"
+            title={`Commit ${buildInfo.commit || 'local'}`}
+          >
+            Build #{buildInfo.build}
+          </span>
         </div>
       </aside>
 

@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "prebuild": "node scripts/increment-build.js",
     "dev": "next dev -p 3001",
     "build": "next build",
     "start": "next start -p 3001",
