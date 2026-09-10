@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
-import { dismissCookieBanner, SESSION_CHECKS } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl } from './ats-common';
 
 // Same best-effort/defensive posture as the LinkedIn applier: Indeed's
 // "Indeed Apply" flow sometimes runs inline, sometimes in a popup on
@@ -27,10 +27,30 @@ export class IndeedApplier implements JobApplier {
     const applyButton = page.getByRole('button', { name: /apply now|postuler maintenant|postuler dès maintenant/i }).first();
     const hasApplyButton = await applyButton.isVisible().catch(() => false);
     if (!hasApplyButton) {
-      return {
-        success: false,
-        note: "Pas de bouton de candidature Indeed intégré sur cette offre (redirection externe) — à traiter manuellement.",
-      };
+      // No inline "Indeed Apply" button — some postings only offer a link
+      // straight to the employer's own site instead. Follow it rather than
+      // giving up, so ATS-by-URL routing (or the generic fallback) gets a
+      // real shot at the real form.
+      const externalApplyButton = page
+        .getByRole('link', { name: /apply now|apply on company site|postuler sur le site/i })
+        .first();
+
+      if (!(await externalApplyButton.isVisible().catch(() => false))) {
+        return {
+          success: false,
+          note: "Aucun bouton de candidature trouvé sur cette offre Indeed — à traiter manuellement.",
+        };
+      }
+
+      const externalUrl = await resolveExternalApplyUrl(page, externalApplyButton, /indeed\.com/i);
+      if (!externalUrl) {
+        return {
+          success: false,
+          note: "Cette offre Indeed ne propose pas de candidature automatisable — à traiter manuellement.",
+        };
+      }
+
+      return { success: false, redirectToExternalUrl: externalUrl };
     }
 
     const popupPromise = page.waitForEvent('popup', { timeout: 5000 }).catch(() => null);

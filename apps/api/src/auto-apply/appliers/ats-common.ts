@@ -120,6 +120,32 @@ export async function hasAlreadyAppliedIndicator(page: Page): Promise<boolean> {
   return ALREADY_APPLIED_TEXT.test(bodyText);
 }
 
+// LinkedIn/Indeed/HelloWork all have postings with no in-platform apply
+// flow — their "Postuler"/"Apply" button just sends the visitor to the
+// employer's own site instead. Confirmed live behavior varies even within
+// one platform: sometimes a new tab (popup), sometimes the same page
+// navigates away. Used by each of those three appliers instead of giving
+// up the moment their own in-platform flow isn't available, so ATS-by-URL
+// routing (or the generic fallback) gets a real shot at the real form.
+// Returns null when the click didn't actually leave the platform's own
+// domain — meaning this wasn't really an external-redirect case after all.
+export async function resolveExternalApplyUrl(page: Page, clickable: Locator, ownDomain: RegExp): Promise<string | null> {
+  const popupPromise = page.waitForEvent('popup', { timeout: 5000 }).catch(() => null);
+  await clickable.click().catch(() => {});
+  const popup = await popupPromise;
+
+  if (popup) {
+    await popup.waitForLoadState('domcontentloaded').catch(() => {});
+    const url = popup.url();
+    await popup.close().catch(() => {});
+    return url && !ownDomain.test(url) ? url : null;
+  }
+
+  await page.waitForTimeout(1500);
+  const url = page.url();
+  return !ownDomain.test(url) ? url : null;
+}
+
 // Welcome to the Jungle hosts the job posting itself, but the real "Postuler"
 // action almost always points out to whatever ATS the employer actually uses
 // (Greenhouse, Lever, Workday, SmartRecruiters, or something else entirely) —

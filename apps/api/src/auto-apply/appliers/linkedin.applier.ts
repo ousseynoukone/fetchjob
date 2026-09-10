@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
-import { dismissCookieBanner, SESSION_CHECKS } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl } from './ats-common';
 
 // Best-effort automation of LinkedIn's own UI — LinkedIn does not offer an
 // "apply on my behalf" API. Logging in is NOT automated: LinkedIn actively
@@ -32,10 +32,33 @@ export class LinkedInApplier implements JobApplier {
     const easyApplyButton = page.getByRole('button', { name: /easy apply|postulation simplifiée/i }).first();
     const hasEasyApply = await easyApplyButton.isVisible().catch(() => false);
     if (!hasEasyApply) {
-      return {
-        success: false,
-        note: "Pas de bouton Easy Apply sur cette offre (candidature externe) — à traiter manuellement.",
-      };
+      // No Easy Apply — LinkedIn still shows a plain "Postuler"/"Apply"
+      // button for these, which just sends the visitor to the employer's
+      // own site (a new tab in some cases, same-page navigation in
+      // others) rather than a LinkedIn-hosted form. Follow it instead of
+      // giving up, so ATS-by-URL routing (or the generic fallback) gets a
+      // real shot at the real form.
+      const externalApplyButton = page
+        .getByRole('link', { name: /^postuler$|^apply$/i })
+        .or(page.getByRole('button', { name: /^postuler$|^apply$/i }))
+        .first();
+
+      if (!(await externalApplyButton.isVisible().catch(() => false))) {
+        return {
+          success: false,
+          note: "Aucun bouton de candidature trouvé sur cette offre LinkedIn — à traiter manuellement.",
+        };
+      }
+
+      const externalUrl = await resolveExternalApplyUrl(page, externalApplyButton, /linkedin\.com/i);
+      if (!externalUrl) {
+        return {
+          success: false,
+          note: "Cette offre LinkedIn ne propose pas de candidature automatisable — à traiter manuellement.",
+        };
+      }
+
+      return { success: false, redirectToExternalUrl: externalUrl };
     }
 
     await easyApplyButton.click();

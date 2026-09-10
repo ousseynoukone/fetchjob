@@ -134,6 +134,19 @@ export class AutoApplyService {
     return { applier: this.genericFallback, platformKey: source };
   }
 
+  // Used only for a URL an applier discovered mid-flow (ApplyResult.
+  // redirectToExternalUrl — LinkedIn/Indeed/HelloWork postings with no
+  // in-platform apply flow) — deliberately never falls back to a
+  // source-keyed applier the way getApplier() does: that source's applier
+  // is exactly what just gave up on this URL, so retrying it would loop.
+  private getApplierForResolvedUrl(url: string, atsEnabled: boolean): { applier: JobApplier; platformKey: string } {
+    if (atsEnabled) {
+      const atsKey = detectAtsKey(url);
+      if (atsKey && this.atsAppliers[atsKey]) return { applier: this.atsAppliers[atsKey], platformKey: atsKey };
+    }
+    return { applier: this.genericFallback, platformKey: 'external' };
+  }
+
   // Merges the AI-adapted snapshot with live identity fields — same logic
   // as ApplicationsService.getCvData, duplicated here rather than imported
   // to avoid a module cycle (ApplicationsModule already depends on
@@ -296,7 +309,9 @@ export class AutoApplyService {
     const context = await this.browserSession.createContext(sessionState);
     try {
       const page = await context.newPage();
-      const result = await applier.apply(page, {
+      let finalUrl = effectiveSourceUrl;
+      let finalPlatformKey = platformKey;
+      let result = await applier.apply(page, {
         application: {
           id: application.id,
           jobTitle: application.jobTitle,
@@ -310,9 +325,39 @@ export class AutoApplyService {
         reportUnknownFields: (fields) =>
           this.customQuestions.recordUnknown(
             userId,
-            fields.map((f) => ({ ...f, platform: platformKey, sourceUrl: effectiveSourceUrl })),
+            fields.map((f) => ({ ...f, platform: finalPlatformKey, sourceUrl: finalUrl })),
           ),
       });
+
+      // The platform's own apply flow turned out not to exist for this
+      // posting (LinkedIn/Indeed/HelloWork only discover this after
+      // visiting the page) — one more hop to whichever applier actually
+      // owns the resolved URL, instead of giving up on what the
+      // source-keyed applier reported. Never chases a second redirect: only
+      // those three appliers ever set this field, and neither the ATS
+      // appliers nor the generic fallback do, so this can't loop.
+      if (!result.success && result.redirectToExternalUrl) {
+        finalUrl = result.redirectToExternalUrl;
+        const redirected = this.getApplierForResolvedUrl(finalUrl, atsEnabled);
+        finalPlatformKey = redirected.platformKey;
+        result = await redirected.applier.apply(page, {
+          application: {
+            id: application.id,
+            jobTitle: application.jobTitle,
+            company: application.company,
+            sourceUrl: finalUrl,
+          },
+          cv,
+          cvPdfPath,
+          coverLetter: application.coverLetter,
+          knownAnswers,
+          reportUnknownFields: (fields) =>
+            this.customQuestions.recordUnknown(
+              userId,
+              fields.map((f) => ({ ...f, platform: finalPlatformKey, sourceUrl: finalUrl })),
+            ),
+        });
+      }
 
       // Every attempt, success or failure, leaves a screenshot — the only
       // record of what the page actually showed once the browser closes.
@@ -323,7 +368,7 @@ export class AutoApplyService {
       // the invalid field(s) visible on the page — catch those too so no
       // blocking question goes unrecorded.
       if (!result.success) {
-        await this.captureUnknownFields(page, platformKey, effectiveSourceUrl, userId);
+        await this.captureUnknownFields(page, finalPlatformKey, finalUrl, userId);
       }
 
       if (platform) {

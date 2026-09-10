@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
-import { dismissCookieBanner, SESSION_CHECKS } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl } from './ats-common';
 
 // Same best-effort/defensive posture as the other account-based appliers.
 // Login is NOT automated — HelloWork runs a real bot-detection check
@@ -31,19 +31,15 @@ export class HelloWorkApplier implements JobApplier {
       };
     }
 
-    await applyButton.click();
-    await page.waitForTimeout(1500);
-
-    const externalRedirectNotice = await page
-      .getByText(/site de l'employeur|candidature externe|vous allez être redirigé/i)
-      .first()
-      .isVisible()
-      .catch(() => false);
-    if (externalRedirectNotice) {
-      return {
-        success: false,
-        note: "Cette offre HelloWork redirige vers un site externe — à traiter manuellement.",
-      };
+    // Clicking "Postuler" here can either open HelloWork's own in-platform
+    // form (the common case, handled below) or send the visitor straight to
+    // the employer's own site (a new tab or a same-page navigation) — this
+    // resolves which one happened and, for the external case, follows it
+    // instead of giving up, so ATS-by-URL routing (or the generic fallback)
+    // gets a real shot at the real form.
+    const externalUrl = await resolveExternalApplyUrl(page, applyButton, /hellowork\.com/i);
+    if (externalUrl) {
+      return { success: false, redirectToExternalUrl: externalUrl };
     }
 
     const fileInput = page.locator('input[type="file"]').first();

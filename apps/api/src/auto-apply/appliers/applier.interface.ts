@@ -34,6 +34,12 @@ export interface ApplyResult {
   // `npm run establish-session -- <platform> ...` rather than silently
   // leaving every candidature on that platform stuck in `needs_review`.
   sessionExpired?: boolean;
+  // Set when this applier discovered, mid-flow, that the real application
+  // happens somewhere else entirely (LinkedIn/Indeed/HelloWork postings
+  // with no in-platform apply flow just send the visitor to the employer's
+  // own site) — the caller re-routes to whichever applier owns that URL (a
+  // known ATS, or the generic fallback) instead of giving up here.
+  redirectToExternalUrl?: string;
 }
 
 export interface JobApplier {
