@@ -31,8 +31,12 @@ export class GreenhouseApplier implements JobApplier {
     await fillIfVisible(page.getByLabel(/^email/i).first(), ctx.cv.email);
     await fillIfVisible(page.getByLabel(/phone/i).first(), ctx.cv.phone);
 
+    // `count()`, not `isVisible()` — confirmed live that Playwright's
+    // setInputFiles works on a hidden input; gating on visibility silently
+    // skipped the upload whenever Greenhouse hides the real input behind
+    // its own styled button, same issue found and fixed across every applier.
     const fileInput = page.locator('input[type="file"]').first();
-    if (await fileInput.isVisible().catch(() => false)) {
+    if (await fileInput.count().catch(() => 0)) {
       await fileInput.setInputFiles(ctx.cvPdfPath).catch(() => {});
     }
 

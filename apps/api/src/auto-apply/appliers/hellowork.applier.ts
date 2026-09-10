@@ -42,8 +42,17 @@ export class HelloWorkApplier implements JobApplier {
       return { success: false, redirectToExternalUrl: externalUrl };
     }
 
+    // `count()`, not `isVisible()` — confirmed live that Playwright's
+    // setInputFiles works fine on a hidden input, and HelloWork (like most
+    // modern upload UIs) hides the real <input type="file"> behind a
+    // styled button/dropzone. Gating on visibility here was silently
+    // skipping the upload on every offer that hides it that way — the
+    // form then fails validation on a missing CV with no field-level error
+    // scanInvalidFields can ever surface (it deliberately excludes file
+    // inputs), which is exactly what "à finaliser manuellement" without a
+    // useful reason turned out to mean in practice.
     const fileInput = page.locator('input[type="file"]').first();
-    if (await fileInput.isVisible().catch(() => false)) {
+    if (await fileInput.count().catch(() => 0)) {
       await fileInput.setInputFiles(ctx.cvPdfPath).catch(() => {});
     }
 

@@ -26,8 +26,11 @@ export class SmartRecruitersApplier implements JobApplier {
     await fillIfVisible(page.getByLabel(/^email/i).first(), ctx.cv.email);
     await fillIfVisible(page.getByLabel(/phone/i).first(), ctx.cv.phone);
 
+    // `count()`, not `isVisible()` — confirmed live that Playwright's
+    // setInputFiles works on a hidden input, same issue found and fixed
+    // across every applier here.
     const fileInput = page.locator('input[type="file"]').first();
-    if (await fileInput.isVisible().catch(() => false)) {
+    if (await fileInput.count().catch(() => 0)) {
       await fileInput.setInputFiles(ctx.cvPdfPath).catch(() => {});
     }
 

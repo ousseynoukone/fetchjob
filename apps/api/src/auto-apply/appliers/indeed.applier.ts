@@ -60,8 +60,12 @@ export class IndeedApplier implements JobApplier {
     await target.waitForTimeout(1500);
     if (popup) await dismissCookieBanner(popup);
 
+    // `count()`, not `isVisible()` — confirmed live that Playwright's
+    // setInputFiles works on a hidden input; gating on visibility silently
+    // skipped the upload whenever Indeed hides the real input behind a
+    // styled button, same issue found and fixed across every applier here.
     const fileInput = target.locator('input[type="file"]').first();
-    if (await fileInput.isVisible().catch(() => false)) {
+    if (await fileInput.count().catch(() => 0)) {
       await fileInput.setInputFiles(ctx.cvPdfPath).catch(() => {});
     }
 

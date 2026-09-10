@@ -62,8 +62,11 @@ export class FranceTravailApplier implements JobApplier {
       };
     }
 
+    // `count()`, not `isVisible()` — confirmed live that Playwright's
+    // setInputFiles works on a hidden input, same issue found and fixed
+    // across every applier here.
     const fileInput = page.locator('input[type="file"]').first();
-    if (await fileInput.isVisible().catch(() => false)) {
+    if (await fileInput.count().catch(() => 0)) {
       await fileInput.setInputFiles(ctx.cvPdfPath).catch(() => {});
     }
 

@@ -25,8 +25,12 @@ export class LeverApplier implements JobApplier {
     await fillIfVisible(page.locator('input[name="email"]').first(), ctx.cv.email);
     await fillIfVisible(page.locator('input[name="phone"]').first(), ctx.cv.phone);
 
+    // `count()`, not `isVisible()` — confirmed live that Playwright's
+    // setInputFiles works fine on a hidden input, so this only needs the
+    // "Attach Resume/CV" button fallback when the input isn't in the DOM
+    // at all yet, not merely whenever it happens to be hidden.
     const fileInput = page.locator('input[type="file"]').first();
-    if (await fileInput.isVisible().catch(() => false)) {
+    if (await fileInput.count().catch(() => 0)) {
       await fileInput.setInputFiles(ctx.cvPdfPath).catch(() => {});
     } else {
       // Lever hides the file input behind an "Attach Resume/CV" button.

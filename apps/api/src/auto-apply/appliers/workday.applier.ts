@@ -39,8 +39,11 @@ export class WorkdayApplier implements JobApplier {
       };
     }
 
+    // `count()`, not `isVisible()` — confirmed live that Playwright's
+    // setInputFiles works on a hidden input, same issue found and fixed
+    // across every applier here.
     const autofillInput = page.locator('input[type="file"]').first();
-    if (await autofillInput.isVisible().catch(() => false)) {
+    if (await autofillInput.count().catch(() => 0)) {
       await autofillInput.setInputFiles(ctx.cvPdfPath).catch(() => {});
       await page.waitForTimeout(1500);
     }

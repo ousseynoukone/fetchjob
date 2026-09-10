@@ -64,8 +64,12 @@ export class LinkedInApplier implements JobApplier {
     await easyApplyButton.click();
     await page.waitForTimeout(1500);
 
+    // `count()`, not `isVisible()` — confirmed live that Playwright's
+    // setInputFiles works on a hidden input; gating on visibility silently
+    // skipped the upload whenever LinkedIn hides the real input behind its
+    // own styled button, same issue found and fixed across every applier.
     const fileInput = page.locator('input[type="file"]').first();
-    if (await fileInput.isVisible().catch(() => false)) {
+    if (await fileInput.count().catch(() => 0)) {
       await fileInput.setInputFiles(ctx.cvPdfPath).catch(() => {});
     }
 
