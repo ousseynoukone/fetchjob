@@ -12,12 +12,24 @@
 //   npm run establish-session -- hellowork you@example.com
 //   npm run establish-session -- france_travail you@example.com
 //
-// Reads CREDENTIALS_ENCRYPTION_KEY and DATABASE_URL from .env.local
-// automatically — same values the API itself uses. Only `email` is stored
-// (as a display label) — there is no password field on PlatformCredential
-// anymore; login itself always happens in the real browser window below.
+// Reads CREDENTIALS_ENCRYPTION_KEY and DATABASE_URL from .env.production.local
+// — deliberately NOT .env.local, which points at the dev-auto-apply branch.
+// A session saved there would be invisible to the deployed Render app,
+// which is the only thing that ever actually reuses it. Only `email` is
+// stored (as a display label) — there is no password field on
+// PlatformCredential anymore; login itself always happens in the real
+// browser window below.
 
-require('dotenv').config({ path: require('path').join(__dirname, '..', '.env.local') });
+require('dotenv').config({ path: require('path').join(__dirname, '..', '.env.production.local') });
+
+if (!process.env.DATABASE_URL) {
+  console.error(
+    'DATABASE_URL is not set — expected it in apps/api/.env.production.local (production database + ' +
+      'CREDENTIALS_ENCRYPTION_KEY, matching Render\'s env vars). Create that file first.',
+  );
+  process.exit(1);
+}
+console.log(`Target database: ${new URL(process.env.DATABASE_URL).hostname}\n`);
 
 const { chromium } = require('playwright');
 const { PrismaClient } = require('@prisma/client');
