@@ -1,4 +1,4 @@
-import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { Subject, Observable } from 'rxjs';
 import { PrismaService } from '../common/prisma.service';
 import { LocalUserService } from '../common/local-user.service';
@@ -81,7 +81,7 @@ const MIN_TRIALS_BEFORE_JUDGING = 8;
 const PROBE_QUOTA = 1;
 
 @Injectable()
-export class CampaignService {
+export class CampaignService implements OnModuleInit {
   private readonly logger = new Logger(CampaignService.name);
   private runningCampaigns = new Set<string>();
   // Set by pause() while executeRun's background task for that campaign is
@@ -110,6 +110,29 @@ export class CampaignService {
     private prep: ApplicationPrepService,
     private autoApply: AutoApplyService,
   ) {}
+
+  // On startup, any campaign still marked 'running' in the DB is a
+  // ghost run left over from a previous process that crashed or was
+  // restarted while a campaign was in progress — reset them to 'active'
+  // so they can be re-triggered normally, and mark their open campaign_runs
+  // as finished so the frontend doesn't keep showing stale logs.
+  async onModuleInit() {
+    try {
+      // Mark orphaned running campaigns as active
+      await this.prisma.campaign.updateMany({
+        where: { status: 'running' },
+        data: { status: 'active' },
+      });
+      // Close any campaign_runs that never got a finishedAt
+      await this.prisma.campaignRun.updateMany({
+        where: { finishedAt: null },
+        data: { finishedAt: new Date(), error: 'Process restarted — run interrupted.' },
+      });
+      this.logger.log('Cleaned up orphaned running campaigns on startup.');
+    } catch (err: any) {
+      this.logger.warn(`onModuleInit cleanup failed: ${err.message}`);
+    }
+  }
 
   async getOrCreateCampaign() {
     const userId = await this.localUser.getDefaultUserId();
@@ -173,6 +196,14 @@ export class CampaignService {
     if (this.runningCampaigns.has(campaign.id)) {
       return this.getLatestRun();
     }
+    // Reset ghost-running state left in DB after a server restart
+    if (campaign.status === 'running') {
+      await this.prisma.campaign.update({ where: { id: campaign.id }, data: { status: 'active' } });
+      await this.prisma.campaignRun.updateMany({
+        where: { campaignId: campaign.id, finishedAt: null },
+        data: { finishedAt: new Date(), error: 'Nouvelle campagne lancée — run précédente interrompue.' },
+      });
+    }
 
     const userId = await this.localUser.getDefaultUserId();
 
@@ -209,6 +240,14 @@ export class CampaignService {
     if (this.runningCampaigns.has(campaign.id)) {
       return this.getLatestRun();
     }
+    // Also reset ghost-running state left in DB after a restart
+    if (campaign.status === 'running') {
+      await this.prisma.campaign.update({ where: { id: campaign.id }, data: { status: 'active' } });
+      await this.prisma.campaignRun.updateMany({
+        where: { campaignId: campaign.id, finishedAt: null },
+        data: { finishedAt: new Date(), error: 'Relancé manuellement — run précédente interrompue.' },
+      });
+    }
 
     const userId = await this.localUser.getDefaultUserId();
     const failed = await this.prisma.application.findMany({
@@ -243,8 +282,18 @@ export class CampaignService {
   async retryOne(applicationId: string) {
     const campaign = await this.getOrCreateCampaign();
 
-    if (this.runningCampaigns.has(campaign.id)) {
-      return this.getLatestRun();
+    // Also guard against ghost-running state left in the DB after a restart
+    if (this.runningCampaigns.has(campaign.id) || campaign.status === 'running') {
+      // Reset the ghost state so the user can retry immediately
+      if (!this.runningCampaigns.has(campaign.id) && campaign.status === 'running') {
+        await this.prisma.campaign.update({ where: { id: campaign.id }, data: { status: 'active' } });
+        await this.prisma.campaignRun.updateMany({
+          where: { campaignId: campaign.id, finishedAt: null },
+          data: { finishedAt: new Date(), error: 'Relancé manuellement — run précédente interrompue.' },
+        });
+      } else {
+        return this.getLatestRun();
+      }
     }
 
     const userId = await this.localUser.getDefaultUserId();
