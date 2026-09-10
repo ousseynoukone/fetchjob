@@ -115,7 +115,32 @@ async function main() {
   const page = await context.newPage();
   await page.goto(LOGIN_URLS[platform]);
 
-  await prompt('\nOnce you are fully logged in, come back here and press Enter to save the session...\n');
+  console.log('\n👉 Connectez-vous simplement à votre compte LinkedIn dans la fenêtre qui vient de s\'ouvrir.');
+  console.log('Dès que vous serez connecté (arrivée sur le fil d\'actualité), la session sera détectée et enregistrée automatiquement !\n');
+
+  let autoDetected = false;
+  // Auto-detect login by checking cookies and URL every second for up to 5 minutes
+  for (let i = 0; i < 300; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    try {
+      const cookies = await context.cookies();
+      const liAt = cookies.find((c) => c.name === 'li_at');
+      const url = page.url();
+      if (liAt && liAt.value && liAt.value !== 'delete me' && !url.includes('/login') && !url.includes('/checkpoint')) {
+        console.log('✅ Connexion détectée automatiquement !');
+        autoDetected = true;
+        // Wait 2s to allow all session cookies to settle
+        await new Promise((r) => setTimeout(r, 2000));
+        break;
+      }
+    } catch {
+      // If browser was closed or page navigating, ignore and continue
+    }
+  }
+
+  if (!autoDetected) {
+    await prompt('\nSi vous êtes connecté, appuyez sur Entrée pour sauvegarder la session...\n');
+  }
 
   const storageState = await context.storageState();
   if (platform === 'linkedin' && Array.isArray(storageState.cookies)) {
