@@ -54,6 +54,14 @@ export class GenericApplier implements JobApplier {
     await this.fillFirstMatch(page, [/^email|adresse e-?mail/i], ctx.cv.email);
     await this.fillFirstMatch(page, [/phone|t[ée]l[ée]phone|mobile/i], ctx.cv.phone);
 
+    const hasPasswordField = await page.locator('input[type="password"]').first().isVisible().catch(() => false);
+    if (hasPasswordField) {
+      return {
+        success: false,
+        note: 'Connexion requise sur la plateforme (compte Welcome to the Jungle ou espace candidat) — candidature à effectuer directement sur le lien de l\'offre.',
+      };
+    }
+
     const fileInput = page.locator('input[type="file"]').first();
     if (await fileInput.count().catch(() => 0)) {
       await fileInput.setInputFiles(ctx.cvPdfPath).catch(() => {});

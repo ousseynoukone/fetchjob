@@ -13,7 +13,7 @@ declare const CSS: any;
 // answer (a learned "years of experience" answer must never land in the
 // email field just because of a labeling quirk).
 const KNOWN_FIELD_LABEL_EXCLUDE =
-  /first name|last name|full name|^name$|^email|phone|resume|^cv$|cover letter|lettre de motivation|pr[ée]nom|^nom$|^email$|^t[ée]l[ée]phone$/i;
+  /first name|last name|full name|^name$|^e-?mail|courriel|adresse e-?mail|phone|t[ée]l[ée]phone|mobile|resume|^cv$|cover letter|lettre de motivation|pr[ée]nom|^nom$|mot de passe|password|code de validation|captcha|se connecter|connexion|identifiant/i;
 
 export interface DetectedField {
   questionText: string;
@@ -96,7 +96,7 @@ function normalizeLabel(text: string): string {
 }
 
 const FIELD_SELECTOR =
-  'input:not([type=file]):not([type=hidden]):not([type=submit]):not([type=button]), textarea, select';
+  'input:not([type=file]):not([type=hidden]):not([type=submit]):not([type=button]):not([type=password]), textarea, select';
 
 // Fills whatever the user has already answered once before (see
 // CustomQuestionsService) — checked by normalized label text, so the same
@@ -121,6 +121,7 @@ async function fillIfKnown(handle: ElementHandle<any>, knownAnswers: Map<string,
 
   const tag = await handle.evaluate((el) => el.tagName.toLowerCase());
   const type = await handle.evaluate((el) => el.type || '');
+  if (type === 'password') return;
 
   if (tag === 'select') {
     await handle.selectOption({ label: answer }).catch(() => handle.selectOption(answer).catch(() => {}));
@@ -158,6 +159,7 @@ export async function scanInvalidFields(page: Page): Promise<DetectedField[]> {
 
     const tag = await handle.evaluate((el) => el.tagName.toLowerCase());
     const type = await handle.evaluate((el) => el.type || '');
+    if (type === 'password') continue;
 
     let fieldType: DetectedField['fieldType'] = 'text';
     let options: string[] = [];
