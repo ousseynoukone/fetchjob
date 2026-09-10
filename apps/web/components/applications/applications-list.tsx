@@ -52,6 +52,9 @@ export default function ApplicationsList() {
   // resetting to "Toutes".
   const tab = searchParams.get('tab') || '';
   const [showAddModal, setShowAddModal] = useState(false);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [clearTarget, setClearTarget] = useState<'tab' | 'all' | null>(null);
+  const [clearing, setClearing] = useState(false);
   const activeTab = TABS.find((t) => t.id === tab);
 
   useEffect(() => {
@@ -60,16 +63,6 @@ export default function ApplicationsList() {
 
   const setTab = (id: string) => {
     router.replace(id ? `/candidatures?tab=${id}` : '/candidatures');
-  };
-
-  const handleClearTab = async () => {
-    if (!confirm(`Supprimer toutes les candidatures de l'onglet "${activeTab?.label}" ? Cette action est irréversible.`)) return;
-    await removeAll(activeTab?.status, activeTab?.scope);
-  };
-
-  const handleClearAll = async () => {
-    if (!confirm('Supprimer TOUTES les candidatures, quel que soit leur statut ? Cette action est irréversible.')) return;
-    await removeAll();
   };
 
   const handleRetryFailed = async () => {
@@ -99,28 +92,52 @@ export default function ApplicationsList() {
               </button>
             )}
             {applications.length > 0 && (
-              <div className="dropdown dropdown-end">
-                <div
-                  role="button"
-                  tabIndex={0}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setDropdownOpen((v) => !v)}
                   className="btn btn-outline btn-sm gap-1.5 inline-flex flex-nowrap items-center whitespace-nowrap"
                 >
                   <Trash2 className="w-4 h-4 shrink-0" />
                   <span>Nettoyer</span>
                   <ChevronDown className="w-3.5 h-3.5 shrink-0" />
-                </div>
-                <ul tabIndex={0} className="dropdown-content menu z-10 mt-2 p-1.5 shadow-xl bg-base-200 border border-base-300 rounded-xl w-64">
-                  {tab && (
-                    <li>
-                      <button onClick={handleClearTab}>Supprimer "{activeTab?.label}"</button>
-                    </li>
-                  )}
-                  <li>
-                    <button onClick={handleClearAll} className="text-error">
-                      Tout supprimer
-                    </button>
-                  </li>
-                </ul>
+                </button>
+
+                {dropdownOpen && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-20"
+                      onClick={() => setDropdownOpen(false)}
+                    />
+                    <ul className="absolute right-0 top-full mt-2 z-30 p-1.5 shadow-xl bg-base-200 border border-base-300 rounded-xl w-64 menu">
+                      {tab && (
+                        <li>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDropdownOpen(false);
+                              setClearTarget('tab');
+                            }}
+                          >
+                            Supprimer "{activeTab?.label}"
+                          </button>
+                        </li>
+                      )}
+                      <li>
+                        <button
+                          type="button"
+                          className="text-error"
+                          onClick={() => {
+                            setDropdownOpen(false);
+                            setClearTarget('all');
+                          }}
+                        >
+                          Tout supprimer
+                        </button>
+                      </li>
+                    </ul>
+                  </>
+                )}
               </div>
             )}
             <button className="btn btn-primary btn-sm gap-2" onClick={() => setShowAddModal(true)}>
@@ -130,6 +147,60 @@ export default function ApplicationsList() {
         </div>
 
         {showAddModal && <AddOfferModal onClose={() => setShowAddModal(false)} />}
+
+        {clearTarget && (
+          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4" onClick={() => !clearing && setClearTarget(null)}>
+            <div
+              className="bg-base-200 border border-base-300 rounded-2xl p-6 w-full max-w-md shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-3 text-error mb-3">
+                <div className="w-10 h-10 rounded-full bg-error/15 flex items-center justify-center">
+                  <Trash2 className="w-5 h-5" />
+                </div>
+                <h3 className="text-lg font-bold text-base-content">
+                  {clearTarget === 'tab' ? `Supprimer l'onglet "${activeTab?.label}"` : 'Supprimer toutes les candidatures'}
+                </h3>
+              </div>
+              <p className="text-sm text-base-content/70 mb-6">
+                {clearTarget === 'tab'
+                  ? `Voulez-vous vraiment supprimer toutes les candidatures de l'onglet "${activeTab?.label}" ? Cette action est irréversible.`
+                  : 'Voulez-vous vraiment supprimer TOUTES les candidatures, quel que soit leur statut ? Cette action est irréversible.'}
+              </p>
+              <div className="flex justify-end gap-2.5">
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  disabled={clearing}
+                  onClick={() => setClearTarget(null)}
+                >
+                  Annuler
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-error btn-sm gap-1.5"
+                  disabled={clearing}
+                  onClick={async () => {
+                    setClearing(true);
+                    try {
+                      if (clearTarget === 'tab') {
+                        await removeAll(activeTab?.status, activeTab?.scope);
+                      } else {
+                        await removeAll();
+                      }
+                      setClearTarget(null);
+                    } finally {
+                      setClearing(false);
+                    }
+                  }}
+                >
+                  {clearing ? <span className="loading loading-spinner loading-xs" /> : <Trash2 className="w-4 h-4" />}
+                  Confirmer la suppression
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="flex gap-1 mb-6 overflow-x-auto">
           {TABS.map((t) => (
