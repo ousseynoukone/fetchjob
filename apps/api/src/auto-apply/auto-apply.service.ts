@@ -491,6 +491,11 @@ export class AutoApplyService {
 
   private async captureUnknownFields(page: Page, platformKey: string, sourceUrl: string, userId: string): Promise<void> {
     try {
+      // Only scan if an actual apply modal or form is open, avoiding heavy scanning of full feed pages
+      const formContainer = page.locator('.jobs-easy-apply-modal, [role="dialog"], form').first();
+      const hasForm = await formContainer.isVisible().catch(() => false);
+      if (!hasForm) return;
+
       const fields = await scanInvalidFields(page);
       if (fields.length) {
         await this.customQuestions.recordUnknown(

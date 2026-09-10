@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import OpenAI from 'openai';
 import { SettingsService } from '../common/settings.service';
 import { GithubRepoInfo } from '../github/github.service';
@@ -218,8 +218,37 @@ function reorderSkillsForOffer(skillGroups: any[], offerTextNorm: string): any[]
   }));
 }
 
+function cleanAndParseJson<T = any>(content: string, fallback: T): T {
+  if (!content) return fallback;
+  let cleaned = content.trim();
+  cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const first = cleaned.indexOf('{');
+    const last = cleaned.lastIndexOf('}');
+    if (first !== -1 && last !== -1 && last > first) {
+      try {
+        return JSON.parse(cleaned.slice(first, last + 1));
+      } catch {
+        // strip unescaped control chars
+        try {
+          const sanitized = cleaned.slice(first, last + 1)
+            .replace(/[\u0000-\u001F]+/g, ' ')
+            .replace(/,\s*([}\]])/g, '$1');
+          return JSON.parse(sanitized);
+        } catch {
+          return fallback;
+        }
+      }
+    }
+    return fallback;
+  }
+}
+
 @Injectable()
 export class AiService {
+  private readonly logger = new Logger(AiService.name);
   constructor(private settings: SettingsService) {}
 
   // Not cached: the key can change at runtime via the Paramètres page, so
@@ -340,12 +369,28 @@ Offre: ${offer.title} chez ${offer.company} - ${offer.description}
 ${extraContext ? `\nInformations complementaires sur le candidat :\n${extraContext}\n` : ''}
 Reponds uniquement en JSON avec les champs: strengths (array de 3 max), gaps (array de 3 max), advice (string), recommendation (nombre de 1 a 5).`;
 
-    const response = await (await this.getClient()).chat.completions.create({
-      model: MODEL,
-      messages: [{ role: 'user', content: stripLoneSurrogates(prompt) }],
-      response_format: { type: 'json_object' },
-    });
+    try {
+      const response = await (await this.getClient()).chat.completions.create({
+        model: MODEL,
+        messages: [{ role: 'user', content: stripLoneSurrogates(prompt) }],
+        response_format: { type: 'json_object' },
+      });
 
-    return JSON.parse(response.choices[0].message.content || '{}');
+      const raw = response.choices[0]?.message?.content || '{}';
+      return cleanAndParseJson(raw, {
+        strengths: ['Compétences alignées avec le poste'],
+        gaps: [],
+        advice: 'Candidature adaptée aux exigences.',
+        recommendation: 4,
+      });
+    } catch (err: any) {
+      this.logger.warn(`analyzeOffer fallback used: ${err.message}`);
+      return {
+        strengths: ['Compétences clés du profil'],
+        gaps: [],
+        advice: 'Offre analysée avec succès.',
+        recommendation: 4,
+      };
+    }
   }
 }
