@@ -93,6 +93,14 @@ async function main() {
   await prompt('\nOnce you are fully logged in, come back here and press Enter to save the session...\n');
 
   const storageState = await context.storageState();
+  if (platform === 'linkedin' && Array.isArray(storageState.cookies)) {
+    storageState.cookies = storageState.cookies.map((c) => {
+      if (c.domain && c.domain.includes('linkedin.com')) {
+        return { ...c, domain: '.linkedin.com' };
+      }
+      return c;
+    });
+  }
   await browser.close();
 
   const prisma = new PrismaClient();

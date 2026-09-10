@@ -85,6 +85,14 @@ export class BrowserSessionService implements OnModuleDestroy {
     if (sessionStateJson) {
       try {
         storageState = JSON.parse(sessionStateJson);
+        if (storageState && Array.isArray(storageState.cookies)) {
+          storageState.cookies = storageState.cookies.map((c: any) => {
+            if (c.domain && c.domain.includes('linkedin.com')) {
+              return { ...c, domain: '.linkedin.com' };
+            }
+            return c;
+          });
+        }
       } catch {
         this.logger.warn('Stored session state was not valid JSON — starting a fresh session.');
       }

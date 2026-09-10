@@ -25,14 +25,16 @@ export class LinkedInApplier implements JobApplier {
 
   async apply(page: Page, ctx: ApplyContext): Promise<ApplyResult> {
     await ctx.appendLog?.(`Navigation vers l'offre LinkedIn : ${ctx.application.jobTitle}...`);
-    await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const targetUrl = ctx.application.sourceUrl.replace(/https?:\/\/[a-z]{2}\.linkedin\.com/i, 'https://www.linkedin.com');
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await dismissCookieBanner(page);
 
     const loginResult = await this.ensureLoggedIn(page, ctx);
     if (loginResult) return loginResult;
 
     if (!page.url().includes('/jobs/view/')) {
-      await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      const targetUrl = ctx.application.sourceUrl.replace(/https?:\/\/[a-z]{2}\.linkedin\.com/i, 'https://www.linkedin.com');
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     }
 
     await page.waitForTimeout(1500);
