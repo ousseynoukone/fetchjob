@@ -92,7 +92,7 @@ export class PlatformCredentialsService {
   async recordSessionExpired(userId: string, platform: SupportedPlatform) {
     await this.prisma.platformCredential.update({
       where: { userId_platform: { userId, platform } },
-      data: { lastLoginError: 'Session expirée', sessionStateEncrypted: null },
+      data: { lastLoginError: 'Session expirée' },
     });
 
     await this.email.send(

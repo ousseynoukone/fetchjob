@@ -117,6 +117,15 @@ export class BrowserSessionService implements OnModuleDestroy {
       }
     }
 
+    // Route handler to abort image and media requests to save massive memory and bandwidth
+    await context.route('**/*', (route) => {
+      const type = route.request().resourceType();
+      if (type === 'image' || type === 'media') {
+        return route.abort();
+      }
+      return route.continue();
+    });
+
     return context;
   }
 
