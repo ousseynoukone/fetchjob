@@ -51,10 +51,37 @@ function extractLabel(el: any): string {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function isInvalid(el: any): boolean {
   if (el.getAttribute('aria-invalid') === 'true') return true;
+
+  const describedBy = el.getAttribute('aria-describedby');
+  if (describedBy) {
+    for (const id of describedBy.split(/\s+/)) {
+      const helper = document.getElementById(id);
+      if (helper && helper.offsetParent !== null) {
+        const txt = (helper.textContent || '').toLowerCase();
+        if (/non valide|obligatoire|requis|invalide|error|required|invalid/.test(txt)) {
+          return true;
+        }
+      }
+    }
+  }
+
   const container = el.closest('div, fieldset, li') || el.parentElement;
   if (!container) return false;
-  const err = container.querySelector('[role="alert"], .error-message, [class*="error" i]');
-  return !!(err && err.offsetParent !== null);
+
+  const err = container.querySelector(
+    '[role="alert"], .error-message, [class*="error" i], [class*="feedback" i], .artdeco-inline-feedback, [data-testid*="error" i], [data-testid*="helper-text" i]',
+  );
+  if (err && err.offsetParent !== null) {
+    const txt = (err.textContent || '').toLowerCase();
+    if (!/caract|reste|optionnel|max/i.test(txt)) return true;
+  }
+
+  const containerText = (container.textContent || '').toLowerCase();
+  if (containerText.includes('saisie non valide') || containerText.includes('ce champ est obligatoire')) {
+    return true;
+  }
+
+  return false;
 }
 
 const DIACRITICS_REGEX = new RegExp('[\\u0300-\\u036f]', 'g');

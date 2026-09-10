@@ -221,7 +221,8 @@ export class AutoApplyService {
       if (!application) continue;
 
       try {
-        const result = await this.applyToOne(userId, application, atsEnabled, knownAnswers);
+        await appendLog(`Auto-apply en cours : ${application.jobTitle} chez ${application.company}...`);
+        const result = await this.applyToOne(userId, application, atsEnabled, knownAnswers, appendLog);
         if (result.success) {
           applied++;
           await this.prisma.$transaction([
@@ -307,6 +308,7 @@ export class AutoApplyService {
     },
     atsEnabled: boolean,
     knownAnswers: Map<string, string>,
+    appendLog?: (message: string) => Promise<void>,
   ) {
     const effectiveSourceUrl = await this.resolveEffectiveSourceUrl(application.jobOffer.source, application.sourceUrl);
     const { applier, platformKey } = this.getApplier(application.jobOffer.source, effectiveSourceUrl, atsEnabled);
@@ -366,6 +368,7 @@ export class AutoApplyService {
             userId,
             fields.map((f) => ({ ...f, platform: finalPlatformKey, sourceUrl: finalUrl })),
           ),
+        appendLog,
       });
 
       // The platform's own apply flow turned out not to exist for this
@@ -395,6 +398,7 @@ export class AutoApplyService {
               userId,
               fields.map((f) => ({ ...f, platform: finalPlatformKey, sourceUrl: finalUrl })),
             ),
+          appendLog,
         });
       }
 

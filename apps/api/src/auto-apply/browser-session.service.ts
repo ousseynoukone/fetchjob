@@ -23,6 +23,7 @@ import {
   randomProfile,
   loadCookies,
   saveCookies,
+  FINGERPRINT_PROFILES,
 } from '../scraping/stealth-browser';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -72,9 +73,9 @@ export class BrowserSessionService implements OnModuleDestroy {
   async createContext(sessionStateJson: string | null, siteName?: string): Promise<BrowserContext> {
     const browser = await this.getBrowser();
 
-    // Pick a random fingerprint profile — randomised per context so successive
-    // apply attempts look like different devices if the site tracks across sessions
-    const fp = randomProfile();
+        // For authenticated sessions or platforms that monitor device consistency (like LinkedIn),
+    // always use a standard Windows 10 Chrome desktop profile rather than a random Safari profile.
+    const fp = (sessionStateJson || siteName === 'linkedin') ? FINGERPRINT_PROFILES[0] : randomProfile();
 
     let storageState: any;
     if (sessionStateJson) {

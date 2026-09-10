@@ -22,6 +22,7 @@ export interface ApplyContext {
   // stored (and the user notified) instead of just failing silently again
   // next time the same offer/question comes up.
   reportUnknownFields: (fields: DetectedField[]) => Promise<void>;
+  appendLog?: (message: string) => Promise<void>;
 }
 
 export interface ApplyResult {
