@@ -329,6 +329,22 @@ export class AutoApplyService {
 
     const context = await this.browserSession.createContext(sessionState);
     let cdpSession: CDPSession | null = null;
+
+    // Confirmed live: one HelloWork attempt sat past its normal completion
+    // point and never advanced to the next candidature, blocking the whole
+    // run indefinitely — no single applier step here has an unconditional
+    // wait, but this guarantees the *loop* can never actually get stuck
+    // again regardless of what causes a given attempt to stall. Force-
+    // closing the context is what actually interrupts it: any Playwright
+    // call still in flight on a closed context rejects immediately, which
+    // unwinds straight out of this method and into run()'s own catch block
+    // (marks needs_review, moves on) instead of hanging forever.
+    const APPLY_TIMEOUT_MS = 120_000;
+    const timeoutHandle = setTimeout(() => {
+      this.logger.warn(`Auto-apply attempt for ${application.id} exceeded ${APPLY_TIMEOUT_MS / 1000}s — forcing it to stop.`);
+      context.close().catch(() => {});
+    }, APPLY_TIMEOUT_MS);
+
     try {
       const page = await context.newPage();
       cdpSession = await this.startScreencast(context, page, application.id);
@@ -415,6 +431,7 @@ export class AutoApplyService {
 
       return result;
     } finally {
+      clearTimeout(timeoutHandle);
       await this.stopScreencast(cdpSession);
       await context.close().catch(() => {});
       await unlink(cvPdfPath).catch(() => {});

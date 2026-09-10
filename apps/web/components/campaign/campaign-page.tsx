@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useCampaignStore } from '@/lib/campaign-store';
 import AppShell from '@/components/layout/app-shell';
-import { Play, Pause, Loader2, Terminal, Eye } from 'lucide-react';
+import { Play, Pause, Loader2, Terminal, Eye, Maximize2, X } from 'lucide-react';
 
 const CONTRACT_TYPES = ['CDI', 'CDD', 'Freelance', 'Stage', 'Alternance'];
 const SOURCES = [
@@ -59,6 +59,7 @@ export default function CampaignPage() {
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
+  const [showLiveViewModal, setShowLiveViewModal] = useState(false);
 
   useEffect(() => {
     fetchCampaign();
@@ -476,13 +477,27 @@ export default function CampaignPage() {
             </div>
 
             <div className="bg-base-200 border border-base-300 rounded-2xl p-5">
-              <div className="flex items-center gap-2 mb-3">
-                <Eye className="w-4 h-4 text-primary" />
-                <p className="text-xs uppercase tracking-wider text-base-content/40 font-semibold">
-                  Vue en direct {liveFrame && <span className="text-primary">(en cours)</span>}
-                </p>
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <Eye className="w-4 h-4 text-primary" />
+                  <p className="text-xs uppercase tracking-wider text-base-content/40 font-semibold">
+                    Vue en direct {liveFrame && <span className="text-primary">(en cours)</span>}
+                  </p>
+                </div>
+                {liveFrame && (
+                  <button
+                    className="btn btn-ghost btn-xs gap-1"
+                    onClick={() => setShowLiveViewModal(true)}
+                    title="Agrandir"
+                  >
+                    <Maximize2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
-              <div className="bg-base-100 rounded-xl overflow-hidden aspect-video flex items-center justify-center">
+              <div
+                className={`bg-base-100 rounded-xl overflow-hidden aspect-video flex items-center justify-center ${liveFrame ? 'cursor-zoom-in' : ''}`}
+                onClick={() => liveFrame && setShowLiveViewModal(true)}
+              >
                 {liveFrame ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={liveFrame} alt="Vue en direct du navigateur" className="w-full h-full object-contain" />
@@ -519,6 +534,28 @@ export default function CampaignPage() {
           </div>
         </div>
       </div>
+
+      {showLiveViewModal && liveFrame && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-6"
+          onClick={() => setShowLiveViewModal(false)}
+        >
+          <button
+            className="btn btn-circle btn-sm absolute top-4 right-4"
+            onClick={() => setShowLiveViewModal(false)}
+            aria-label="Fermer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={liveFrame}
+            alt="Vue en direct du navigateur, agrandie"
+            className="max-w-full max-h-full object-contain rounded-lg"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
     </AppShell>
   );
 }
