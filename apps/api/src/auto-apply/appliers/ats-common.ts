@@ -91,6 +91,14 @@ export const SESSION_CHECKS: Record<string, SessionCheck> = {
     isLoginWallVisible: async (page) => {
       if (page.url().includes('/login') || page.url().includes('/uas/login')) return true;
       if (await page.locator('#username').isVisible().catch(() => false)) return true;
+
+      // If top nav or profile avatar is visible, user is authenticated
+      const hasNav = await page.locator('.global-nav__me, #global-nav, .feed-identity-module, [data-control-name="nav.settings"]').first().isVisible().catch(() => false);
+      if (hasNav) return false;
+
+      const hasSignInHeader = await page.locator('a.nav__button-secondary, a:has-text("S\'identifier"), a:has-text("Sign in")').first().isVisible().catch(() => false);
+      if (hasSignInHeader) return true;
+
       const bodyText = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
       return LINKEDIN_LOGGED_OUT_TEXT.test(bodyText);
     },

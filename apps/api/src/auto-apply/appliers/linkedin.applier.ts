@@ -72,7 +72,11 @@ export class LinkedInApplier implements JobApplier {
 
     this.logger.log(`Found Easy Apply button for ${ctx.application.id}, clicking...`);
     await ctx.appendLog?.('Bouton Candidature simplifiée détecté, ouverture du modal...');
-    await easyApplyButton.click();
+    try {
+      await easyApplyButton.click({ timeout: 5000 });
+    } catch {
+      await easyApplyButton.evaluate((el: any) => el.click());
+    }
 
     // Active wait for modal dialog and its form content to load
     // LinkedIn renders an animated spinner while fetching the questions API.
