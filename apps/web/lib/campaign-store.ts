@@ -179,7 +179,7 @@ export const useCampaignStore = create<Store>((set, get) => ({
     const source = new EventSource(`${apiClient.defaults.baseURL}/api/campagne/live-view`);
 
     source.onmessage = (event) => {
-      let payload: { applicationId: string; dataUrl: string };
+      let payload: { applicationId: string; dataUrl: string | null };
       try {
         payload = JSON.parse(event.data);
       } catch {

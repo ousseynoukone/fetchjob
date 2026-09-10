@@ -76,13 +76,24 @@ export interface SessionCheck {
 // of truth here means a selector fix only has to happen once. Every one of
 // these URL+selector pairs was confirmed live (anonymous, logged-out
 // request each correctly lands on the platform's real login page).
+// Confirmed live via the campaign's own live-view screenshot: a stored
+// LinkedIn session that isn't actually authenticated doesn't redirect to
+// /login at all when landing on a job posting page — it stays on the same
+// URL and shows this "sign in to see who you know" overlay instead (the
+// header still shows "S'identifier"/"S'inscrire", confirming logged-out).
+// The old URL/#username-only check missed this entirely, so the applier
+// just stalled trying to click a Postuler button the modal was covering.
+const LINKEDIN_LOGGED_OUT_TEXT = /identifiez[- ]vous pour voir qui vous connaissez|sign in to see who you already know/i;
+
 export const SESSION_CHECKS: Record<string, SessionCheck> = {
   linkedin: {
     homeUrl: 'https://www.linkedin.com/feed/',
-    isLoginWallVisible: async (page) =>
-      page.url().includes('/login') ||
-      page.url().includes('/uas/login') ||
-      (await page.locator('#username').isVisible().catch(() => false)),
+    isLoginWallVisible: async (page) => {
+      if (page.url().includes('/login') || page.url().includes('/uas/login')) return true;
+      if (await page.locator('#username').isVisible().catch(() => false)) return true;
+      const bodyText = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
+      return LINKEDIN_LOGGED_OUT_TEXT.test(bodyText);
+    },
   },
   indeed: {
     homeUrl: 'https://myjobs.indeed.com/',

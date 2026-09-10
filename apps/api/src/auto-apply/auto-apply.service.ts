@@ -85,9 +85,14 @@ export class AutoApplyService {
   // during an apply attempt — a CDP screencast (Page.startScreencast),
   // not a saved video file: frames are pushed here the moment Chromium
   // produces them and never persisted, purely for watching a run happen.
-  private readonly frameStream = new Subject<{ applicationId: string; dataUrl: string }>();
+  // `dataUrl: null` marks "nothing live right now" (an attempt just
+  // finished and its browser context closed) — without it the frontend
+  // just keeps showing the last frame from whichever candidature finished,
+  // which looks exactly like a frozen/hung run during the (often several
+  // minutes long) delay before the next attempt starts.
+  private readonly frameStream = new Subject<{ applicationId: string; dataUrl: string | null }>();
 
-  streamFrames(): Observable<{ applicationId: string; dataUrl: string }> {
+  streamFrames(): Observable<{ applicationId: string; dataUrl: string | null }> {
     return this.frameStream.asObservable();
   }
 
@@ -250,6 +255,11 @@ export class AutoApplyService {
         await appendLog(`Auto-apply en échec: ${application.jobTitle} chez ${application.company} — ${error.message}`);
         this.logger.warn(`Auto-apply crashed for application ${applicationId}: ${error.message}`);
       }
+
+      // The browser context for this candidature is already closed by now
+      // (see applyToOne's finally block) — clear the live view rather than
+      // leaving its last frame on screen for the whole delay that follows.
+      this.frameStream.next({ applicationId, dataUrl: null });
 
       if (i < applicationIds.length - 1) {
         await this.browserSession.randomDelay(minDelaySeconds * 1000, maxDelaySeconds * 1000);
