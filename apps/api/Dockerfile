@@ -58,4 +58,4 @@ EXPOSE 4000
 ENV PORT=4000
 ENV NODE_ENV=production
 
-CMD sh -c "npx prisma migrate deploy && node dist/main.js"
+CMD sh -c "npx prisma migrate deploy && node --max-old-space-size=256 dist/main.js"

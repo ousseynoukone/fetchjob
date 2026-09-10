@@ -74,44 +74,51 @@ export class LinkedInApplier implements JobApplier {
     await ctx.appendLog?.('Bouton Candidature simplifiée détecté, ouverture du modal...');
     await easyApplyButton.click();
 
-    // Active wait for modal form content to load
+    // Active wait for modal dialog and its form content to load
     // LinkedIn renders an animated spinner while fetching the questions API.
     await ctx.appendLog?.('Chargement du formulaire Easy Apply...');
-    const MODAL_LOAD_TIMEOUT = 20_000;
-    const modalContentSelector = [
-      'input[type="tel"]',
-      'input[type="text"]',
-      'input[type="file"]',
-      'button:has-text("Importer le CV")',
-      'button:has-text("Upload resume")',
-      'textarea',
-      'select',
-      'button[aria-label*="Submit" i]',
-      'button[aria-label*="Next" i]',
-      'button[aria-label*="Suivant" i]',
-      'button:has-text("Suivant")',
-      'button:has-text("Next")',
-      'button:has-text("Vérifier")',
-      'button:has-text("Review")',
-      'button:has-text("Envoyer")',
-    ].join(', ');
+    const modalDialog = page.locator('.jobs-easy-apply-modal, [role="dialog"], .artdeco-modal').first();
+    await modalDialog.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
 
-    const modalLoaded = await page
-      .locator(modalContentSelector)
-      .first()
-      .waitFor({ state: 'visible', timeout: MODAL_LOAD_TIMEOUT })
-      .then(() => true)
-      .catch(() => false);
+    let modalLoaded = false;
+    for (let attempt = 0; attempt < 18; attempt++) {
+      await page.waitForTimeout(1000);
+
+      const hasSpinner = await page
+        .locator('.artdeco-loader, [role="progressbar"], .artdeco-loader__bars')
+        .first()
+        .isVisible()
+        .catch(() => false);
+
+      const hasInteractive = await page.evaluate(() => {
+        const doc = (globalThis as any).document;
+        const dialog = doc?.querySelector('.jobs-easy-apply-modal, [role="dialog"], .artdeco-modal');
+        if (!dialog) return false;
+        const inputs = Array.from(dialog.querySelectorAll('input:not([type=hidden]), textarea, select, button'));
+        const contentEls = inputs.filter((el: any) => {
+          const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+          const text = (el.textContent || '').toLowerCase();
+          return !aria.includes('fermer') && !aria.includes('dismiss') && !text.includes('fermer');
+        });
+        return contentEls.length > 0;
+      }).catch(() => false);
+
+      if (!hasSpinner && hasInteractive) {
+        modalLoaded = true;
+        break;
+      }
+    }
 
     if (!modalLoaded) {
       await ctx.appendLog?.('Le formulaire LinkedIn ne s\'est pas chargé (délai dépassé).');
       return {
         success: false,
-        note: 'Le formulaire Easy Apply LinkedIn ne s\'est pas chargé (spinner perpétuel après 20s) -- la session est peut-être expirée ou soumise à un contrôle anti-bot. À finaliser manuellement.',
+        note: 'Le formulaire Easy Apply LinkedIn ne s\'est pas chargé (spinner perpétuel après 18s) -- la session est peut-être expirée ou soumise à un contrôle anti-bot. À finaliser manuellement.',
       };
     }
 
-    await page.waitForTimeout(800);
+    await ctx.appendLog?.('Formulaire Easy Apply chargé avec succès.');
+    await page.waitForTimeout(600);
 
     // Step through the multi-page Easy Apply modal
     for (let step = 0; step < 8; step++) {

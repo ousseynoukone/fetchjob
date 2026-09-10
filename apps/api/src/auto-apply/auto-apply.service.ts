@@ -455,13 +455,19 @@ export class AutoApplyService {
       const cdpSession = await context.newCDPSession(page);
       await cdpSession.send('Page.startScreencast', {
         format: 'jpeg',
-        quality: 50,
-        maxWidth: 960,
-        maxHeight: 640,
-        everyNthFrame: 1,
+        quality: 35,
+        maxWidth: 800,
+        maxHeight: 500,
+        everyNthFrame: 10,
       });
+      let lastSent = 0;
       cdpSession.on('Page.screencastFrame', (frame: any) => {
-        this.frameStream.next({ applicationId, dataUrl: `data:image/jpeg;base64,${frame.data}` });
+        const now = Date.now();
+        // Emit at most 1 frame per second to prevent memory exhaustion in Docker
+        if (now - lastSent >= 1000) {
+          lastSent = now;
+          this.frameStream.next({ applicationId, dataUrl: `data:image/jpeg;base64,${frame.data}` });
+        }
         cdpSession.send('Page.screencastFrameAck', { sessionId: frame.sessionId }).catch(() => {});
       });
       return cdpSession;

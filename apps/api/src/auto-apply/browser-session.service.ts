@@ -42,13 +42,17 @@ export class BrowserSessionService implements OnModuleDestroy {
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
-          // Most important flag — disables the navigator.webdriver property and
-          // automation-specific runtime flags that sites detect
           '--disable-blink-features=AutomationControlled',
           '--disable-features=IsolateOrigins,site-per-process',
           '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--disable-software-rasterizer',
+          '--disable-extensions',
+          '--disable-background-networking',
+          '--mute-audio',
           '--no-first-run',
           '--disable-infobars',
+          '--js-flags=--max-old-space-size=128',
           '--lang=fr-FR',
         ],
       });
