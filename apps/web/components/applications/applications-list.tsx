@@ -7,7 +7,7 @@ import { useApplicationsStore } from '@/lib/applications-store';
 import { useCampaignStore } from '@/lib/campaign-store';
 import AppShell from '@/components/layout/app-shell';
 import AddOfferModal from './add-offer-modal';
-import { MapPin, Building2, Plus, Trash2, ChevronDown, CalendarClock, CalendarCheck, RotateCcw } from 'lucide-react';
+import { MapPin, Building2, Plus, Trash2, ChevronDown, CalendarClock, CalendarCheck, RotateCcw, AlertCircle } from 'lucide-react';
 
 const TABS: { id: string; label: string; status?: string; scope?: 'current' | 'history' }[] = [
   { id: '', label: 'Toutes' },
@@ -182,6 +182,12 @@ export default function ApplicationsList() {
                   <div className="flex items-center gap-1.5 text-sm text-base-content/40 mt-0.5">
                     <MapPin className="w-3.5 h-3.5" />
                     {app.location}
+                  </div>
+                )}
+                {app.status === 'needs_review' && app.autoApplyNote && (
+                  <div className="mt-2 text-xs text-warning flex items-center gap-1.5 bg-warning/10 rounded-lg px-2.5 py-1.5 border border-warning/20">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">{app.autoApplyNote}</span>
                   </div>
                 )}
                 <div className="flex items-center justify-between mt-3">

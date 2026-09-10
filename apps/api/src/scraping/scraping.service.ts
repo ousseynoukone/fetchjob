@@ -1,9 +1,19 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-import { chromium, type BrowserContext } from 'playwright';
+import { type BrowserContext } from 'playwright';
+import {
+  createStealthContext,
+  blockUnnecessaryResources,
+  simulateHumanMouse,
+  persistCookies,
+  isBotChallengePage,
+  jitter,
+  mapWithConcurrency as stealthMapWithConcurrency,
+} from './stealth-browser';
 import { SettingsService } from '../common/settings.service';
 import { blockHeavyResources } from '../auto-apply/appliers/ats-common';
+import { scrapeLinkedInWithStealth, ProxyRotator } from './linkedin-stealth';
 
 const DETAIL_PAGE_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -193,6 +203,8 @@ function matchesKeywords(haystack: string, keywords: string): boolean {
 @Injectable()
 export class ScrapingService {
   private readonly logger = new Logger(ScrapingService.name);
+  /** Round-robin proxy pool from LINKEDIN_PROXIES env var (newline-separated URLs). */
+  private readonly proxyRotator = ProxyRotator.fromEnv('LINKEDIN_PROXIES');
 
   constructor(private settings: SettingsService) {}
 
@@ -294,18 +306,13 @@ export class ScrapingService {
   // page, JobPosting JSON-LD included) — exactly the reason Indeed already
   // goes through Playwright above, not a CAPTCHA bypass of any kind.
   private async enrichWelcomeToTheJungleDescription(offer: ScrapedOffer): Promise<ScrapedOffer> {
-    let browser;
+    // Use stealth browser — WTTJ detail pages sit behind AWS WAF (confirmed: plain GET gets 202 + challenge)
+    const { browser, context } = await createStealthContext({ siteName: 'wttj' });
     try {
-      browser = await chromium.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
-      });
-      const context = await browser.newContext({ userAgent: DETAIL_PAGE_USER_AGENT, locale: 'fr-FR' });
-      await blockHeavyResources(context);
+      await blockUnnecessaryResources(context);
       const page = await context.newPage();
       await page.goto(offer.url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-      // Gives the WAF challenge's JS time to resolve and the SPA time to
-      // hydrate the JobPosting JSON-LD into the DOM.
+      // Give WAF challenge JS + SPA hydration time to resolve
       await page.waitForTimeout(2500);
       const html = await page.content();
       const jobPosting = extractJobPostingJsonLd(html);
@@ -315,155 +322,150 @@ export class ScrapingService {
       this.logger.warn(`Welcome to the Jungle detail fetch failed for ${offer.url}: ${error.message}`);
       return offer;
     } finally {
-      if (browser) await browser.close().catch(() => {});
+      await context.close().catch(() => {});
+      await browser.close().catch(() => {});
     }
   }
 
   // LinkedIn Guest API — public endpoint returning HTML cards without requiring auth
+  /**
+   * Scrapes LinkedIn public job listings using the stealth browser.
+   * Uses playwright-extra + stealth plugin to evade bot detection.
+   * Rotates proxies from LINKEDIN_PROXIES env var when configured.
+   */
   private async fetchLinkedInOffers(params: SearchParams): Promise<ScrapedOffer[]> {
-    const searchUrl = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search';
-    const response = await axios.get(searchUrl, {
-      params: {
-        keywords: params.keywords,
-        location: params.location || 'France',
-        start: 0,
-      },
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
-      },
-      timeout: 12000,
+    const proxy = this.proxyRotator.next();
+    if (proxy) {
+      this.logger.log(`LinkedIn scrape via proxy: ${proxy.server}`);
+    }
+
+    const stealthOffers = await scrapeLinkedInWithStealth({
+      keywords: params.keywords,
+      location: params.location,
+      datePosted: 'r604800', // Last 7 days
+      proxy,
     });
 
-    const $ = cheerio.load(response.data);
-    const offers: ScrapedOffer[] = [];
-
-    $('li').each((_, el) => {
-      const card = $(el);
-      const title = card.find('.base-search-card__title').text().trim();
-      if (!title) return;
-
-      const company = card.find('.base-search-card__subtitle').text().trim() || 'Entreprise non précisée';
-      const location = card.find('.job-search-card__location').text().trim() || undefined;
-      const rawLink = card.find('.base-card__full-link').attr('href') || '';
-      const cleanUrl = rawLink ? rawLink.split('?')[0] : '';
-
-      const urn = card.find('[data-entity-urn]').attr('data-entity-urn') || '';
-      const idMatch =
-        urn.match(/jobPosting:(\d+)/) || cleanUrl.match(/-(\d+)$/) || cleanUrl.match(/\/view\/.*?(\d+)/);
-      const externalId = idMatch ? idMatch[1] : `li-${offers.length + 1}`;
-
-      const dateStr = card.find('time').attr('datetime');
-      const postedAt = dateStr ? new Date(dateStr) : undefined;
-      const salary = card.find('.job-search-card__salary-info').text().trim().replace(/\s+/g, ' ') || undefined;
-
-      offers.push({
-        externalId,
-        source: 'linkedin',
-        title,
-        company,
-        location,
-        salary,
-        description: `${title} chez ${company}${location ? ` à ${location}` : ''}${salary ? ` - Salaire: ${salary}` : ''}`,
-        url: cleanUrl || `https://www.linkedin.com/jobs/view/${externalId}`,
-        postedAt,
-      });
-    });
-
-    return offers.slice(0, 20);
+    return stealthOffers.map((o) => ({
+      externalId: o.externalId,
+      source: 'linkedin' as const,
+      title: o.title,
+      company: o.company,
+      location: o.location,
+      salary: o.salary,
+      contractType: o.contractType,
+      description: o.description,
+      url: o.url,
+      postedAt: o.postedAt,
+    }));
   }
 
   // HelloWork — French recruitment platform HTML scraper
+  // HelloWork — upgraded to stealth browser to bypass FriendlyCaptcha bot checks
   private async fetchHelloWorkOffers(params: SearchParams): Promise<ScrapedOffer[]> {
-    const response = await axios.get('https://www.hellowork.com/fr-fr/emploi/recherche.html', {
-      params: {
-        k: params.keywords,
-        l: params.location || 'France',
-        ray: 20,
-      },
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
-      },
-      timeout: 12000,
-    });
+    const { browser, context } = await createStealthContext({ siteName: 'hellowork' });
+    try {
+      await blockUnnecessaryResources(context);
+      const page = await context.newPage();
 
-    const $ = cheerio.load(response.data);
-    const offers: ScrapedOffer[] = [];
-    const seenIds = new Set<string>();
+      // Warm-up on homepage (avoids FriendlyCaptcha cold-start triggers)
+      await page.goto('https://www.hellowork.com', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+      await jitter(800, 2000);
+      await simulateHumanMouse(page);
 
-    $('a[data-cy="offerTitle"], a[href*="/emplois/"]').each((_, el) => {
-      const a = $(el);
-      const href = a.attr('href') || '';
-      const idMatch = href.match(/\/emplois\/(\d+)\.html/);
-      if (!idMatch) return;
-      const externalId = idMatch[1];
-      if (seenIds.has(externalId)) return;
-      seenIds.add(externalId);
+      const searchUrl = new URL('https://www.hellowork.com/fr-fr/emploi/recherche.html');
+      searchUrl.searchParams.set('k', params.keywords);
+      searchUrl.searchParams.set('l', params.location || 'France');
+      searchUrl.searchParams.set('ray', '20');
 
-      const title = a.find('p.typo-l').text().trim() || a.attr('title')?.replace(/ - [^-]+$/, '') || a.text().trim();
-      const company = a.find('p.typo-s').text().trim() || 'Entreprise non précisée';
+      await page.goto(searchUrl.toString(), { waitUntil: 'domcontentloaded', timeout: 20000 });
+      await jitter(600, 1500);
 
-      const card = a.closest('li, div.flex.flex-col, article');
-      const location = card.find('[data-cy="localisationCard"]').first().text().trim() || undefined;
-      const contractType = card.find('[data-cy="contractCard"]').first().text().trim() || undefined;
+      if (await isBotChallengePage(page)) {
+        this.logger.warn('HelloWork returned a challenge page — aborting');
+        await persistCookies(context, 'hellowork');
+        return [];
+      }
 
-      let salary: string | undefined;
-      card.find('.tag-secondary-s').each((_, sEl) => {
-        const txt = $(sEl).text().trim().replace(/\s+/g, ' ');
-        if (txt.includes('€') && !salary && txt.length < 50) {
-          salary = txt;
-        }
+      const html = await page.content();
+      const $ = cheerio.load(html);
+      const offers: ScrapedOffer[] = [];
+      const seenIds = new Set<string>();
+
+      $('a[data-cy="offerTitle"], a[href*="/emplois/"]').each((_, el) => {
+        const a = $(el);
+        const href = a.attr('href') || '';
+        const idMatch = href.match(/\/emplois\/(\d+)\.html/);
+        if (!idMatch) return;
+        const externalId = idMatch[1];
+        if (seenIds.has(externalId)) return;
+        seenIds.add(externalId);
+
+        const title = a.find('p.typo-l').text().trim() || a.attr('title')?.replace(/ - [^-]+$/, '') || a.text().trim();
+        const company = a.find('p.typo-s').text().trim() || 'Entreprise non précisée';
+        const card = a.closest('li, div.flex.flex-col, article');
+        const location = card.find('[data-cy="localisationCard"]').first().text().trim() || undefined;
+        const contractType = card.find('[data-cy="contractCard"]').first().text().trim() || undefined;
+        let salary: string | undefined;
+        card.find('.tag-secondary-s').each((_, sEl) => {
+          const txt = $(sEl).text().trim().replace(/\s+/g, ' ');
+          if (txt.includes('€') && !salary && txt.length < 50) salary = txt;
+        });
+        const workMode = card.find('[data-cy="contractTag"]').first().text().trim() || undefined;
+        const descParts = [
+          `${title} chez ${company}`,
+          location ? `Localisation: ${location}` : '',
+          contractType ? `Contrat: ${contractType}` : '',
+          salary ? `Rémunération: ${salary}` : '',
+          workMode ? `Modalité: ${workMode}` : '',
+        ].filter(Boolean);
+
+        offers.push({
+          externalId,
+          source: 'hellowork',
+          title,
+          company,
+          location,
+          contractType,
+          salary,
+          description: descParts.join(' | '),
+          url: `https://www.hellowork.com${href}`,
+        });
       });
 
-      const workMode = card.find('[data-cy="contractTag"]').first().text().trim() || undefined;
-
-      const descParts = [
-        `${title} chez ${company}`,
-        location ? `Localisation: ${location}` : '',
-        contractType ? `Contrat: ${contractType}` : '',
-        salary ? `Rémunération: ${salary}` : '',
-        workMode ? `Modalité: ${workMode}` : '',
-      ].filter(Boolean);
-
-      offers.push({
-        externalId,
-        source: 'hellowork',
-        title,
-        company,
-        location,
-        contractType,
-        salary,
-        description: descParts.join(' | '),
-        url: `https://www.hellowork.com${href}`,
-      });
-    });
-
-    return offers.slice(0, 20);
+      await persistCookies(context, 'hellowork');
+      return offers.slice(0, 20);
+    } catch (err: any) {
+      this.logger.warn(`HelloWork stealth scraper error: ${err.message}`);
+      return [];
+    } finally {
+      await context.close().catch(() => {});
+      await browser.close().catch(() => {});
+    }
   }
 
   // Indeed — Scraper with Playwright headless browser + Cheerio parsing
+  // Indeed uses Playwright — now with stealth fingerprinting to bypass bot detection
   private async fetchIndeedOffers(params: SearchParams): Promise<ScrapedOffer[]> {
-    let browser;
+    const { browser, context } = await createStealthContext({ siteName: 'indeed' });
     try {
-      browser = await chromium.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
-      });
-      const context = await browser.newContext({
-        userAgent:
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        locale: 'fr-FR',
-      });
-      await blockHeavyResources(context);
+      await blockUnnecessaryResources(context);
       const page = await context.newPage();
 
+      // Warm-up on homepage before search (avoids cold-start bot signals)
+      await page.goto('https://fr.indeed.com', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+      await jitter(800, 2000);
+      await simulateHumanMouse(page);
+
       const searchUrl = `https://fr.indeed.com/jobs?q=${encodeURIComponent(params.keywords)}&l=${encodeURIComponent(params.location || '')}&sort=date`;
-      await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      await jitter(500, 1500);
+
+      if (await isBotChallengePage(page)) {
+        this.logger.warn('Indeed returned a challenge page — aborting');
+        await persistCookies(context, 'indeed');
+        return [];
+      }
 
       const html = await page.content();
       const $ = cheerio.load(html);
@@ -477,7 +479,6 @@ export class ScrapingService {
           linkEl.attr('data-jk') ||
           linkEl.attr('id')?.replace(/^(job_|sj_)/, '') ||
           card.closest('[data-jk]').attr('data-jk');
-
         if (!jk || seen.has(jk)) return;
         seen.add(jk);
 
@@ -487,10 +488,8 @@ export class ScrapingService {
 
         const company = card.find('[data-testid="company-name"], .companyName').first().text().trim() || 'Entreprise non précisée';
         const location = card.find('[data-testid="text-location"], .companyLocation').first().text().trim() || undefined;
-        
         let snippet = card.find('.job-snippet, [data-testid="job-snippet"], ul').first().text().trim();
         snippet = snippet.replace(/\.mosaic[^{]+{[^}]+}/g, '').trim();
-
         const salary = card.find('[data-testid="attribute_snippet_testid"], .salary-snippet-container').first().text().trim() || undefined;
 
         offers.push({
@@ -506,18 +505,17 @@ export class ScrapingService {
       });
 
       const shortlisted = offers.slice(0, 20);
-      // Enrich in-place while the browser is still open — reusing it here is
-      // far cheaper than the ~1-2s launch cost of a fresh Chromium instance
-      // per offer, which is what a lazy per-offer enrichDescription() would
-      // require once this function has already returned and closed it.
-      return await mapWithConcurrency(shortlisted, 3, (offer) => this.fetchIndeedDescription(context, offer));
+      const enriched = await stealthMapWithConcurrency(shortlisted, 3, (offer) =>
+        this.fetchIndeedDescription(context, offer),
+      );
+      await persistCookies(context, 'indeed');
+      return enriched;
     } catch (err: any) {
       this.logger.warn(`Indeed scraper error: ${err.message}`);
       return [];
     } finally {
-      if (browser) {
-        await browser.close().catch(() => {});
-      }
+      await context.close().catch(() => {});
+      await browser.close().catch(() => {});
     }
   }
 

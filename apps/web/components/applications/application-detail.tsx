@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { useApplicationsStore } from '@/lib/applications-store';
 import apiClient from '@/lib/api-client';
 import AppShell from '@/components/layout/app-shell';
@@ -15,6 +16,7 @@ import {
   Building2,
   MapPin,
   AlertCircle,
+  HelpCircle,
   Copy,
   FileText,
   CalendarClock,
@@ -180,11 +182,16 @@ export default function ApplicationDetail({ id }: { id: string }) {
           </div>
 
           {current.status === 'needs_review' && current.autoApplyNote && (
-            <div className="alert alert-warning mt-5 text-sm">
-              <AlertCircle className="w-4 h-4" />
-              <span>
-                <strong>Auto-apply incomplet :</strong> {current.autoApplyNote}
-              </span>
+            <div className="alert alert-warning mt-5 text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <AlertCircle className="w-5 h-5 shrink-0" />
+                <span>
+                  <strong>Auto-apply incomplet :</strong> {current.autoApplyNote}
+                </span>
+              </div>
+              <Link href="/questions" className="btn btn-warning btn-xs gap-1.5 shrink-0 self-start sm:self-auto">
+                <HelpCircle className="w-3.5 h-3.5" /> Voir les questions manquantes
+              </Link>
             </div>
           )}
 
@@ -209,7 +216,7 @@ export default function ApplicationDetail({ id }: { id: string }) {
           )}
 
           {current.screenshotTakenAt && (
-            <details className="mt-5">
+            <details className="mt-5" open={current.status === 'needs_review'}>
               <summary className="cursor-pointer text-sm text-base-content/60 hover:text-base-content">
                 Capture de la tentative ({formatDateTime(current.screenshotTakenAt)})
               </summary>

@@ -281,7 +281,7 @@ export class AutoApplyService {
   private async resolveEffectiveSourceUrl(source: string, sourceUrl: string): Promise<string> {
     if (source !== 'welcome_to_the_jungle') return sourceUrl;
 
-    const context = await this.browserSession.createContext(null);
+    const context = await this.browserSession.createContext(null, 'welcome_to_the_jungle');
     try {
       await blockHeavyResources(context);
       const page = await context.newPage();
@@ -327,7 +327,7 @@ export class AutoApplyService {
     const cvPdfPath = join(tmpdir(), `findurjob-auto-apply-${application.id}.pdf`);
     await writeFile(cvPdfPath, pdfBuffer);
 
-    const context = await this.browserSession.createContext(sessionState);
+    const context = await this.browserSession.createContext(sessionState, platformKey);
     let cdpSession: CDPSession | null = null;
 
     // Confirmed live: one HelloWork attempt sat past its normal completion
@@ -409,6 +409,8 @@ export class AutoApplyService {
       if (!result.success) {
         await this.captureUnknownFields(page, finalPlatformKey, finalUrl, userId);
       }
+
+      await this.browserSession.persistContextCookies(context, finalPlatformKey).catch(() => {});
 
       if (platform) {
         if (result.sessionExpired) {

@@ -31,7 +31,9 @@ if (!process.env.DATABASE_URL) {
 }
 console.log(`Target database: ${new URL(process.env.DATABASE_URL).hostname}\n`);
 
-const { chromium } = require('playwright');
+const { chromium } = require('playwright-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+chromium.use(StealthPlugin());
 const { PrismaClient } = require('@prisma/client');
 const { createCipheriv, randomBytes } = require('crypto');
 const readline = require('readline');
@@ -74,7 +76,16 @@ async function main() {
   console.log(`Opening a real browser window for "${platform}". Log in yourself — including any`);
   console.log('Google sign-in, 2FA, or CAPTCHA. This script never touches that part.');
 
-  const browser = await chromium.launch({ headless: false });
+  const browser = await chromium.launch({
+    headless: false,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-blink-features=AutomationControlled',
+      '--disable-infobars',
+      '--lang=fr-FR',
+    ],
+  });
   const context = await browser.newContext();
   const page = await context.newPage();
   await page.goto(LOGIN_URLS[platform]);
