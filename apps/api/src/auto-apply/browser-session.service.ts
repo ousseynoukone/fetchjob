@@ -52,7 +52,20 @@ export class BrowserSessionService implements OnModuleDestroy {
           '--mute-audio',
           '--no-first-run',
           '--disable-infobars',
-          '--js-flags=--max-old-space-size=128',
+          // 128MB was tight enough to plausibly crash the renderer on a
+          // heavy client-rendered SPA (confirmed live: a LinkedIn job page
+          // that returned a completely blank screenshot, and a separate
+          // Easy Apply modal load that took the whole process down --
+          // right where the modal's question-set API response gets
+          // rendered, the single biggest DOM/JS spike in this whole flow).
+          // Raised modestly rather than aggressively: the service's total
+          // container budget is only ~512MB shared with the Node/Nest
+          // process itself and Postgres client buffers, and only one
+          // Chromium renderer is ever active at a time (applyToOne
+          // processes one application at a time, sequentially) -- if
+          // restarts persist, the next step is watching Render's memory
+          // graph during a run, not raising this further blind.
+          '--js-flags=--max-old-space-size=192',
           '--lang=fr-FR',
         ],
       });
