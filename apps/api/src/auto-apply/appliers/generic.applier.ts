@@ -4,10 +4,19 @@ import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { splitName, dismissCookieBanner, hasSecurityCheck } from './ats-common';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
 
+// Confirmed live on Extia's own career site: its reveal button reads
+// "It's a match" -- no wordlist can ever fully cover arbitrary branded CTA
+// copy (this pattern of playful/gamified apply buttons shows up across
+// several French career sites), so this stays a best-effort, growing list
+// rather than a claim of full coverage.
 const REVEAL_BUTTON_TEXT =
-  /postuler|apply now|apply for this job|candidater|je postule|submit application|envoyer ma candidature/i;
+  /postuler|apply now|apply for this job|candidater|je postule|submit application|envoyer ma candidature|it'?s a match/i;
+// `^postuler$` used to require the button's ENTIRE accessible name to be
+// exactly "Postuler" -- real buttons are far more often phrased "Postuler
+// maintenant" / "Postuler à cette offre", which an anchored match always
+// missed. Unanchored now, consistent with every other term in this list.
 const SUBMIT_BUTTON_TEXT =
-  /submit application|submit my application|apply now|^postuler$|envoyer( ma candidature)?|soumettre|valider ma candidature/i;
+  /submit application|submit my application|apply now|postuler|envoyer( ma candidature)?|soumettre|valider ma candidature/i;
 const SUCCESS_TEXT =
   /application submitted|application received|thank you for applying|thanks for applying|we('| ha)ve received your application|your application (has been|was) (received|submitted)|candidature (envoyée|reçue|transmise|enregistrée|bien reçue|prise en compte)|merci (pour votre candidature|d'avoir postulé)|votre candidature a (bien )?été (envoyée|transmise|enregistrée|prise en compte)/i;
 

@@ -51,6 +51,33 @@ export class LinkedInApplier implements JobApplier {
 
     await page.waitForTimeout(1500);
 
+    // LinkedIn is a client-rendered SPA -- `domcontentloaded` fires on the
+    // empty shell, well before the real job content mounts. Confirmed live:
+    // a "no apply button found" report whose own screenshot was a
+    // completely blank white page -- the page never rendered any content
+    // at all, so no amount of button-selector tuning could ever have found
+    // one. Checked for real body text before concluding there's no button,
+    // with one reload retry (a fresh context's first navigation is the most
+    // likely to still be mid-render or hit a transient block) rather than
+    // giving up on the very first empty check.
+    const hasRenderedContent = async () =>
+      page.locator('body').innerText({ timeout: 2000 }).then((t) => t.trim().length > 200).catch(() => false);
+
+    if (!(await hasRenderedContent())) {
+      await page.waitForTimeout(3000);
+    }
+    if (!(await hasRenderedContent())) {
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+      await page.waitForTimeout(2000);
+    }
+    if (!(await hasRenderedContent())) {
+      await ctx.appendLog?.("La page de l'offre LinkedIn est restée vide après chargement.");
+      return {
+        success: false,
+        note: "La page de l'offre LinkedIn n'a affiché aucun contenu (offre probablement supprimée/expirée, ou blocage temporaire) -- à vérifier manuellement.",
+      };
+    }
+
     // LinkedIn renders "Similar jobs" / "People also viewed" cards on this
     // same page, each with their own Postuler/Easy Apply button -- an
     // unscoped page-wide text/class fallback can grab one of THOSE instead
