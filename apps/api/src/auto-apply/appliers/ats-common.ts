@@ -139,6 +139,20 @@ export async function hasAlreadyAppliedIndicator(page: Page): Promise<boolean> {
   return ALREADY_APPLIED_TEXT.test(bodyText);
 }
 
+// A posting whose apply button/link genuinely isn't present anymore (closed,
+// expired, or the employer stopped accepting applications) is a distinct,
+// resolvable outcome from "we failed to detect a button that's actually
+// there" -- checked as a fallback right before an applier gives up and
+// reports the generic "no apply button found", so the campaign log/UI can
+// tell a stale posting apart from a real detection gap worth investigating.
+const JOB_CLOSED_TEXT =
+  /no longer accepting applications|n'accepte plus de candidatures|ne recrute plus|cette offre n'est plus disponible|this job (is no longer available|has expired)|offre expirée|candidatures closes/i;
+
+export async function hasJobClosedIndicator(page: Page): Promise<boolean> {
+  const bodyText = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
+  return JOB_CLOSED_TEXT.test(bodyText);
+}
+
 // LinkedIn/Indeed/HelloWork all have postings with no in-platform apply
 // flow — their "Postuler"/"Apply" button just sends the visitor to the
 // employer's own site instead. Confirmed live behavior varies even within

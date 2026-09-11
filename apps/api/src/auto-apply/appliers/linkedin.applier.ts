@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
-import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, hasJobClosedIndicator } from './ats-common';
 
 function formatFrenchPhone(raw: string): string {
   if (!raw) return '';
@@ -51,20 +51,54 @@ export class LinkedInApplier implements JobApplier {
 
     await page.waitForTimeout(1500);
 
+    // LinkedIn renders "Similar jobs" / "People also viewed" cards on this
+    // same page, each with their own Postuler/Easy Apply button -- an
+    // unscoped page-wide text/class fallback can grab one of THOSE instead
+    // of the actual posting's own button, which is worse than finding
+    // nothing. Every broad fallback below is scoped to the job's own
+    // top-card container first; only the semantic getByRole(name:) checks
+    // search the full page (pre-existing behavior, specific enough on its
+    // own to be low-risk).
+    const topCard = page.locator(
+      '.jobs-unified-top-card, .job-details-jobs-unified-top-card__container--two-pane, [class*="jobs-unified-top-card" i]'
+    ).first();
+    const topCardScope = (await topCard.count().catch(() => 0)) > 0 ? topCard : page;
+
     const easyApplyButton = page
       .getByRole('button', { name: /candidature simplifi[e\u00e9]e|easy apply|postulation simplifi[e\u00e9]e/i })
-      .or(page.locator('.jobs-apply-button, button[data-job-id]:has-text("simplifi"), button:has-text("Candidature simplifi"), button:has-text("Easy Apply")'))
+      .or(topCardScope.locator('.jobs-apply-button, #jobs-apply-button-id, .jobs-s-apply button, button[data-job-id]:has-text("simplifi"), button:has-text("Candidature simplifi"), button:has-text("Easy Apply")'))
+      .or(topCardScope.locator('button[data-tracking-control-name*="apply" i]:has-text("simplifi")'))
       .first();
 
     const hasEasyApply = await easyApplyButton.isVisible().catch(() => false);
     if (!hasEasyApply) {
+      // Role-based name matching alone misses buttons whose accessible name
+      // isn't the plain visible text (icon+text combos, aria-hidden label
+      // duplication) -- confirmed to happen on at least one real posting
+      // where every role-based and href-based selector missed an
+      // actually-present external apply link. These extra selectors cast a
+      // wider net using LinkedIn's own class/attribute conventions and raw
+      // text content, scoped to the top card so they can't match a decoy
+      // button from an unrelated job card elsewhere on the page. (No
+      // class-based fallback duplicated here from easyApplyButton above --
+      // it already ran first, so a match there means hasEasyApply is
+      // already true and this branch is never reached with it.)
       const externalApplyButton = page
         .getByRole('link', { name: /postuler|apply/i })
         .or(page.getByRole('button', { name: /postuler|apply/i }))
         .or(page.locator('a[href*="/safety/go/"]'))
+        .or(topCardScope.locator('a[data-tracking-control-name*="apply" i], button[data-tracking-control-name*="apply" i]'))
+        .or(topCardScope.locator('a:has-text("Postuler"), a:has-text("Apply"), button:has-text("Postuler"), button:has-text("Apply")'))
         .first();
 
       if (!(await externalApplyButton.isVisible().catch(() => false))) {
+        if (await hasJobClosedIndicator(page)) {
+          await ctx.appendLog?.('Cette offre LinkedIn n\'accepte plus de candidatures.');
+          return {
+            success: false,
+            note: "Cette offre LinkedIn n'accepte plus de candidatures -- à retirer ou ignorer.",
+          };
+        }
         await ctx.appendLog?.('Aucun bouton de candidature trouvé sur cette offre LinkedIn.');
         return {
           success: false,
@@ -208,6 +242,29 @@ export class LinkedInApplier implements JobApplier {
           .first()
           .isVisible()
           .catch(() => false);
+
+        const modalStillOpen = await modalDialog.isVisible().catch(() => false);
+        if (modalStillOpen && !confirmed) {
+          const blockingErrors = await page.locator(
+            '.artdeco-inline-feedback--error:visible, [role="alert"]:visible, p:has-text("Ce champ est obligatoire"), p:has-text("Saisie non valide")'
+          ).count().catch(() => 0);
+
+          if (blockingErrors > 0) {
+            const unknownFields = await scanInvalidFields(page);
+            if (unknownFields.length) await ctx.reportUnknownFields(unknownFields);
+            await ctx.appendLog?.('La soumission a été bloquée par des champs invalides.');
+            return {
+              success: false,
+              note: "La candidature Easy Apply n'a pas pu être soumise (champs invalides détectés) -- à finaliser manuellement.",
+            };
+          }
+
+          await ctx.appendLog?.('Candidature Easy Apply soumise, confirmation à vérifier.');
+          return {
+            success: false,
+            note: 'Formulaire Easy Apply soumis mais la fenêtre est restée ouverte sans confirmation -- à vérifier manuellement.',
+          };
+        }
 
         await ctx.appendLog?.('Candidature Easy Apply soumise avec succès !');
         return confirmed

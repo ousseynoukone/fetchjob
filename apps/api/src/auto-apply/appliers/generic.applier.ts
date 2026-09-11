@@ -9,7 +9,14 @@ const REVEAL_BUTTON_TEXT =
 const SUBMIT_BUTTON_TEXT =
   /submit application|submit my application|apply now|^postuler$|envoyer( ma candidature)?|soumettre|valider ma candidature/i;
 const SUCCESS_TEXT =
-  /application submitted|thank you for applying|thanks for applying|candidature (envoyée|reçue|transmise|enregistrée)|merci pour votre candidature|votre candidature a bien été (envoyée|transmise|enregistrée)/i;
+  /application submitted|application received|thank you for applying|thanks for applying|we('| ha)ve received your application|your application (has been|was) (received|submitted)|candidature (envoyée|reçue|transmise|enregistrée|bien reçue|prise en compte)|merci (pour votre candidature|d'avoir postulé)|votre candidature a (bien )?été (envoyée|transmise|enregistrée|prise en compte)/i;
+
+// Some ATS confirmation pages navigate to a distinct URL (a "thank-you" /
+// "confirmation" page) rather than showing inline text on the same page --
+// checked as an extra signal alongside SUCCESS_TEXT rather than a
+// replacement for it, since most confirmations are same-page text and a
+// URL-only check would false-positive on unrelated redirects.
+const SUCCESS_URL = /thank-?you|confirmation|success|merci|candidature-envoyee|application-submitted/i;
 
 // Last-resort applier for a posting on a platform with no dedicated
 // integration (an ATS we don't recognize, a company's own custom career
@@ -114,13 +121,30 @@ export class GenericApplier implements JobApplier {
       };
     }
 
-    const confirmed = await page.getByText(SUCCESS_TEXT).first().isVisible().catch(() => false);
+    const confirmed = await this.detectSuccess(page);
     return confirmed
       ? { success: true }
       : {
           success: false,
           note: 'Formulaire soumis mais confirmation non détectée — à vérifier manuellement.',
         };
+  }
+
+  // page.getByText only searches the top-level frame -- some ATS embed the
+  // post-submit confirmation inside an iframe widget, so a same-page-only
+  // check would report "not confirmed" even though the submission actually
+  // succeeded. The URL check is a second independent signal for ATS that
+  // navigate to a dedicated confirmation/thank-you page instead of showing
+  // inline text.
+  private async detectSuccess(page: Page): Promise<boolean> {
+    if (SUCCESS_URL.test(page.url())) return true;
+
+    for (const frame of page.frames()) {
+      const visible = await frame.getByText(SUCCESS_TEXT).first().isVisible().catch(() => false);
+      if (visible) return true;
+    }
+
+    return false;
   }
 
   // Tries each label pattern in turn (first visible match wins) — a plain
