@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
-import { dismissCookieBanner, SESSION_CHECKS } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl } from './ats-common';
 
 // France Travail aggregates postings from many partner sites — a large
 // share of `sourceUrl`s point at the employer's own external site
@@ -50,12 +50,50 @@ export class FranceTravailApplier implements JobApplier {
       }
     }
 
+    // France Travail sometimes acts as an aggregator rather than hosting the
+    // application itself: clicking "Postuler" can reveal a "Choisissez le
+    // partenaire" modal offering one or more external ATS partners (confirmed
+    // live: a single "XTRAMILE" card) instead of a native form. Mirrors the
+    // Welcome to the Jungle resolution pattern (see resolveWelcomeToTheJungleApplyUrl)
+    // -- follow the partner link out to its real URL and hand off to whichever
+    // applier owns it, instead of reporting "étape inattendue" for a step this
+    // applier could never have filled in anyway.
+    const partnerModal = page
+      .locator('[role="dialog"], .modal, [class*="popin" i], [class*="popup" i]')
+      .filter({ hasText: /choisissez le partenaire/i })
+      .first();
+    if (await partnerModal.isVisible().catch(() => false)) {
+      await ctx.appendLog?.('Cette offre France Travail redirige vers un partenaire externe...');
+      const partnerLink = partnerModal
+        .locator('a, button')
+        .filter({ hasNotText: /fermer|close|annuler/i })
+        .first();
+      if (await partnerLink.isVisible().catch(() => false)) {
+        const externalUrl = await resolveExternalApplyUrl(page, partnerLink, /francetravail\.fr/i);
+        if (externalUrl) {
+          return { success: false, redirectToExternalUrl: externalUrl };
+        }
+      }
+      return {
+        success: false,
+        note: 'Cette offre France Travail redirige vers un partenaire externe (ex: XTRAMILE) — à traiter manuellement.',
+      };
+    }
+
+    // Not every external-redirect case shows the partner modal above -- some
+    // just navigate away immediately after the click, or show plain inline
+    // text with no separate link to follow. If the URL already left
+    // francetravail.fr by this point, report the real destination instead of
+    // a generic "traiter manuellement" note with no actionable link.
     const externalRedirectNotice = await page
       .getByText(/site de l'employeur|candidature externe|vous allez être redirigé/i)
       .first()
       .isVisible()
       .catch(() => false);
-    if (externalRedirectNotice) {
+    if (externalRedirectNotice || !page.url().includes('francetravail.fr')) {
+      if (!page.url().includes('francetravail.fr')) {
+        return { success: false, redirectToExternalUrl: page.url() };
+      }
       return {
         success: false,
         note: "Cette offre France Travail redirige vers le site de l'employeur — à traiter manuellement.",

@@ -118,8 +118,23 @@ export const SESSION_CHECKS: Record<string, SessionCheck> = {
   },
   france_travail: {
     homeUrl: 'https://candidat.francetravail.fr/espacepersonnel/',
-    isLoginWallVisible: async (page) =>
-      page.locator('#identifiant, input[name="identifiant"]').first().isVisible().catch(() => false),
+    // The identifiant/password form only ever appears on the login page
+    // itself -- on an ordinary page like a job listing, a logged-out visitor
+    // instead sees a "Connexion" button in the header nav (confirmed live: an
+    // applier that reported "étape inattendue" on a job listing whose own
+    // screenshot showed "Connexion" in the nav, meaning the stored session
+    // was never actually authenticated -- the identifiant-only check missed
+    // this because that page never renders a login form at all).
+    isLoginWallVisible: async (page) => {
+      const onLoginForm = await page.locator('#identifiant, input[name="identifiant"]').first().isVisible().catch(() => false);
+      if (onLoginForm) return true;
+      return page
+        .getByRole('button', { name: /^connexion/i })
+        .or(page.getByRole('link', { name: /^connexion/i }))
+        .first()
+        .isVisible()
+        .catch(() => false);
+    },
   },
 };
 
