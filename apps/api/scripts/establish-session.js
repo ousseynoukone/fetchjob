@@ -58,6 +58,34 @@ const LOGIN_URLS = {
   france_travail: 'https://candidat.francetravail.fr/espacepersonnel/',
 };
 
+// Mirrors ats-common.ts's SESSION_CHECKS (duplicated rather than imported —
+// this plain script runs outside the TS build, same reasoning as LOGIN_URLS
+// above being duplicated instead of shared). Only cares whether the
+// platform's own login FORM is gone, never whether the rest of the page has
+// finished rendering — confirmed live on France Travail: its post-login
+// "espacepersonnel" dashboard can sit on loading-skeleton placeholders
+// indefinitely while already fully authenticated, so waiting for real
+// content would hang forever for a reason that has nothing to do with login.
+const LOGIN_WALL_CHECKS = {
+  linkedin: async (page) => {
+    const url = page.url();
+    if (url.includes('/login') || url.includes('/uas/login') || url.includes('/checkpoint')) return true;
+    return page.locator('#username').first().isVisible().catch(() => false);
+  },
+  indeed: async (page) =>
+    page.locator('#login-email-input, input[name="__email"]').first().isVisible().catch(() => false),
+  hellowork: async (page) => page.locator('input[name="email2"]').first().isVisible().catch(() => false),
+  france_travail: async (page) =>
+    page.locator('#identifiant, input[name="identifiant"]').first().isVisible().catch(() => false),
+};
+
+const LOGIN_INSTRUCTIONS = {
+  linkedin: 'à votre compte LinkedIn',
+  indeed: 'à votre compte Indeed',
+  hellowork: 'à votre compte HelloWork',
+  france_travail: 'à votre espace personnel France Travail',
+};
+
 function encrypt(plainText, key) {
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', key, iv);
@@ -115,18 +143,20 @@ async function main() {
   const page = await context.newPage();
   await page.goto(LOGIN_URLS[platform]);
 
-  console.log('\n👉 Connectez-vous simplement à votre compte LinkedIn dans la fenêtre qui vient de s\'ouvrir.');
-  console.log('Dès que vous serez connecté (arrivée sur le fil d\'actualité), la session sera détectée et enregistrée automatiquement !\n');
+  console.log(`\n👉 Connectez-vous simplement ${LOGIN_INSTRUCTIONS[platform]} dans la fenêtre qui vient de s'ouvrir.`);
+  console.log('Dès que la connexion sera détectée, la session sera enregistrée automatiquement !\n');
 
   let autoDetected = false;
-  // Auto-detect login by checking cookies and URL every second for up to 5 minutes
+  // Auto-detect login by checking the platform's own login-wall selector
+  // every second for up to 5 minutes. Skips the first 3 checks (~3s) so a
+  // still-loading login page (selector not rendered yet) can't be
+  // mistaken for "already logged in".
   for (let i = 0; i < 300; i++) {
     await new Promise((r) => setTimeout(r, 1000));
+    if (i < 3) continue;
     try {
-      const cookies = await context.cookies();
-      const liAt = cookies.find((c) => c.name === 'li_at');
-      const url = page.url();
-      if (liAt && liAt.value && liAt.value !== 'delete me' && !url.includes('/login') && !url.includes('/checkpoint')) {
+      const onLoginWall = await LOGIN_WALL_CHECKS[platform](page);
+      if (!onLoginWall) {
         console.log('✅ Connexion détectée automatiquement !');
         autoDetected = true;
         // Wait 2s to allow all session cookies to settle
