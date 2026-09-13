@@ -60,12 +60,19 @@ const LOGIN_URLS = {
 
 // Mirrors ats-common.ts's SESSION_CHECKS (duplicated rather than imported —
 // this plain script runs outside the TS build, same reasoning as LOGIN_URLS
-// above being duplicated instead of shared). Only cares whether the
-// platform's own login FORM is gone, never whether the rest of the page has
-// finished rendering — confirmed live on France Travail: its post-login
-// "espacepersonnel" dashboard can sit on loading-skeleton placeholders
-// indefinitely while already fully authenticated, so waiting for real
-// content would hang forever for a reason that has nothing to do with login.
+// above being duplicated instead of shared).
+//
+// Each check must return true while login is NOT yet complete. Absence of
+// the platform's own login FORM is not, on its own, proof of a completed
+// login: confirmed live on France Travail, whose flow has a 2FA step
+// between the identifiant/password page and the real dashboard -- that 2FA
+// page also doesn't have `#identifiant` on it, so a bare "form is gone"
+// check fires as soon as the user reaches 2FA, well before they actually
+// confirm it, saving a not-yet-authenticated session. France Travail's
+// check therefore also requires a positive sighting of "Mon espace
+// personnel" (confirmed live: this heading renders reliably even while the
+// dashboard's own widgets are still stuck on loading-skeleton placeholders,
+// so it's a safe thing to wait for -- unlike the widgets themselves).
 const LOGIN_WALL_CHECKS = {
   linkedin: async (page) => {
     const url = page.url();
@@ -75,8 +82,16 @@ const LOGIN_WALL_CHECKS = {
   indeed: async (page) =>
     page.locator('#login-email-input, input[name="__email"]').first().isVisible().catch(() => false),
   hellowork: async (page) => page.locator('input[name="email2"]').first().isVisible().catch(() => false),
-  france_travail: async (page) =>
-    page.locator('#identifiant, input[name="identifiant"]').first().isVisible().catch(() => false),
+  france_travail: async (page) => {
+    const onIdentifiantStep = await page
+      .locator('#identifiant, input[name="identifiant"]')
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (onIdentifiantStep) return true;
+    const onDashboard = await page.getByText(/mon espace personnel/i).first().isVisible().catch(() => false);
+    return !onDashboard;
+  },
 };
 
 const LOGIN_INSTRUCTIONS = {
