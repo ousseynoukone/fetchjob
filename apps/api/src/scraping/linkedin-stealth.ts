@@ -215,6 +215,41 @@ export async function scrapeLinkedInWithStealth(params: LinkedInSearchParams): P
   }
 }
 
+function parseLinkedInSearchResults(html: string): LinkedInOffer[] {
+  const $ = cheerio.load(html);
+  const offers: LinkedInOffer[] = [];
+  const seenIds = new Set<string>();
+
+  $('a[href*="/jobs/view/"]').each((_, el) => {
+    const a = $(el);
+    const href = a.attr('href') || '';
+    const match = href.match(/\/jobs\/view\/(\d+)/);
+    if (!match || seenIds.has(match[1])) return;
+    seenIds.add(match[1]);
+
+    const externalId = match[1];
+    const container = a.closest('li, [data-occludable-job-id], .job-card-container, div') || a;
+    const rawText = a.text().trim();
+    const title = rawText.split('\n')[0].trim() || container.find('h3, strong, .job-card-list__title').first().text().trim();
+    if (!title || title.length < 3) return;
+
+    const company = container.find('.job-card-container__primary-description, .job-card-container__company-name, .artdeco-entity-lockup__subtitle, h4, span.t-14').first().text().trim() || 'Entreprise';
+    const location = container.find('.job-card-container__metadata-item, .artdeco-entity-lockup__caption, span.t-12').first().text().trim() || 'France';
+
+    offers.push({
+      externalId,
+      title,
+      company,
+      location,
+      description: `${title} chez ${company} — ${location}`,
+      url: `https://www.linkedin.com/jobs/view/${externalId}/`,
+      contractType: 'CDI',
+    });
+  });
+
+  return offers;
+}
+
 function parseLinkedInJobCards(html: string): LinkedInOffer[] {
   const $ = cheerio.load(html);
   const offers: LinkedInOffer[] = [];

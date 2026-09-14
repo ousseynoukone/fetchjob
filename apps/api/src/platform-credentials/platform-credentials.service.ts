@@ -8,7 +8,7 @@ import { SUPPORTED_PLATFORMS, SupportedPlatform } from './dto/upsert-credential.
 export interface PlatformCredentialStatus {
   platform: SupportedPlatform;
   configured: boolean;
-  email: string | null; // masked, e.g. "j***@example.com" — never the raw value
+  email: string | null;
   lastLoginAt: Date | null;
   lastLoginError: string | null;
 }
@@ -20,11 +20,9 @@ function maskEmail(email: string): string {
   return `${visible}***@${domain}`;
 }
 
-// Internal shape handed to the browser-automation layer. No password is
-// ever stored — the session is established once by the user logging in
-// manually (see scripts/establish-session.js) and reused from here on.
 export interface DecryptedCredential {
   email: string;
+  password?: string | null;
   sessionState: string | null;
 }
 
@@ -49,7 +47,7 @@ export class PlatformCredentialsService {
       }
       return {
         platform,
-        configured: !!row.sessionStateEncrypted,
+        configured: !!(row.sessionStateEncrypted || row.emailEncrypted),
         email: maskEmail(this.crypto.decrypt(row.emailEncrypted)),
         lastLoginAt: row.lastLoginAt,
         lastLoginError: row.lastLoginError,
@@ -63,32 +61,96 @@ export class PlatformCredentialsService {
     return this.listStatus();
   }
 
-  // For internal use by the auto-apply browser automation only.
+  async upsert(dto: { platform: SupportedPlatform; email: string; password?: string; sessionState?: string }) {
+    const userId = await this.localUser.getDefaultUserId();
+    const emailEncrypted = this.crypto.encrypt(dto.email);
+    const payload = JSON.stringify({
+      password: dto.password ?? null,
+      storageState: dto.sessionState ?? null,
+    });
+    const sessionStateEncrypted = this.crypto.encrypt(payload);
+
+    await this.prisma.platformCredential.upsert({
+      where: { userId_platform: { userId, platform: dto.platform } },
+      update: {
+        emailEncrypted,
+        sessionStateEncrypted,
+        lastLoginAt: new Date(),
+        lastLoginError: null,
+      },
+      create: {
+        userId,
+        platform: dto.platform,
+        emailEncrypted,
+        sessionStateEncrypted,
+        lastLoginAt: new Date(),
+        lastLoginError: null,
+      },
+    });
+
+    return this.listStatus();
+  }
+
   async getDecrypted(userId: string, platform: SupportedPlatform): Promise<DecryptedCredential> {
     const row = await this.prisma.platformCredential.findUnique({
       where: { userId_platform: { userId, platform } },
     });
     if (!row) {
-      throw new NotFoundException(`Aucune session enregistrée pour ${platform}`);
+      throw new NotFoundException(`Aucune session ou identifiant enregistré pour ${platform}`);
     }
 
-    return {
-      email: this.crypto.decrypt(row.emailEncrypted),
-      sessionState: row.sessionStateEncrypted ? this.crypto.decrypt(row.sessionStateEncrypted) : null,
-    };
+    const email = this.crypto.decrypt(row.emailEncrypted);
+    let password: string | null = null;
+    let sessionState: string | null = null;
+
+    if (row.sessionStateEncrypted) {
+      const raw = this.crypto.decrypt(row.sessionStateEncrypted);
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          if ('password' in parsed || 'storageState' in parsed) {
+            password = parsed.password ?? null;
+            sessionState = parsed.storageState
+              ? typeof parsed.storageState === 'string'
+                ? parsed.storageState
+                : JSON.stringify(parsed.storageState)
+              : null;
+          } else {
+            sessionState = raw;
+          }
+        } else {
+          sessionState = raw;
+        }
+      } catch {
+        sessionState = raw;
+      }
+    }
+
+    return { email, password, sessionState };
   }
 
   async saveSessionState(userId: string, platform: SupportedPlatform, sessionState: string) {
+    const existing = await this.prisma.platformCredential.findUnique({
+      where: { userId_platform: { userId, platform } },
+    });
+    let password: string | null = null;
+    if (existing?.sessionStateEncrypted) {
+      try {
+        const parsed = JSON.parse(this.crypto.decrypt(existing.sessionStateEncrypted));
+        if (parsed && parsed.password) password = parsed.password;
+      } catch {}
+    }
+
+    const payload = password
+      ? JSON.stringify({ password, storageState: sessionState })
+      : sessionState;
+
     await this.prisma.platformCredential.update({
       where: { userId_platform: { userId, platform } },
-      data: { sessionStateEncrypted: this.crypto.encrypt(sessionState), lastLoginAt: new Date(), lastLoginError: null },
+      data: { sessionStateEncrypted: this.crypto.encrypt(payload), lastLoginAt: new Date(), lastLoginError: null },
     });
   }
 
-  // Called when an applier finds itself back at a login wall with no
-  // working session — emails once per occurrence (auto-apply runs at most
-  // once a day in practice, so this doesn't spam) rather than silently
-  // leaving every candidature on that platform stuck in `needs_review`.
   async recordSessionExpired(userId: string, platform: SupportedPlatform) {
     await this.prisma.platformCredential.update({
       where: { userId_platform: { userId, platform } },
@@ -98,7 +160,7 @@ export class PlatformCredentialsService {
     await this.email.send(
       `Session ${platform} expirée`,
       `<p>La session ${platform} utilisée par l'auto-apply a expiré.</p>` +
-        `<p>Relancez <code>npm run establish-session -- ${platform} votre@email.com</code> depuis votre machine pour la rétablir.</p>`,
+        `<p>Renseignez à nouveau votre mot de passe dans Paramètres pour réactiver la connexion automatique.</p>`,
     );
   }
 }

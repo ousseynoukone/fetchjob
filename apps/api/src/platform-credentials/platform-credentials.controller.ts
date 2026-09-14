@@ -1,11 +1,7 @@
-import { Controller, Delete, Get, Param } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post } from '@nestjs/common';
 import { PlatformCredentialsService } from './platform-credentials.service';
-import { SupportedPlatform } from './dto/upsert-credential.dto';
+import { SupportedPlatform, UpsertCredentialDto } from './dto/upsert-credential.dto';
 
-// Sessions are established out-of-band by the user, via
-// `npm run establish-session -- <platform> <email>` on their own machine
-// (see scripts/establish-session.js) — there is no form here to submit
-// credentials through.
 @Controller('parametres/identifiants')
 export class PlatformCredentialsController {
   constructor(private credentials: PlatformCredentialsService) {}
@@ -13,6 +9,11 @@ export class PlatformCredentialsController {
   @Get()
   async list() {
     return this.credentials.listStatus();
+  }
+
+  @Post()
+  async upsert(@Body() dto: UpsertCredentialDto) {
+    return this.credentials.upsert(dto);
   }
 
   @Delete(':platform')

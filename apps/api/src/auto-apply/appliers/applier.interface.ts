@@ -23,6 +23,8 @@ export interface ApplyContext {
   // next time the same offer/question comes up.
   reportUnknownFields: (fields: DetectedField[]) => Promise<void>;
   appendLog?: (message: string) => Promise<void>;
+  credential?: { email: string; password?: string | null } | null;
+  onSessionUpdated?: (newSessionState: string) => Promise<void>;
 }
 
 export interface ApplyResult {

@@ -315,9 +315,11 @@ export class AutoApplyService {
     const platform = applier.credentialPlatform as SupportedPlatform | null;
 
     let sessionState: string | null = null;
+    let decryptedCred: any = null;
     if (platform && (SUPPORTED_PLATFORMS as readonly string[]).includes(platform)) {
       try {
-        sessionState = (await this.credentials.getDecrypted(userId, platform)).sessionState;
+        decryptedCred = await this.credentials.getDecrypted(userId, platform);
+        sessionState = decryptedCred.sessionState;
       } catch {
         // No session established yet — the applier will hit its login wall
         // and report a clear "session expired/missing" note on its own.
@@ -369,6 +371,12 @@ export class AutoApplyService {
             fields.map((f) => ({ ...f, platform: finalPlatformKey, sourceUrl: finalUrl })),
           ),
         appendLog,
+        credential: decryptedCred ? { email: decryptedCred.email, password: decryptedCred.password } : null,
+        onSessionUpdated: async (newSession: string) => {
+          if (platform) {
+            await this.credentials.saveSessionState(userId, platform, newSession);
+          }
+        },
       });
 
       // The platform's own apply flow turned out not to exist for this

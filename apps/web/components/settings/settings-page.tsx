@@ -43,33 +43,145 @@ const PLATFORM_LABELS: Record<SupportedPlatform, string> = {
 };
 
 function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
-  const { items, remove } = usePlatformCredentialsStore();
+  const { items, remove, saveCredentials } = usePlatformCredentialsStore();
   const item = items.find((i) => i.platform === platform);
+  const [isEditing, setIsEditing] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [sessionState, setSessionState] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email.trim()) return;
+    setSaving(true);
+    const ok = await saveCredentials(platform, email.trim(), password || undefined, sessionState.trim() || undefined);
+    setSaving(false);
+    if (ok) {
+      setIsEditing(false);
+      setPassword('');
+      setSessionState('');
+    }
+  };
 
   return (
-    <div className="border border-base-300 rounded-xl p-4">
-      <div className="flex items-center justify-between mb-1">
-        <span className="font-medium">{PLATFORM_LABELS[platform]}</span>
+    <div className="border border-base-300 rounded-xl p-4 bg-base-100/50">
+      <div className="flex items-center justify-between mb-2">
+        <span className="font-semibold text-sm">{PLATFORM_LABELS[platform]}</span>
         {item?.configured ? (
           <div className="flex items-center gap-2">
-            <span className="badge badge-success badge-sm gap-1">
+            <span className="badge badge-success badge-sm gap-1 text-xs">
               <CheckCircle2 className="w-3 h-3" /> {item.email}
             </span>
-            <button className="btn btn-ghost btn-xs text-error" onClick={() => remove(platform)} title="Supprimer la session">
+            <button
+              type="button"
+              className="btn btn-ghost btn-xs text-base-content/60 hover:text-primary"
+              onClick={() => setIsEditing(!isEditing)}
+            >
+              {isEditing ? 'Annuler' : 'Modifier'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-xs text-error"
+              onClick={() => remove(platform)}
+              title="Supprimer"
+            >
               <Trash2 className="w-3.5 h-3.5" />
             </button>
           </div>
         ) : (
-          <span className="badge badge-ghost badge-sm gap-1">
-            <XCircle className="w-3 h-3" /> Session non établie
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="badge badge-ghost badge-sm gap-1 text-xs text-base-content/60">
+              <XCircle className="w-3 h-3" /> Non configuré
+            </span>
+            {!isEditing && (
+              <button
+                type="button"
+                className="btn btn-primary btn-xs"
+                onClick={() => setIsEditing(true)}
+              >
+                Connecter
+              </button>
+            )}
+          </div>
         )}
       </div>
-      {item?.lastLoginError && <p className="text-xs text-error mb-1">{item.lastLoginError}</p>}
-      {!item?.configured && (
-        <p className="text-xs text-base-content/40">
-          Depuis votre machine : <code>npm run establish-session -- {platform} votre@email.com</code>
-        </p>
+
+      {item?.lastLoginError && <p className="text-xs text-error mb-2">{item.lastLoginError}</p>}
+
+      {isEditing ? (
+        <form onSubmit={handleSubmit} className="mt-3 pt-3 border-t border-base-300 space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div>
+              <label className="label py-0.5">
+                <span className="label-text text-xs">Email / Identifiant</span>
+              </label>
+              <input
+                type="email"
+                required
+                placeholder="votre.compte@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="input input-sm input-bordered w-full"
+              />
+            </div>
+            <div>
+              <label className="label py-0.5">
+                <span className="label-text text-xs">Mot de passe</span>
+              </label>
+              <input
+                type="password"
+                required={!item?.configured}
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="input input-sm input-bordered w-full"
+              />
+            </div>
+          </div>
+
+          <div>
+            <button
+              type="button"
+              className="text-xs text-base-content/50 hover:underline inline-block"
+              onClick={() => setShowAdvanced(!showAdvanced)}
+            >
+              {showAdvanced ? '− Masquer options avancées' : '+ Importer un cookie de session (optionnel)'}
+            </button>
+            {showAdvanced && (
+              <textarea
+                placeholder="Coller le JSON storageState (cookies) optionnel..."
+                value={sessionState}
+                onChange={(e) => setSessionState(e.target.value)}
+                className="textarea textarea-sm textarea-bordered w-full font-mono text-xs mt-1.5 h-16"
+              />
+            )}
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button
+              type="button"
+              className="btn btn-ghost btn-xs"
+              onClick={() => setIsEditing(false)}
+            >
+              Annuler
+            </button>
+            <button
+              type="submit"
+              disabled={saving || !email}
+              className="btn btn-primary btn-xs"
+            >
+              {saving ? 'Enregistrement...' : 'Enregistrer'}
+            </button>
+          </div>
+        </form>
+      ) : (
+        !item?.configured && (
+          <p className="text-xs text-base-content/50 mt-1">
+            Renseignez votre identifiant et mot de passe pour que le bot se connecte automatiquement et postule aux offres.
+          </p>
+        )
       )}
     </div>
   );

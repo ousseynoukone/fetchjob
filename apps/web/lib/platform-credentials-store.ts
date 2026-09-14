@@ -16,12 +16,15 @@ interface Store {
   items: PlatformCredentialStatus[];
   loading: boolean;
   fetchStatus: () => Promise<void>;
+  saveCredentials: (
+    platform: SupportedPlatform,
+    email: string,
+    password?: string,
+    sessionState?: string,
+  ) => Promise<boolean>;
   remove: (platform: SupportedPlatform) => Promise<void>;
 }
 
-// Sessions are established out-of-band via `npm run establish-session --
-// <platform> <email>` (see apps/api/scripts/establish-session.js) — there
-// is no form here to submit credentials through, only status + revoke.
 export const usePlatformCredentialsStore = create<Store>((set) => ({
   items: [],
   loading: false,
@@ -37,11 +40,28 @@ export const usePlatformCredentialsStore = create<Store>((set) => ({
     }
   },
 
+  saveCredentials: async (platform, email, password, sessionState) => {
+    try {
+      const response = await apiClient.post('/api/parametres/identifiants', {
+        platform,
+        email,
+        password,
+        sessionState,
+      });
+      set({ items: response.data });
+      toast.success('Identifiants enregistrés');
+      return true;
+    } catch (error: any) {
+      toast.error(error.response?.data?.message || "Échec de l'enregistrement");
+      return false;
+    }
+  },
+
   remove: async (platform) => {
     try {
       const response = await apiClient.delete(`/api/parametres/identifiants/${platform}`);
       set({ items: response.data });
-      toast.success('Session supprimée');
+      toast.success('Identifiants supprimés');
     } catch (error: any) {
       toast.error(error.response?.data?.message || 'Échec de la suppression');
     }
