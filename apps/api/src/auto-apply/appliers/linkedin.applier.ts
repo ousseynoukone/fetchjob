@@ -375,14 +375,19 @@ export class LinkedInApplier implements JobApplier {
       await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 30000 });
       await dismissCookieBanner(page);
 
-      const emailInput = page.locator('input[type="email"]:visible, input[autocomplete="username"]:visible').first();
+      const emailInput = page.locator('input#username, input[type="email"]:visible, input[autocomplete="username"]:visible, input[name="session_key"]').first();
       await emailInput.fill(email);
 
-      const passwordInput = page.locator('input[type="password"]:visible').first();
+      const passwordInput = page.locator('input#password, input[type="password"]:visible, input[name="session_password"]').first();
       await passwordInput.fill(password);
+
+      // Submit strictly via Enter to avoid misclicking third-party OAuth buttons
       await passwordInput.press('Enter');
 
-      await page.waitForTimeout(4000);
+      await page.waitForTimeout(5000);
+      if (page.url().includes('connect-services') || page.url().includes('/check/')) {
+        await page.waitForTimeout(3000);
+      }
 
       // Check if CAPTCHA or checkpoint appeared
       if (page.url().includes('/checkpoint/challenge') || (await page.locator('#captcha-internal').count()) > 0) {
@@ -394,8 +399,8 @@ export class LinkedInApplier implements JobApplier {
         };
       }
 
-      // Check if logged in (url no longer /login)
-      if (!page.url().includes('/login')) {
+      // Check if logged in (url no longer /login or /uas/login)
+      if (!page.url().includes('/login') && !page.url().includes('/uas/login')) {
         await ctx.appendLog?.('Connexion automatique LinkedIn réussie !');
         // Persist session cookies for subsequent visits
         const state = await page.context().storageState().catch(() => null);

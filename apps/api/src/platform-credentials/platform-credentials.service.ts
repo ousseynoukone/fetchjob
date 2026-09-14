@@ -92,14 +92,31 @@ export class PlatformCredentialsService {
   }
 
   async getDecrypted(userId: string, platform: SupportedPlatform): Promise<DecryptedCredential> {
-    const row = await this.prisma.platformCredential.findUnique({
+    let row = await this.prisma.platformCredential.findUnique({
       where: { userId_platform: { userId, platform } },
     });
+
+    if (!row) {
+      const defaultUserId = await this.localUser.getDefaultUserId().catch(() => null);
+      if (defaultUserId && defaultUserId !== userId) {
+        row = await this.prisma.platformCredential.findUnique({
+          where: { userId_platform: { userId: defaultUserId, platform } },
+        });
+      }
+    }
+
+    if (!row) {
+      row = await this.prisma.platformCredential.findFirst({
+        where: { platform },
+        orderBy: { updatedAt: 'desc' },
+      });
+    }
+
     if (!row) {
       throw new NotFoundException(`Aucune session ou identifiant enregistré pour ${platform}`);
     }
 
-    const email = this.crypto.decrypt(row.emailEncrypted);
+    let email = this.crypto.decrypt(row.emailEncrypted);
     let password: string | null = null;
     let sessionState: string | null = null;
 
@@ -123,6 +140,26 @@ export class PlatformCredentialsService {
         }
       } catch {
         sessionState = raw;
+      }
+    }
+
+    // Fallback across credentials: if password was missing on this row, find any configured password for this platform
+    if (!password) {
+      const otherCreds = await this.prisma.platformCredential.findMany({
+        where: { platform, NOT: { sessionStateEncrypted: null } },
+      });
+      for (const other of otherCreds) {
+        if (!other.sessionStateEncrypted) continue;
+        try {
+          const parsed = JSON.parse(this.crypto.decrypt(other.sessionStateEncrypted));
+          if (parsed && parsed.password) {
+            password = parsed.password;
+            if (!email && other.emailEncrypted) {
+              email = this.crypto.decrypt(other.emailEncrypted);
+            }
+            break;
+          }
+        } catch {}
       }
     }
 
