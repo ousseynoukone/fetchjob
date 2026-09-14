@@ -40,13 +40,6 @@ export class LinkedInApplier implements JobApplier {
     }
     await dismissCookieBanner(page);
 
-    const loginResult = await this.ensureLoggedIn(page, ctx);
-    if (loginResult) return loginResult;
-
-    if (!page.url().includes('/jobs/view/')) {
-      await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    }
-
     await page.waitForTimeout(2000);
 
     const hasRenderedContent = async () =>
@@ -59,20 +52,23 @@ export class LinkedInApplier implements JobApplier {
       await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
       await page.waitForTimeout(2000);
     }
-    if (!(await hasRenderedContent())) {
-      await ctx.appendLog?.("La page de l'offre LinkedIn est restée vide après chargement.");
-      return {
-        success: false,
-        note: "La page de l'offre LinkedIn n'a affiché aucun contenu (offre supprimée ou blocage temporaire).",
-      };
-    }
 
     const topCard = page.locator(
       '.jobs-unified-top-card, .job-details-jobs-unified-top-card__container--two-pane, [class*="jobs-unified-top-card" i]'
     ).first();
     const topCardScope = (await topCard.count().catch(() => 0)) > 0 ? topCard : page;
 
-    // Support both modern <a> link and traditional <button> for Candidature simplifiée
+    // 1. Check for external apply button FIRST.
+    // External apply (Free-Work, employer ATS, etc.) does NOT need LinkedIn login!
+    const externalApplyButton = page
+      .getByRole('link', { name: /postuler|apply/i })
+      .or(page.getByRole('button', { name: /postuler|apply/i }))
+      .or(page.locator('a[href*="/safety/go/"]'))
+      .or(topCardScope.locator('a[data-tracking-control-name*="apply" i], button[data-tracking-control-name*="apply" i]'))
+      .or(topCardScope.locator('a:has-text("Postuler"), a:has-text("Apply"), button:has-text("Postuler"), button:has-text("Apply")'))
+      .first();
+
+    // Check if it's Easy Apply
     const easyApplyButton = topCardScope
       .locator('a[href*="/apply/"], a:has-text("Candidature simplifiée"), a:has-text("Easy Apply"), button:has-text("Candidature simplifiée"), button:has-text("Easy Apply"), .jobs-apply-button')
       .or(page.getByRole('button', { name: /candidature simplifi[e\u00e9]e|easy apply|postulation simplifi[e\u00e9]e/i }))
@@ -82,39 +78,31 @@ export class LinkedInApplier implements JobApplier {
     const hasEasyApply = (await easyApplyButton.count().catch(() => 0)) > 0 && (await easyApplyButton.isVisible().catch(() => false));
 
     if (!hasEasyApply) {
-      const externalApplyButton = page
-        .getByRole('link', { name: /postuler|apply/i })
-        .or(page.getByRole('button', { name: /postuler|apply/i }))
-        .or(page.locator('a[href*="/safety/go/"]'))
-        .or(topCardScope.locator('a[data-tracking-control-name*="apply" i], button[data-tracking-control-name*="apply" i]'))
-        .or(topCardScope.locator('a:has-text("Postuler"), a:has-text("Apply"), button:has-text("Postuler"), button:has-text("Apply")'))
-        .first();
-
-      if (!(await externalApplyButton.isVisible().catch(() => false))) {
-        if (await hasJobClosedIndicator(page)) {
-          await ctx.appendLog?.('Cette offre LinkedIn n\'accepte plus de candidatures.');
-          return {
-            success: false,
-            note: "Cette offre LinkedIn n'accepte plus de candidatures -- à retirer ou ignorer.",
-          };
+      if (await externalApplyButton.isVisible().catch(() => false)) {
+        await ctx.appendLog?.('Redirection vers le site employeur...');
+        const externalUrl = await resolveExternalApplyUrl(page, externalApplyButton, /linkedin\.com/i);
+        if (externalUrl) {
+          return { success: false, redirectToExternalUrl: externalUrl };
         }
-        await ctx.appendLog?.('Aucun bouton de candidature trouvé sur cette offre LinkedIn.');
+      }
+
+      // If neither is visible, check if we're on a login wall before concluding
+      const loginResult = await this.ensureLoggedIn(page, ctx);
+      if (loginResult) return loginResult;
+
+      if (await hasJobClosedIndicator(page)) {
+        await ctx.appendLog?.('Cette offre LinkedIn n\'accepte plus de candidatures.');
         return {
           success: false,
-          note: 'Aucun bouton de candidature trouvé sur cette offre LinkedIn -- à traiter manuellement.',
+          note: "Cette offre LinkedIn n'accepte plus de candidatures -- à retirer ou ignorer.",
         };
       }
 
-      await ctx.appendLog?.('Redirection vers le site employeur...');
-      const externalUrl = await resolveExternalApplyUrl(page, externalApplyButton, /linkedin\.com/i);
-      if (!externalUrl) {
-        return {
-          success: false,
-          note: 'Cette offre LinkedIn ne propose pas de candidature automatisable -- à traiter manuellement.',
-        };
-      }
-
-      return { success: false, redirectToExternalUrl: externalUrl };
+      await ctx.appendLog?.('Aucun bouton de candidature trouvé sur cette offre LinkedIn.');
+      return {
+        success: false,
+        note: 'Aucun bouton de candidature trouvé sur cette offre LinkedIn -- à traiter manuellement.',
+      };
     }
 
     this.logger.log(`Found Easy Apply button for ${ctx.application.id}, clicking...`);
