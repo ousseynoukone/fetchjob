@@ -14,10 +14,24 @@ export class SmartRecruitersApplier implements JobApplier {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await dismissCookieBanner(page);
 
-    const openFormButton = page.getByRole('button', { name: /i'm interested|apply now|apply/i }).first();
+    // Detect challenge/captcha early
+    const isChallenge = await page.locator('text="Verification Required", text="Slide right to secure", [class*="captcha" i]').count().catch(() => 0);
+    if (isChallenge > 0) {
+      return {
+        success: false,
+        note: 'Vérification anti-robot (CAPTCHA) requise sur SmartRecruiters -- à finaliser manuellement.',
+      };
+    }
+
+    const openFormButton = page
+      .locator('a:has-text("Je suis intéressé"), button:has-text("Je suis intéressé"), a:has-text("Postuler"), button:has-text("Postuler"), a[href*="/apply"], button[data-test="st-apply-btn"]')
+      .or(page.getByRole('button', { name: /i'm interested|apply now|apply|postuler|intéressé/i }))
+      .or(page.getByRole('link', { name: /i'm interested|apply now|apply|postuler|intéressé/i }))
+      .first();
+
     if (await openFormButton.isVisible().catch(() => false)) {
       await openFormButton.click();
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(2000);
     }
 
     const { first, last } = splitName(ctx.cv.fullName);

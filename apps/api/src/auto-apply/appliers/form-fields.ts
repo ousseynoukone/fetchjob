@@ -51,6 +51,7 @@ function extractLabel(el: any): string {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function isInvalid(el: any): boolean {
   if (el.getAttribute('aria-invalid') === 'true') return true;
+  if ((el.required || el.getAttribute('aria-required') === 'true') && (!el.value || !el.value.trim())) return true;
 
   const describedBy = el.getAttribute('aria-describedby');
   if (describedBy) {
@@ -77,7 +78,15 @@ function isInvalid(el: any): boolean {
   }
 
   const containerText = (container.textContent || '').toLowerCase();
-  if (containerText.includes('saisie non valide') || containerText.includes('ce champ est obligatoire')) {
+  if (
+    containerText.includes('saisie non valide') ||
+    containerText.includes('ce champ est obligatoire') ||
+    containerText.includes('champ obligatoire') ||
+    containerText.includes('veuillez saisir') ||
+    containerText.includes('veuillez renseigner') ||
+    containerText.includes('veuillez choisir') ||
+    containerText.includes('dates of employment')
+  ) {
     return true;
   }
 
