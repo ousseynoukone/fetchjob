@@ -83,7 +83,7 @@ export function estimateFitScale(cv: CVData, { twoColumn }: { twoColumn: boolean
 // fill the page instead of always rendering at the smallest safe size.
 const BASE_FONT_SIZE = 11;
 
-function getUserScale(cv: CVData): number {
+export function getUserScale(cv: CVData): number {
   return (cv.options?.fontSize || BASE_FONT_SIZE) / BASE_FONT_SIZE;
 }
 
