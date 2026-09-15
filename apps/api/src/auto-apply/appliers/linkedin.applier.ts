@@ -38,7 +38,8 @@ export class LinkedInApplier implements JobApplier {
         throw err;
       }
     }
-    await dismissCookieBanner(page);
+        await dismissCookieBanner(page);
+    await this.handleConsentWall(page, ctx);
 
     await page.waitForTimeout(2000);
 
@@ -111,6 +112,21 @@ export class LinkedInApplier implements JobApplier {
       await easyApplyButton.click({ timeout: 5000 });
     } catch {
       await easyApplyButton.evaluate((el: any) => el.click());
+    }
+    await page.waitForTimeout(2000);
+
+    // If redirected to consent wall, handle it and return to job
+    if (page.url().includes('connect-services')) {
+      await this.handleConsentWall(page, ctx);
+      await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(2000);
+      const retryBtn = topCardScope
+        .locator('a[href*="/apply/"], a:has-text("Candidature simplifiée"), button:has-text("Candidature simplifiée")')
+        .first();
+      if (await retryBtn.isVisible().catch(() => false)) {
+        await retryBtn.click().catch(() => retryBtn.evaluate((el: any) => el.click()));
+        await page.waitForTimeout(2000);
+      }
     }
 
     await ctx.appendLog?.('Chargement du formulaire Easy Apply...');
@@ -343,6 +359,32 @@ export class LinkedInApplier implements JobApplier {
         break;
       }
     }
+  }
+
+    private async handleConsentWall(page: Page, ctx: ApplyContext): Promise<boolean> {
+    const isConsent =
+      page.url().includes('connect-services') ||
+      (await page
+        .locator('button:has-text("Oui, garder"), button:has-text("garder les services"), button:has-text("Keep services")')
+        .count()
+        .catch(() => 0)) > 0;
+
+    if (isConsent) {
+      await ctx.appendLog?.('Validation du consentement LinkedIn (services connectés)...');
+      const confirmBtn = page
+        .locator('button:has-text("Oui, garder"), button:has-text("garder les services"), button:has-text("Keep services"), button.primary-action-btn')
+        .first();
+      if (await confirmBtn.isVisible().catch(() => false)) {
+        await confirmBtn.click().catch(() => {});
+        await page.waitForTimeout(3000);
+        const state = await page.context().storageState().catch(() => null);
+        if (state) {
+          await ctx.onSessionUpdated?.(JSON.stringify(state));
+        }
+        return true;
+      }
+    }
+    return false;
   }
 
   private async performDirectLogin(page: Page, ctx: ApplyContext): Promise<ApplyResult | null> {

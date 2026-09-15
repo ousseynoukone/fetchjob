@@ -432,6 +432,9 @@ export class AutoApplyService {
         } else {
           try {
             const newState = await context.storageState();
+            if (platform === 'linkedin' && newState && Array.isArray(newState.cookies)) {
+              newState.cookies = newState.cookies.filter((c: any) => c.domain && c.domain.includes('linkedin.com'));
+            }
             await this.credentials.saveSessionState(userId, platform, JSON.stringify(newState));
           } catch (error: any) {
             this.logger.warn(`Failed to persist session state for ${platform}: ${error.message}`);
@@ -463,16 +466,16 @@ export class AutoApplyService {
       const cdpSession = await context.newCDPSession(page);
       await cdpSession.send('Page.startScreencast', {
         format: 'jpeg',
-        quality: 35,
-        maxWidth: 800,
-        maxHeight: 500,
-        everyNthFrame: 10,
+        quality: 25,
+        maxWidth: 700,
+        maxHeight: 450,
+        everyNthFrame: 15,
       });
       let lastSent = 0;
       cdpSession.on('Page.screencastFrame', (frame: any) => {
         const now = Date.now();
-        // Emit at most 1 frame per second to prevent memory exhaustion in Docker
-        if (now - lastSent >= 1000) {
+        // Emit at most 1 frame per 2 seconds to prevent memory exhaustion in Docker
+        if (now - lastSent >= 2000) {
           lastSent = now;
           this.frameStream.next({ applicationId, dataUrl: `data:image/jpeg;base64,${frame.data}` });
         }

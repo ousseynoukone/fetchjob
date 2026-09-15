@@ -65,7 +65,11 @@ export class BrowserSessionService implements OnModuleDestroy {
           // processes one application at a time, sequentially) -- if
           // restarts persist, the next step is watching Render's memory
           // graph during a run, not raising this further blind.
-          '--js-flags=--max-old-space-size=192',
+          '--renderer-process-limit=1',
+          '--no-zygote',
+          '--disable-accelerated-2d-canvas',
+          '--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider',
+          '--js-flags=--max-old-space-size=160',
           '--lang=fr-FR',
         ],
       });
@@ -97,18 +101,36 @@ export class BrowserSessionService implements OnModuleDestroy {
     let storageState: any;
     if (sessionStateJson) {
       try {
-        storageState = JSON.parse(sessionStateJson);
-        if (storageState && Array.isArray(storageState.cookies)) {
-          storageState.cookies = storageState.cookies.map((c: any) => {
-            if (c.domain && c.domain.includes('linkedin.com')) {
-              return { ...c, domain: '.linkedin.com' };
+        let parsed = JSON.parse(sessionStateJson);
+        while (typeof parsed === 'string') {
+          try {
+            parsed = JSON.parse(parsed);
+          } catch {
+            break;
+          }
+        }
+        if (parsed && typeof parsed === 'object') {
+          storageState = parsed;
+          if (Array.isArray(storageState.cookies)) {
+            if (siteName === 'linkedin') {
+              storageState.cookies = storageState.cookies.filter((c: any) =>
+                c.domain && c.domain.includes('linkedin.com')
+              );
             }
-            return c;
-          });
+            storageState.cookies = storageState.cookies.map((c: any) => {
+              if (c.domain && c.domain.includes('linkedin.com')) {
+                return { ...c, domain: '.linkedin.com' };
+              }
+              return c;
+            });
+          }
         }
       } catch {
         this.logger.warn('Stored session state was not valid JSON — starting a fresh session.');
       }
+    }
+    if (typeof storageState === 'string') {
+      storageState = undefined;
     }
 
     const context = await browser.newContext({
@@ -138,10 +160,17 @@ export class BrowserSessionService implements OnModuleDestroy {
       }
     }
 
-    // Route handler to abort image and media requests to save massive memory and bandwidth
+    // Route handler to abort heavy media, fonts, and tracking scripts to prevent OOM
     await context.route('**/*', (route) => {
       const type = route.request().resourceType();
-      if (type === 'image' || type === 'media') {
+      const url = route.request().url();
+      if (type === 'image' || type === 'media' || type === 'font') {
+        return route.abort();
+      }
+      if (/demdex\.net|scorecardresearch|google-analytics|googletagmanager|clarity\.ms|datadoghq/i.test(url)) {
+        return route.abort();
+      }
+      if (/linkedin\.com\/feed\/?(\?.*)?$/i.test(url)) {
         return route.abort();
       }
       return route.continue();
