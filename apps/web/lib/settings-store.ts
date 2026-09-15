@@ -14,6 +14,7 @@ export interface SettingsStatus {
   smtpPassword: boolean;
   notificationEmail: boolean;
   digestIntervalHours: boolean;
+  autoApplyMaxAiCalls: boolean;
 }
 
 interface Store {

@@ -4,6 +4,7 @@ import { writeFile, unlink } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { PrismaService } from '../common/prisma.service';
+import { SettingsService } from '../common/settings.service';
 import { CvService } from '../cv/cv.service';
 import { PdfService } from '../pdf/pdf.service';
 import { PlatformCredentialsService } from '../platform-credentials/platform-credentials.service';
@@ -30,6 +31,10 @@ import type { Page, BrowserContext, CDPSession } from 'playwright';
 // whatever the employer actually uses) — these four ATS platforms cover a
 // large share of company career sites, so detecting them by URL catches far
 // more real candidatures than a per-aggregator applier ever could.
+// Used when the "autoApplyMaxAiCalls" setting is unset or invalid — same
+// fallback-constant pattern as DigestService's DEFAULT_INTERVAL_HOURS.
+const DEFAULT_MAX_AI_CALLS_PER_ATTEMPT = 3;
+
 const ATS_HOST_PATTERNS: { pattern: RegExp; key: string }[] = [
   { pattern: /(^|\.)greenhouse\.io$/i, key: 'greenhouse' },
   { pattern: /(^|\.)lever\.co$/i, key: 'lever' },
@@ -98,6 +103,7 @@ export class AutoApplyService {
 
   constructor(
     private prisma: PrismaService,
+    private settings: SettingsService,
     private cvService: CvService,
     private pdfService: PdfService,
     private credentials: PlatformCredentialsService,
@@ -205,6 +211,9 @@ export class AutoApplyService {
     // Loaded once for the whole run rather than per candidature — a
     // question answered mid-run should still only need answering once.
     const knownAnswers = await this.customQuestions.getKnownAnswers(userId);
+    const maxAiCallsRaw = await this.settings.get('autoApplyMaxAiCalls');
+    const maxAiCallsPerAttempt =
+      Number(maxAiCallsRaw) >= 0 ? Number(maxAiCallsRaw) : DEFAULT_MAX_AI_CALLS_PER_ATTEMPT;
     let applied = 0;
     let needsReview = 0;
 
@@ -222,7 +231,7 @@ export class AutoApplyService {
 
       try {
         await appendLog(`Auto-apply en cours : ${application.jobTitle} chez ${application.company}...`);
-        const result = await this.applyToOne(userId, application, atsEnabled, knownAnswers, appendLog);
+        const result = await this.applyToOne(userId, application, atsEnabled, knownAnswers, maxAiCallsPerAttempt, appendLog);
         if (result.success) {
           applied++;
           await this.prisma.$transaction([
@@ -308,6 +317,7 @@ export class AutoApplyService {
     },
     atsEnabled: boolean,
     knownAnswers: Map<string, string>,
+    maxAiCallsPerAttempt: number,
     appendLog?: (message: string) => Promise<void>,
   ) {
     const effectiveSourceUrl = await this.resolveEffectiveSourceUrl(application.jobOffer.source, application.sourceUrl);
@@ -365,6 +375,7 @@ export class AutoApplyService {
         cvPdfPath,
         coverLetter: application.coverLetter,
         knownAnswers,
+        maxAiCallsPerAttempt,
         reportUnknownFields: (fields) =>
           this.customQuestions.recordUnknown(
             userId,
@@ -401,6 +412,7 @@ export class AutoApplyService {
           cvPdfPath,
           coverLetter: application.coverLetter,
           knownAnswers,
+          maxAiCallsPerAttempt,
           reportUnknownFields: (fields) =>
             this.customQuestions.recordUnknown(
               userId,

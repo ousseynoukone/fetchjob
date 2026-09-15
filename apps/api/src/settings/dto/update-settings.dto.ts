@@ -44,4 +44,8 @@ export class UpdateSettingsDto {
   @IsString()
   @IsOptional()
   digestIntervalHours?: string;
+
+  @IsString()
+  @IsOptional()
+  autoApplyMaxAiCalls?: string;
 }

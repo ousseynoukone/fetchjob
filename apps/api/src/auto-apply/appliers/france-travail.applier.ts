@@ -1,8 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { fillKnownFields, scanInvalidFields } from './form-fields';
 import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl } from './ats-common';
+import { runFormLoop } from './ai-form-loop';
+import { AiService } from '../../ai/ai.service';
 
 // France Travail aggregates postings from many partner sites — a large
 // share of `sourceUrl`s point at the employer's own external site
@@ -14,6 +15,8 @@ import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl } from './
 export class FranceTravailApplier implements JobApplier {
   readonly credentialPlatform = 'france_travail';
   private readonly logger = new Logger(FranceTravailApplier.name);
+
+  constructor(private ai: AiService) {}
 
   async apply(page: Page, ctx: ApplyContext): Promise<ApplyResult> {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -117,53 +120,13 @@ export class FranceTravailApplier implements JobApplier {
       }
     }
 
-    for (let step = 0; step < 6; step++) {
-      await fillKnownFields(page, ctx.knownAnswers);
-
-      const errorVisible = await page
-        .locator('[role="alert"], [class*="error"]')
-        .first()
-        .isVisible()
-        .catch(() => false);
-      if (errorVisible) {
-        const unknownFields = await scanInvalidFields(page);
-        if (unknownFields.length) await ctx.reportUnknownFields(unknownFields);
-        return {
-          success: false,
-          note: 'Le formulaire de candidature France Travail contient un champ non renseigné — à finaliser manuellement.',
-        };
-      }
-
-      const submitButton = page.getByRole('button', { name: /envoyer( ma)? candidature|valider ma candidature/i }).first();
-      if (await submitButton.isVisible().catch(() => false)) {
-        await submitButton.click();
-        await page.waitForTimeout(2000);
-
-        const confirmed = await page
-          .getByText(/candidature envoyée|votre candidature a bien été (envoyée|transmise)/i)
-          .first()
-          .isVisible()
-          .catch(() => false);
-
-        return confirmed
-          ? { success: true }
-          : { success: false, note: "Soumission France Travail envoyée mais confirmation non détectée — à vérifier manuellement." };
-      }
-
-      const nextButton = page.getByRole('button', { name: /suivant|continuer/i }).first();
-      if (await nextButton.isVisible().catch(() => false)) {
-        await nextButton.click();
-        await page.waitForTimeout(1200);
-        continue;
-      }
-
-      break;
-    }
-
-    return {
-      success: false,
-      note: "Formulaire de candidature France Travail non reconnu (étape inattendue) — à finaliser manuellement.",
-    };
+    return runFormLoop(page, ctx, this.ai, {
+      submitText: /envoyer( ma)? candidature|valider ma candidature/i,
+      nextText: /suivant|continuer/i,
+      successText: /candidature envoyée|votre candidature a bien été (envoyée|transmise)/i,
+      blockedNote: 'Le formulaire de candidature France Travail contient un champ non renseigné — à finaliser manuellement.',
+      unresolvedNote: 'Soumission France Travail envoyée mais confirmation non détectée — à vérifier manuellement.',
+    });
   }
 
   private async ensureLoggedIn(page: Page): Promise<ApplyResult | null> {

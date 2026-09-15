@@ -14,6 +14,7 @@ export interface SettingsFields {
   smtpPassword?: string;
   notificationEmail?: string;
   digestIntervalHours?: string;
+  autoApplyMaxAiCalls?: string;
 }
 
 const FIELD_TO_ENV_FALLBACK: Record<keyof SettingsFields, string> = {
@@ -28,6 +29,7 @@ const FIELD_TO_ENV_FALLBACK: Record<keyof SettingsFields, string> = {
   smtpPassword: 'SMTP_PASSWORD',
   notificationEmail: 'NOTIFICATION_EMAIL',
   digestIntervalHours: 'DIGEST_INTERVAL_HOURS',
+  autoApplyMaxAiCalls: 'AUTO_APPLY_MAX_AI_CALLS',
 };
 
 @Injectable()

@@ -3,6 +3,8 @@ import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
 import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, hasJobClosedIndicator } from './ats-common';
+import { buildFormSnapshot, applyFormPlan, formatFieldsForPrompt, formatButtonsForPrompt, buildCandidateBrief } from './ai-form-snapshot';
+import { AiService } from '../../ai/ai.service';
 
 function formatFrenchPhone(raw: string): string {
   if (!raw) return '';
@@ -22,6 +24,8 @@ function formatFrenchPhone(raw: string): string {
 export class LinkedInApplier implements JobApplier {
   readonly credentialPlatform = 'linkedin';
   private readonly logger = new Logger(LinkedInApplier.name);
+
+  constructor(private ai: AiService) {}
 
   async apply(page: Page, ctx: ApplyContext): Promise<ApplyResult> {
     await ctx.appendLog?.(`Navigation vers l'offre LinkedIn : ${ctx.application.jobTitle}...`);
@@ -182,6 +186,7 @@ export class LinkedInApplier implements JobApplier {
     await page.waitForTimeout(600);
 
     // Step through the multi-page Easy Apply modal (up to 8 steps)
+    let aiCallsUsed = 0;
     for (let step = 0; step < 8; step++) {
       const stepHeader = await page
         .locator('[role="dialog"] h3, [role="dialog"] h2, .artdeco-modal__header')
@@ -219,46 +224,7 @@ export class LinkedInApplier implements JobApplier {
       // 4. Fill custom questions from learned answers and defaults
       await fillKnownFields(page, ctx.knownAnswers);
 
-      // 5. Fill empty numeric or text screening inputs
-      const emptyInputs = await page.$$('input[type="text"]:visible, input[type="number"]:visible');
-      for (const input of emptyInputs) {
-        const val = await input.inputValue().catch(() => '');
-        if (!val) {
-          await input.fill('3').catch(() => {});
-        }
-      }
-
-      // 6. Select dropdowns
-      const selects = await page.$$('select');
-      for (const s of selects) {
-        const isVis = await s.isVisible().catch(() => false);
-        if (isVis) {
-          const val = await s.inputValue().catch(() => '');
-          const options = await s.$$eval('option', (opts: any[]) => opts.map(o => ({ value: o.value, text: (o.innerText || '').trim() })));
-          if (!val || val === 'Select an option' || val === '' || val.includes('lectionnez')) {
-            const preferred = options.find((o: any) => /oui|yes|true/i.test(o.text) || /oui|yes|true/i.test(o.value));
-            if (preferred && preferred.value) {
-              await s.selectOption(preferred.value).catch(() => {});
-            } else if (options.length > 1 && options[1].value) {
-              await s.selectOption(options[1].value).catch(() => {});
-            }
-          }
-        }
-      }
-
-      // 7. Radio buttons / Fieldsets
-      const fieldsets = await page.$$('fieldset');
-      for (const fs of fieldsets) {
-        const checked = await fs.$('input[type="radio"]:checked');
-        if (!checked) {
-          const first = await fs.$('input[type="radio"][value="Yes"], input[type="radio"][value="Oui"], input[type="radio"]');
-          if (first) {
-            await first.click().catch(() => {});
-          }
-        }
-      }
-
-      // 8. Incomplete profile experiences cleanup if blocking
+      // 5. Incomplete profile experiences cleanup if blocking
       const deleteExpBtn = page.locator('button:has-text("Supprimer"), a:has-text("Supprimer"), [aria-label*="Supprimer"]').first();
       if ((await deleteExpBtn.count().catch(() => 0)) > 0 && (await deleteExpBtn.isVisible().catch(() => false))) {
         await deleteExpBtn.click().catch(() => {});
@@ -311,8 +277,54 @@ export class LinkedInApplier implements JobApplier {
         continue;
       }
 
-      break;
+      // 12. None of the known button texts matched this step — fall back to
+      // an AI-read snapshot of the visible form instead of giving up. This
+      // is what lets an unfamiliar screening question or an unrecognized
+      // button label (any language, any phrasing LinkedIn ships) still get
+      // resolved, capped at a user-configurable number of calls per attempt
+      // (Paramètres page — "autoApplyMaxAiCalls", 0 disables the fallback)
+      // so a genuinely stuck form doesn't burn tokens indefinitely.
+      if (aiCallsUsed >= ctx.maxAiCallsPerAttempt) break;
+
+      const snapshot = await buildFormSnapshot(page);
+      if (!snapshot.fields.length && !snapshot.buttons.length) break;
+
+      aiCallsUsed++;
+      const plan = await this.ai
+        .planApplicationFormStep({
+          candidateBrief: buildCandidateBrief(ctx),
+          jobTitle: ctx.application.jobTitle,
+          company: ctx.application.company,
+          fieldsText: formatFieldsForPrompt(snapshot.fields),
+          buttonsText: formatButtonsForPrompt(snapshot.buttons),
+        })
+        .catch(() => null);
+
+      if (plan?.usage) {
+        await ctx.appendLog?.(
+          `IA sollicitée pour cette étape (${plan.usage.promptTokens} tokens entrée / ${plan.usage.completionTokens} sortie).`,
+        );
+      }
+
+      if (!plan || plan.action.kind === 'stop') break;
+
+      await applyFormPlan(page, plan);
+      await page.waitForTimeout(plan.action.kind === 'submit' ? 2500 : 1200);
+
+      if (plan.action.kind === 'submit') {
+        const confirmed = await page
+          .getByText(/application sent|candidature envoy[eé]e|votre candidature a [eé]t[eé] envoy[eé]e/i)
+          .first()
+          .isVisible()
+          .catch(() => false);
+        await ctx.appendLog?.('Candidature Easy Apply soumise avec succès !');
+        return { success: true, note: confirmed ? undefined : 'Candidature Easy Apply soumise.' };
+      }
+      // 'next' / 'review' — loop again with a fresh snapshot.
     }
+
+    const unknownFields = await scanInvalidFields(page);
+    if (unknownFields.length) await ctx.reportUnknownFields(unknownFields);
 
     return {
       success: false,

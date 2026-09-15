@@ -2,7 +2,9 @@ import { Injectable } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillIfVisible, dismissCookieBanner } from './ats-common';
-import { fillKnownFields, scanInvalidFields } from './form-fields';
+import { fillKnownFields } from './form-fields';
+import { runFormLoop } from './ai-form-loop';
+import { AiService } from '../../ai/ai.service';
 
 // Lever-hosted application forms (jobs.lever.co) are public, no account
 // needed — same rationale as GreenhouseApplier for having no credential
@@ -10,6 +12,8 @@ import { fillKnownFields, scanInvalidFields } from './form-fields';
 @Injectable()
 export class LeverApplier implements JobApplier {
   readonly credentialPlatform = null;
+
+  constructor(private ai: AiService) {}
 
   async apply(page: Page, ctx: ApplyContext): Promise<ApplyResult> {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -51,39 +55,13 @@ export class LeverApplier implements JobApplier {
 
     await fillKnownFields(page, ctx.knownAnswers);
 
-    const submitButton = page.getByRole('button', { name: /submit application/i }).first();
-    if (!(await submitButton.isVisible().catch(() => false))) {
-      return {
-        success: false,
-        note: 'Formulaire Lever non reconnu (bouton de soumission introuvable) — à finaliser manuellement.',
-      };
-    }
-
-    await submitButton.click();
-    await page.waitForTimeout(2000);
-
-    const stillHasErrors = await page
-      .locator('[role="alert"], .error-message, [class*="error"]')
-      .first()
-      .isVisible()
-      .catch(() => false);
-    if (stillHasErrors) {
-      const unknownFields = await scanInvalidFields(page);
-      if (unknownFields.length) await ctx.reportUnknownFields(unknownFields);
-      return {
-        success: false,
-        note: 'Le formulaire Lever contient des questions personnalisées non renseignées — à finaliser manuellement.',
-      };
-    }
-
-    const confirmed = await page
-      .getByText(/application submitted|thank you for applying|thanks for applying/i)
-      .first()
-      .isVisible()
-      .catch(() => false);
-
-    return confirmed
-      ? { success: true }
-      : { success: false, note: 'Soumission Lever envoyée mais confirmation non détectée — à vérifier manuellement.' };
+    return runFormLoop(page, ctx, this.ai, {
+      maxSteps: 4,
+      submitText: /submit application/i,
+      nextText: /^next$|^continue$/i,
+      successText: /application submitted|thank you for applying|thanks for applying/i,
+      blockedNote: 'Le formulaire Lever contient des questions personnalisées non renseignées — à finaliser manuellement.',
+      unresolvedNote: 'Soumission Lever envoyée mais confirmation non détectée — à vérifier manuellement.',
+    });
   }
 }

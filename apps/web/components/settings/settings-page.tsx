@@ -12,6 +12,12 @@ type FieldSpec = { key: FieldKey; label: string; placeholder: string; type?: str
 
 const AI_FIELDS: FieldSpec[] = [
   { key: 'deepseekApiKey', label: 'Clé API DeepSeek', placeholder: 'sk-...' },
+  {
+    key: 'autoApplyMaxAiCalls',
+    label: "Auto-apply — appels IA max. par candidature (0 pour désactiver)",
+    placeholder: '3',
+    type: 'number',
+  },
 ];
 
 const SOURCE_FIELDS: FieldSpec[] = [

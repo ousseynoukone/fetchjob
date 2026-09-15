@@ -449,6 +449,14 @@ model Settings {
   // have passed since the last send. Text like every other Settings field;
   // parsed where used, defaults to 4 when unset.
   digestIntervalHours String?
+
+  // Cap on how many times the AI-assisted form-filling fallback (see
+  // auto-apply/appliers/ai-form-loop.ts) may be called per single
+  // application attempt, across every applier. Text like every other
+  // Settings field; parsed where used, defaults to 3 when unset — the fast,
+  // free text-matching path is always tried first regardless of this value,
+  // so this only bounds the rare ambiguous-step fallback, not normal usage.
+  autoApplyMaxAiCalls String?
   // Internal bookkeeping only — never shown or edited in the UI.
   lastDigestSentAt    DateTime?
 

@@ -1,8 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { fillKnownFields, scanInvalidFields } from './form-fields';
 import { dismissCookieBanner } from './ats-common';
+import { runFormLoop } from './ai-form-loop';
+import { AiService } from '../../ai/ai.service';
 
 // Workday (company.wd*.myworkdayjobs.com) is the hardest ATS to automate
 // generically: every company runs its own tenant, the flow is a multi-page
@@ -16,6 +17,8 @@ import { dismissCookieBanner } from './ats-common';
 export class WorkdayApplier implements JobApplier {
   readonly credentialPlatform = null;
   private readonly logger = new Logger(WorkdayApplier.name);
+
+  constructor(private ai: AiService) {}
 
   async apply(page: Page, ctx: ApplyContext): Promise<ApplyResult> {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -48,52 +51,13 @@ export class WorkdayApplier implements JobApplier {
       await page.waitForTimeout(1500);
     }
 
-    for (let step = 0; step < 8; step++) {
-      await fillKnownFields(page, ctx.knownAnswers);
-
-      const errorVisible = await page
-        .locator('[role="alert"], [data-automation-id*="error" i]')
-        .first()
-        .isVisible()
-        .catch(() => false);
-      if (errorVisible) {
-        const unknownFields = await scanInvalidFields(page);
-        if (unknownFields.length) await ctx.reportUnknownFields(unknownFields);
-        return {
-          success: false,
-          note: 'Le formulaire Workday contient un champ obligatoire non renseigné — à finaliser manuellement.',
-        };
-      }
-
-      const submitButton = page.getByRole('button', { name: /submit/i }).first();
-      if (await submitButton.isVisible().catch(() => false)) {
-        await submitButton.click();
-        await page.waitForTimeout(2000);
-
-        const confirmed = await page
-          .getByText(/application submitted|thank you for applying/i)
-          .first()
-          .isVisible()
-          .catch(() => false);
-
-        return confirmed
-          ? { success: true }
-          : { success: false, note: 'Soumission Workday envoyée mais confirmation non détectée — à vérifier manuellement.' };
-      }
-
-      const nextButton = page.getByRole('button', { name: /^next$|^continue$/i }).first();
-      if (await nextButton.isVisible().catch(() => false)) {
-        await nextButton.click();
-        await page.waitForTimeout(1200);
-        continue;
-      }
-
-      break;
-    }
-
-    return {
-      success: false,
-      note: 'Formulaire Workday non reconnu (étape inattendue) — à finaliser manuellement.',
-    };
+    return runFormLoop(page, ctx, this.ai, {
+      maxSteps: 8,
+      submitText: /submit/i,
+      nextText: /^next$|^continue$/i,
+      successText: /application submitted|thank you for applying/i,
+      blockedNote: 'Le formulaire Workday contient un champ obligatoire non renseigné — à finaliser manuellement.',
+      unresolvedNote: 'Soumission Workday envoyée mais confirmation non détectée — à vérifier manuellement.',
+    });
   }
 }

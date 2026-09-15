@@ -4,6 +4,7 @@ import { CvModule } from '../cv/cv.module';
 import { PdfModule } from '../pdf/pdf.module';
 import { PlatformCredentialsModule } from '../platform-credentials/platform-credentials.module';
 import { CustomQuestionsModule } from '../custom-questions/custom-questions.module';
+import { AiModule } from '../ai/ai.module';
 import { AutoApplyService } from './auto-apply.service';
 import { BrowserSessionService } from './browser-session.service';
 import { LinkedInApplier } from './appliers/linkedin.applier';
@@ -17,7 +18,7 @@ import { SmartRecruitersApplier } from './appliers/smartrecruiters.applier';
 import { GenericApplier } from './appliers/generic.applier';
 
 @Module({
-  imports: [CommonModule, CvModule, PdfModule, PlatformCredentialsModule, CustomQuestionsModule],
+  imports: [CommonModule, CvModule, PdfModule, PlatformCredentialsModule, CustomQuestionsModule, AiModule],
   providers: [
     AutoApplyService,
     BrowserSessionService,

@@ -25,6 +25,11 @@ export interface ApplyContext {
   appendLog?: (message: string) => Promise<void>;
   credential?: { email: string; password?: string | null } | null;
   onSessionUpdated?: (newSessionState: string) => Promise<void>;
+  // Cap on AI-assisted form-filling fallback calls for this single attempt
+  // (see ai-form-loop.ts) — resolved once per run from the "autoApplyMaxAiCalls"
+  // setting (Paramètres page), not a hardcoded constant, so it's tunable
+  // without a code change.
+  maxAiCallsPerAttempt: number;
 }
 
 export interface ApplyResult {

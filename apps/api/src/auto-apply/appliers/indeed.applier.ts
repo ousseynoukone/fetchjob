@@ -1,8 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { fillKnownFields, scanInvalidFields } from './form-fields';
 import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl } from './ats-common';
+import { runFormLoop } from './ai-form-loop';
+import { AiService } from '../../ai/ai.service';
 
 // Same best-effort/defensive posture as the LinkedIn applier: Indeed's
 // "Indeed Apply" flow sometimes runs inline, sometimes in a popup on
@@ -16,6 +17,8 @@ import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl } from './
 export class IndeedApplier implements JobApplier {
   readonly credentialPlatform = 'indeed';
   private readonly logger = new Logger(IndeedApplier.name);
+
+  constructor(private ai: AiService) {}
 
   async apply(page: Page, ctx: ApplyContext): Promise<ApplyResult> {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -78,55 +81,13 @@ export class IndeedApplier implements JobApplier {
       }
     }
 
-    for (let step = 0; step < 6; step++) {
-      await fillKnownFields(target, ctx.knownAnswers);
-
-      const errorVisible = await target
-        .locator('[role="alert"], [class*="error"]')
-        .first()
-        .isVisible()
-        .catch(() => false);
-      if (errorVisible) {
-        const unknownFields = await scanInvalidFields(target);
-        if (unknownFields.length) await ctx.reportUnknownFields(unknownFields);
-        return {
-          success: false,
-          note: 'Le formulaire de candidature Indeed contient une question non renseignée — à finaliser manuellement.',
-        };
-      }
-
-      const submitButton = target
-        .getByRole('button', { name: /submit( your)? application|envoyer( ma)? candidature|postuler$/i })
-        .first();
-      if (await submitButton.isVisible().catch(() => false)) {
-        await submitButton.click();
-        await target.waitForTimeout(2000);
-
-        const confirmed = await target
-          .getByText(/application submitted|candidature envoyée|votre candidature a bien été envoyée/i)
-          .first()
-          .isVisible()
-          .catch(() => false);
-
-        return confirmed
-          ? { success: true }
-          : { success: false, note: "Soumission Indeed envoyée mais confirmation non détectée — à vérifier manuellement." };
-      }
-
-      const continueButton = target.getByRole('button', { name: /continue|continuer|next|suivant/i }).first();
-      if (await continueButton.isVisible().catch(() => false)) {
-        await continueButton.click();
-        await target.waitForTimeout(1200);
-        continue;
-      }
-
-      break;
-    }
-
-    return {
-      success: false,
-      note: "Formulaire de candidature Indeed non reconnu (étape inattendue) — à finaliser manuellement.",
-    };
+    return runFormLoop(target, ctx, this.ai, {
+      submitText: /submit( your)? application|envoyer( ma)? candidature|postuler$/i,
+      nextText: /continue|continuer|next|suivant/i,
+      successText: /application submitted|candidature envoyée|votre candidature a bien été envoyée/i,
+      blockedNote: 'Le formulaire de candidature Indeed contient une question non renseignée — à finaliser manuellement.',
+      unresolvedNote: 'Soumission Indeed envoyée mais confirmation non détectée — à vérifier manuellement.',
+    });
   }
 
   private async ensureLoggedIn(page: Page): Promise<ApplyResult | null> {

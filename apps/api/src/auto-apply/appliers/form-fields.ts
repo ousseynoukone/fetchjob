@@ -12,7 +12,7 @@ declare const CSS: any;
 // when their label matches loosely, and never overwritten by a learned
 // answer (a learned "years of experience" answer must never land in the
 // email field just because of a labeling quirk).
-const KNOWN_FIELD_LABEL_EXCLUDE =
+export const KNOWN_FIELD_LABEL_EXCLUDE =
   /first name|last name|full name|^name$|^e-?mail|courriel|adresse e-?mail|phone|t[ée]l[ée]phone|mobile|resume|^cv$|cover letter|lettre de motivation|pr[ée]nom|^nom$|mot de passe|password|code de validation|captcha|se connecter|connexion|identifiant/i;
 
 export interface DetectedField {

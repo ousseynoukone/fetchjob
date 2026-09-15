@@ -246,6 +246,23 @@ function cleanAndParseJson<T = any>(content: string, fallback: T): T {
   }
 }
 
+export interface FormStepAiInput {
+  candidateBrief: string;
+  jobTitle: string;
+  company: string;
+  fieldsText: string;
+  buttonsText: string;
+}
+
+export interface FormStepAiPlan {
+  fields: { idx: number; value: string }[];
+  action: { idx: number | null; kind: 'submit' | 'next' | 'review' | 'stop' };
+  // Real token counts from DeepSeek's own response — surfaced so the actual
+  // per-call cost is observable in the campaign log instead of only ever
+  // being an estimate.
+  usage?: { promptTokens: number; completionTokens: number };
+}
+
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name);
@@ -391,6 +408,63 @@ Reponds uniquement en JSON avec les champs: strengths (array de 3 max), gaps (ar
         advice: 'Offre analysée avec succès.',
         recommendation: 4,
       };
+    }
+  }
+
+  // Called only as a fallback when the auto-apply bot's own hardcoded
+  // selectors/text-matching couldn't resolve the current form step (an
+  // unrecognized button label, an unfamiliar screening question) — most
+  // steps on well-known platforms never reach this at all, so real usage
+  // stays a handful of calls per run rather than one per field. Kept
+  // deliberately small (short candidate brief, no CV/job-description dump,
+  // capped output tokens) since this runs once per ambiguous step.
+  async planApplicationFormStep(input: FormStepAiInput): Promise<FormStepAiPlan | null> {
+    const prompt = `Tu pilotes un formulaire de candidature d'emploi a la place d'un humain. Reponds UNIQUEMENT avec un JSON strict de la forme {"fields":[{"idx":number,"value":string}],"action":{"idx":number|null,"kind":"submit"|"next"|"review"|"stop"}}.
+
+Regles imperatives :
+- N'utilise QUE les idx listes ci-dessous, n'en invente jamais.
+- Pour un champ a choix unique (radio), mets dans "fields" l'idx de L'OPTION choisie (pas de la question elle-meme), value peut valoir "1".
+- Pour une case a cocher requise, mets value "true" pour la cocher.
+- Ne reponds JAMAIS a une question dont tu ne peux pas deduire la reponse avec certitude a partir du profil ci-dessous (eligibilite legale a travailler, pretentions salariales precises, disponibilite exacte, etc.) : dans ce cas n'inclus simplement pas cet idx dans "fields", laisse-le de cote.
+- "action" est le SEUL bouton a cliquer pour avancer : kind "submit" uniquement si c'est la soumission finale de la candidature, "next"/"review" pour avancer d'une etape intermediaire, "stop" si aucun bouton ne permet d'avancer sereinement (le formulaire semble bloque ou incomprehensible).
+
+PROFIL CANDIDAT: ${input.candidateBrief}
+POSTE VISE: ${input.jobTitle} chez ${input.company}
+
+CHAMPS A RENSEIGNER :
+${input.fieldsText}
+
+BOUTONS DISPONIBLES :
+${input.buttonsText}`;
+
+    try {
+      const response = await (await this.getClient()).chat.completions.create({
+        model: MODEL,
+        messages: [{ role: 'user', content: stripLoneSurrogates(prompt) }],
+        response_format: { type: 'json_object' },
+        max_tokens: 500,
+        temperature: 0,
+      });
+
+      const raw = response.choices[0]?.message?.content || '{}';
+      const parsed = cleanAndParseJson<any>(raw, null);
+      if (!parsed || !Array.isArray(parsed.fields) || !parsed.action) return null;
+
+      return {
+        fields: parsed.fields
+          .filter((f: any) => typeof f?.idx === 'number')
+          .map((f: any) => ({ idx: f.idx, value: String(f.value ?? '') })),
+        action: {
+          idx: typeof parsed.action.idx === 'number' ? parsed.action.idx : null,
+          kind: ['submit', 'next', 'review', 'stop'].includes(parsed.action.kind) ? parsed.action.kind : 'stop',
+        },
+        usage: response.usage
+          ? { promptTokens: response.usage.prompt_tokens, completionTokens: response.usage.completion_tokens }
+          : undefined,
+      };
+    } catch (err: any) {
+      this.logger.warn(`planApplicationFormStep failed: ${err.message}`);
+      return null;
     }
   }
 }

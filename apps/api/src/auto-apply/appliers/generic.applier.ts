@@ -2,7 +2,9 @@ import { Injectable } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { splitName, dismissCookieBanner, hasSecurityCheck } from './ats-common';
-import { fillKnownFields, scanInvalidFields } from './form-fields';
+import { fillKnownFields } from './form-fields';
+import { runFormLoop } from './ai-form-loop';
+import { AiService } from '../../ai/ai.service';
 
 // Confirmed live on Extia's own career site: its reveal button reads
 // "It's a match" -- no wordlist can ever fully cover arbitrary branded CTA
@@ -40,6 +42,8 @@ const SUCCESS_URL = /thank-?you|confirmation|success|merci|candidature-envoyee|a
 @Injectable()
 export class GenericApplier implements JobApplier {
   readonly credentialPlatform = null;
+
+  constructor(private ai: AiService) {}
 
   async apply(page: Page, ctx: ApplyContext): Promise<ApplyResult> {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -95,65 +99,25 @@ export class GenericApplier implements JobApplier {
 
     await fillKnownFields(page, ctx.knownAnswers);
 
-    const submitButton = page
-      .getByRole('button', { name: SUBMIT_BUTTON_TEXT })
-      .or(page.locator('button[type="submit"]'))
-      .first();
-    if (!(await submitButton.isVisible().catch(() => false))) {
-      return {
-        success: false,
-        note: "Aucun formulaire de candidature exploitable trouvé sur cette page — à finaliser manuellement.",
-      };
-    }
+    const result = await runFormLoop(page, ctx, this.ai, {
+      maxSteps: 5,
+      submitText: SUBMIT_BUTTON_TEXT,
+      nextText: /continue|continuer|next|suivant/i,
+      successText: SUCCESS_TEXT,
+      successUrl: SUCCESS_URL,
+      blockedNote:
+        'Aucun formulaire de candidature exploitable trouvé, ou des questions restent sans réponse — à finaliser manuellement.',
+      unresolvedNote: 'Formulaire soumis mais confirmation non détectée — à vérifier manuellement.',
+    });
 
-    await submitButton.click().catch(() => {});
-    await page.waitForTimeout(2000);
-
-    if (await hasSecurityCheck(page)) {
+    if (!result.success && (await hasSecurityCheck(page))) {
       return {
         success: false,
         note: 'Vérification de sécurité affichée après soumission — à finaliser manuellement.',
       };
     }
 
-    const stillHasErrors = await page
-      .locator('[role="alert"], .error-message, [class*="error" i]')
-      .first()
-      .isVisible()
-      .catch(() => false);
-    if (stillHasErrors) {
-      const unknownFields = await scanInvalidFields(page);
-      if (unknownFields.length) await ctx.reportUnknownFields(unknownFields);
-      return {
-        success: false,
-        note: 'Le formulaire contient des questions non renseignées — à finaliser manuellement.',
-      };
-    }
-
-    const confirmed = await this.detectSuccess(page);
-    return confirmed
-      ? { success: true }
-      : {
-          success: false,
-          note: 'Formulaire soumis mais confirmation non détectée — à vérifier manuellement.',
-        };
-  }
-
-  // page.getByText only searches the top-level frame -- some ATS embed the
-  // post-submit confirmation inside an iframe widget, so a same-page-only
-  // check would report "not confirmed" even though the submission actually
-  // succeeded. The URL check is a second independent signal for ATS that
-  // navigate to a dedicated confirmation/thank-you page instead of showing
-  // inline text.
-  private async detectSuccess(page: Page): Promise<boolean> {
-    if (SUCCESS_URL.test(page.url())) return true;
-
-    for (const frame of page.frames()) {
-      const visible = await frame.getByText(SUCCESS_TEXT).first().isVisible().catch(() => false);
-      if (visible) return true;
-    }
-
-    return false;
+    return result;
   }
 
   // Tries each label pattern in turn (first visible match wins) — a plain
