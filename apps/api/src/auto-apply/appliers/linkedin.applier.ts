@@ -55,25 +55,36 @@ export class LinkedInApplier implements JobApplier {
     }
 
     const topCard = page.locator(
-      '.jobs-unified-top-card, .job-details-jobs-unified-top-card__container--two-pane, [class*="jobs-unified-top-card" i]'
+      '.jobs-unified-top-card, ' +
+      '.job-details-jobs-unified-top-card__container--two-pane, ' +
+      '[class*="jobs-unified-top-card" i], ' +
+      '.top-card-layout, ' +
+      '.jobs-details__main-content, ' +
+      '.job-view-layout'
     ).first();
-    const topCardScope = (await topCard.count().catch(() => 0)) > 0 ? topCard : page;
+    const topCardScope = (await topCard.count().catch(() => 0)) > 0 ? topCard : page.locator('main, #main-content, body').first();
 
-    // 1. Check for external apply button FIRST.
-    // External apply (Free-Work, employer ATS, etc.) does NOT need LinkedIn login!
-    const externalApplyButton = page
-      .getByRole('link', { name: /postuler|apply/i })
-      .or(page.getByRole('button', { name: /postuler|apply/i }))
-      .or(page.locator('a[href*="/safety/go/"]'))
-      .or(topCardScope.locator('a[data-tracking-control-name*="apply" i], button[data-tracking-control-name*="apply" i]'))
-      .or(topCardScope.locator('a:has-text("Postuler"), a:has-text("Apply"), button:has-text("Postuler"), button:has-text("Apply")'))
+    // Check for Easy Apply specifically:
+    // It is a button with Easy Apply / Candidature simplifiée text, or an a tag with /apply/
+    // Exclude similar jobs, search-results, and collection links!
+    const easyApplyButton = topCardScope
+      .locator(
+        'button.jobs-apply-button, ' +
+        'button:has-text("Candidature simplifiée"), ' +
+        'button:has-text("Easy Apply"), ' +
+        'a[href*="/apply/"]:not([href*="search-results"]):not([href*="collections"])'
+      )
       .first();
 
-    // Check if it's Easy Apply
-    const easyApplyButton = topCardScope
-      .locator('a[href*="/apply/"], a:has-text("Candidature simplifiée"), a:has-text("Easy Apply"), button:has-text("Candidature simplifiée"), button:has-text("Easy Apply"), .jobs-apply-button')
-      .or(page.getByRole('button', { name: /candidature simplifi[e\u00e9]e|easy apply|postulation simplifi[e\u00e9]e/i }))
-      .or(page.getByRole('link', { name: /candidature simplifi[e\u00e9]e|easy apply|postulation simplifi[e\u00e9]e/i }))
+    // Check for external apply button (employer ATS, Free-Work, etc.)
+    const externalApplyButton = topCardScope
+      .locator(
+        'button:has-text("Postuler"), button:has-text("Apply"), ' +
+        'a:has-text("Postuler"), a:has-text("Apply"), ' +
+        'a[data-tracking-control-name*="apply" i], button[data-tracking-control-name*="apply" i], ' +
+        'a[href*="/safety/go/"]'
+      )
+      .filter({ hasNotText: /candidature simplifi|easy apply/i })
       .first();
 
     const hasEasyApply = (await easyApplyButton.count().catch(() => 0)) > 0 && (await easyApplyButton.isVisible().catch(() => false));

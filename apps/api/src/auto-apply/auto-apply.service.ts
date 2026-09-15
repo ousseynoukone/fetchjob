@@ -462,6 +462,10 @@ export class AutoApplyService {
   // display). Frames are relayed through frameStream and never saved
   // anywhere — this is a live view, not a recording.
   private async startScreencast(context: BrowserContext, page: Page, applicationId: string): Promise<CDPSession | null> {
+    // Only capture and push screencast frames if an observer is actually listening
+    if (!this.frameStream.observed) {
+      return null;
+    }
     try {
       const cdpSession = await context.newCDPSession(page);
       await cdpSession.send('Page.startScreencast', {

@@ -66,7 +66,6 @@ export class BrowserSessionService implements OnModuleDestroy {
           // restarts persist, the next step is watching Render's memory
           // graph during a run, not raising this further blind.
           '--renderer-process-limit=1',
-          '--no-zygote',
           '--disable-accelerated-2d-canvas',
           '--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider',
           '--js-flags=--max-old-space-size=160',
@@ -114,7 +113,7 @@ export class BrowserSessionService implements OnModuleDestroy {
           if (Array.isArray(storageState.cookies)) {
             if (siteName === 'linkedin') {
               storageState.cookies = storageState.cookies.filter((c: any) =>
-                c.domain && c.domain.includes('linkedin.com')
+                c.domain && c.domain.includes('linkedin.com') && !c.domain.includes('fr.linkedin.com')
               );
             }
             storageState.cookies = storageState.cookies.map((c: any) => {
