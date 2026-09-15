@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+﻿import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
@@ -31,6 +31,8 @@ export class LinkedInApplier implements JobApplier {
     } catch (err: any) {
       if (err.message && err.message.includes('ERR_TOO_MANY_REDIRECTS')) {
         await ctx.appendLog?.('Session LinkedIn révoquée ou invalide (boucle de redirection détectée).');
+        // Clear stale/revoked cookies before login to break the redirect loop
+        await page.context().clearCookies().catch(() => {});
         const loginRes = await this.performDirectLogin(page, ctx);
         if (loginRes) return loginRes;
         await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -413,6 +415,10 @@ export class LinkedInApplier implements JobApplier {
 
     try {
       await ctx.appendLog?.(`Connexion automatique LinkedIn avec l'identifiant ${email}...`);
+      // Clear all cookies to break any redirect-loop caused by stale/revoked session cookies.
+      // A poisoned LinkedIn session cookie (li_at, JSESSIONID, etc.) causes ERR_TOO_MANY_REDIRECTS
+      // even on the /login page itself -- wiping them all gives the browser a clean slate.
+      await page.context().clearCookies().catch(() => {});
       await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 30000 });
       await dismissCookieBanner(page);
 
@@ -459,6 +465,8 @@ export class LinkedInApplier implements JobApplier {
       }
     } catch (err: any) {
       this.logger.error(`Login error: ${err.message}`);
+      // Clear the persisted session so the next run does not inherit a poisoned state
+      await ctx.onSessionUpdated?.("").catch(() => {});
       return {
         success: false,
         sessionExpired: true,
