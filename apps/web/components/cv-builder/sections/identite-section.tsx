@@ -241,6 +241,16 @@ export default function IdentiteSection() {
         </label>
       </div>
 
+      <div className="form-control">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" className="toggle toggle-primary" {...register('options.twoPage')} />
+          <span className="text-sm">Autoriser 2 pages</span>
+        </label>
+        <p className="text-xs text-base-content/60 mt-1">
+          Le CV reste sur une page s'il tient, et n'utilise une 2e page que si le contenu le justifie.
+        </p>
+      </div>
+
       <button type="submit" className="btn btn-primary">
         Enregistrer
       </button>

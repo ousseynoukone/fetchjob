@@ -75,5 +75,6 @@ export class UpdateCvDto {
     fontSize?: number;
     compact?: boolean;
     template?: string;
+    twoPage?: boolean;
   };
 }

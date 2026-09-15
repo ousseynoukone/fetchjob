@@ -28,7 +28,7 @@ export interface CVData {
   certifications?: { name: string; issuer: string; date: string; url?: string }[];
   languages?: { name: string; level: string }[];
   interests?: string[];
-  options?: { fontSize?: number; compact?: boolean; accent?: string; template?: string };
+  options?: { fontSize?: number; compact?: boolean; accent?: string; template?: string; twoPage?: boolean };
 }
 
 export function CVDocument({ cv }: { cv: CVData }) {
@@ -42,7 +42,10 @@ export function CVDocument({ cv }: { cv: CVData }) {
 // dense CV still fits on a single A4 page instead of spilling onto a second.
 // Not a real layout measurement — a calibrated heuristic based on character
 // counts, tuned against real multi-experience/multi-project CVs.
-export function estimateFitScale(cv: CVData, { twoColumn }: { twoColumn: boolean }): number {
+export function estimateFitScale(
+  cv: CVData,
+  { twoColumn, allowTwoPages = false }: { twoColumn: boolean; allowTwoPages?: boolean },
+): number {
   let volume = 0;
   volume += cv.summary?.length || 0;
 
@@ -64,8 +67,11 @@ export function estimateFitScale(cv: CVData, { twoColumn }: { twoColumn: boolean
   volume += (cv.interests?.length || 0) * 10;
 
   // Two-column layouts fit roughly 1.6x as much content per page as a
-  // single ATS column, so scale the thresholds accordingly.
-  const factor = twoColumn ? 1.6 : 1;
+  // single ATS column, so scale the thresholds accordingly. When the user
+  // has opted into a two-page CV, double the budget again — a CV with
+  // enough content to actually fill a second page shouldn't be shrunk as if
+  // it had to fit on one.
+  const factor = (twoColumn ? 1.6 : 1) * (allowTwoPages ? 2 : 1);
   const t = (n: number) => n * factor;
 
   if (volume < t(1600)) return 1;
@@ -186,7 +192,7 @@ function getAtsStyles(scale: number) {
 }
 
 function AtsCVDocument({ cv }: { cv: CVData }) {
-  const scale = getUserScale(cv) * estimateFitScale(cv, { twoColumn: false });
+  const scale = getUserScale(cv) * estimateFitScale(cv, { twoColumn: false, allowTwoPages: !!cv.options?.twoPage });
   const atsStyles = getAtsStyles(scale);
 
   const contactTextParts = [cv.email, cv.phone, cv.location].filter(Boolean);
@@ -567,7 +573,7 @@ function Bullet({ text, styles }: { text: string; styles: ReturnType<typeof getS
 
 function SidebarCVDocument({ cv }: { cv: CVData }) {
   const ACCENT = cv.options?.accent || DEFAULT_SIDEBAR_ACCENT;
-  const scale = getUserScale(cv) * estimateFitScale(cv, { twoColumn: true });
+  const scale = getUserScale(cv) * estimateFitScale(cv, { twoColumn: true, allowTwoPages: !!cv.options?.twoPage });
   const styles = getSidebarStyles(ACCENT, scale);
 
   return (

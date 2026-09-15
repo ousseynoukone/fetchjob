@@ -24,12 +24,18 @@ const MAX_SHRINK_ATTEMPTS = 8;
 @Injectable()
 export class PdfService {
   async generateCVPdf(cv: CVData): Promise<Buffer> {
+    // "twoPage" only raises the page budget the fit heuristic and shrink
+    // loop target — it never pads or forces a second page. A short CV still
+    // renders on one page; a dense one is allowed to spill onto a second
+    // instead of being squeezed to fit a single page.
+    const maxPages = cv.options?.twoPage ? 2 : 1;
     let workingCv = cv;
     let buffer = await renderToBuffer(CVDocument({ cv: workingCv }));
 
-    for (let attempt = 0; attempt < MAX_SHRINK_ATTEMPTS && countPdfPages(buffer) > 1; attempt++) {
+    for (let attempt = 0; attempt < MAX_SHRINK_ATTEMPTS && countPdfPages(buffer) > maxPages; attempt++) {
       const twoColumn = workingCv.options?.template !== 'ats';
-      const effectiveScale = getUserScale(workingCv) * estimateFitScale(workingCv, { twoColumn });
+      const effectiveScale =
+        getUserScale(workingCv) * estimateFitScale(workingCv, { twoColumn, allowTwoPages: maxPages === 2 });
       if (effectiveScale <= MIN_EFFECTIVE_SCALE) break;
 
       const currentFontSize = workingCv.options?.fontSize || 11;

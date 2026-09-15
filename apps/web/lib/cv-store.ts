@@ -59,6 +59,7 @@ interface CV {
     compact: boolean;
     template: string;
     accent?: string;
+    twoPage?: boolean;
   };
 }
 
