@@ -100,6 +100,14 @@ export class VerificationService {
     let unconfirmed = 0;
 
     try {
+      // Capped, not "every matching row at once" — this app runs a single
+      // shared Chromium instance inside a 512MB container (confirmed live:
+      // an OOM crash), so an unbounded backlog (every "needs_review" row
+      // ever accumulated, now also in scope) risks exceeding that regardless
+      // of any one-page-at-a-time leak. Oldest-checked-first so repeated
+      // runs make steady progress through a large backlog instead of
+      // re-picking the same newest rows every time.
+      const MAX_PER_RUN = 15;
       const applications = await this.prisma.application.findMany({
         where: {
           userId,
@@ -108,6 +116,8 @@ export class VerificationService {
           jobOffer: { source: { in: [...SUPPORTED_PLATFORMS] } },
         },
         include: { jobOffer: true },
+        orderBy: { updatedAt: 'asc' },
+        take: MAX_PER_RUN,
       });
 
       if (!applications.length) {
@@ -228,9 +238,10 @@ export class VerificationService {
         }
       }
 
+      const moreRemaining = checked >= MAX_PER_RUN ? ' Il en reste peut-être davantage — relancez une vérification pour continuer.' : '';
       await this.appendLog(
         runId,
-        `Terminé : ${checked} vérifiée(s), ${confirmed} confirmée(s), ${unconfirmed} non confirmée(s).`,
+        `Terminé : ${checked} vérifiée(s), ${confirmed} confirmée(s), ${unconfirmed} non confirmée(s).${moreRemaining}`,
       );
       await this.finishRun(runId, { checked, confirmed, unconfirmed });
     } catch (error: any) {
