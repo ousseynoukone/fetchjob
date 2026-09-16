@@ -79,6 +79,16 @@ export class BrowserSessionService implements OnModuleDestroy {
     if (!this.browser) {
       this.browser = await stealthChromium.launch({
         headless: process.env.AUTO_APPLY_HEADLESS !== 'false',
+        // Without this, Playwright launches its lightweight
+        // "chrome-headless-shell" binary for headless mode instead of full
+        // Chromium — confirmed live: a real hang landed inside a LinkedIn
+        // Easy Apply modal's `page.evaluate()` call with the process alive
+        // but completely idle (0% CPU, no timeout, no crash — just never
+        // resolving), a known class of compatibility gap between the
+        // stripped-down shell and complex React SPAs. `channel: 'chromium'`
+        // forces the full browser binary (already installed by the
+        // Dockerfile's `playwright install chromium`, which bundles both).
+        channel: 'chromium',
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
