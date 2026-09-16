@@ -19,7 +19,7 @@ import { LeverApplier } from './appliers/lever.applier';
 import { WorkdayApplier } from './appliers/workday.applier';
 import { SmartRecruitersApplier } from './appliers/smartrecruiters.applier';
 import { GenericApplier } from './appliers/generic.applier';
-import { JobApplier } from './appliers/applier.interface';
+import { JobApplier, ApplyResult } from './appliers/applier.interface';
 import { scanInvalidFields } from './appliers/form-fields';
 import { resolveWelcomeToTheJungleApplyUrl, blockHeavyResources } from './appliers/ats-common';
 import { CustomQuestionsService } from '../custom-questions/custom-questions.service';
@@ -360,23 +360,45 @@ export class AutoApplyService {
     // point and never advanced to the next candidature, blocking the whole
     // run indefinitely — no single applier step here has an unconditional
     // wait, but this guarantees the *loop* can never actually get stuck
-    // again regardless of what causes a given attempt to stall. Force-
-    // closing the context is what actually interrupts it: any Playwright
-    // call still in flight on a closed context rejects immediately, which
-    // unwinds straight out of this method and into run()'s own catch block
-    // (marks needs_review, moves on) instead of hanging forever.
+    // again regardless of what causes a given attempt to stall.
+    //
+    // Two independent layers, not just one: force-closing the context is
+    // the "normal" way this interrupts a stuck attempt (any Playwright call
+    // still in flight on a closed context is supposed to reject immediately
+    // once the underlying browser acknowledges the close). But confirmed
+    // live that this alone isn't bulletproof — a stuck attempt sat idle
+    // (0% CPU, no crash) for over two hours, well past this same timeout,
+    // with neither this warning nor the eventual rejection ever happening
+    // (most likely explanation: the host machine/Docker VM was suspended
+    // partway through, which can leave an in-flight browser-protocol call
+    // and even its own watchdog timer in limbo on resume). raceForResult()
+    // below adds a second, independent timer that doesn't depend on
+    // anything about *why* apply() is stuck — it just stops waiting on it
+    // after the same budget and reports a failure either way, so the run()
+    // loop is guaranteed to move on to the next candidature regardless.
     const APPLY_TIMEOUT_MS = 120_000;
     const timeoutHandle = setTimeout(() => {
       this.logger.warn(`Auto-apply attempt for ${application.id} exceeded ${APPLY_TIMEOUT_MS / 1000}s — forcing it to stop.`);
       context.close().catch(() => {});
     }, APPLY_TIMEOUT_MS);
 
+    const raceForResult = (pending: Promise<ApplyResult>): Promise<ApplyResult> =>
+      Promise.race([
+        pending,
+        new Promise<ApplyResult>((resolve) => {
+          setTimeout(() => {
+            this.logger.warn(`Auto-apply attempt for ${application.id} timed out at the orchestrator level — abandoning it.`);
+            resolve({ success: false, note: `Tentative interrompue après ${APPLY_TIMEOUT_MS / 1000}s sans réponse — à vérifier manuellement.` });
+          }, APPLY_TIMEOUT_MS);
+        }),
+      ]);
+
     try {
       const page = await context.newPage();
       cdpSession = await this.startScreencast(context, page, application.id);
       let finalUrl = effectiveSourceUrl;
       let finalPlatformKey = platformKey;
-      let result = await applier.apply(page, {
+      let result = await raceForResult(applier.apply(page, {
         application: {
           id: application.id,
           jobTitle: application.jobTitle,
@@ -401,7 +423,7 @@ export class AutoApplyService {
             await this.credentials.saveSessionState(userId, platform, newSession);
           }
         },
-      });
+      }));
 
       // The platform's own apply flow turned out not to exist for this
       // posting (LinkedIn/Indeed/HelloWork only discover this after
@@ -414,7 +436,7 @@ export class AutoApplyService {
         finalUrl = result.redirectToExternalUrl;
         const redirected = this.getApplierForResolvedUrl(finalUrl, atsEnabled);
         finalPlatformKey = redirected.platformKey;
-        result = await redirected.applier.apply(page, {
+        result = await raceForResult(redirected.applier.apply(page, {
           application: {
             id: application.id,
             jobTitle: application.jobTitle,
@@ -433,7 +455,7 @@ export class AutoApplyService {
               fields.map((f) => ({ ...f, platform: finalPlatformKey, sourceUrl: finalUrl })),
             ),
           appendLog,
-        });
+        }));
       }
 
       // Every attempt, success or failure, leaves a screenshot — the only
