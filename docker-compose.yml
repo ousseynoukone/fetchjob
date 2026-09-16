@@ -71,6 +71,12 @@ services:
       # Same headless default as production (see render.yaml) — no display
       # exists inside the container anyway.
       - AUTO_APPLY_HEADLESS=${AUTO_APPLY_HEADLESS:-true}
+      # Render caps this at 160 to fit its 512MB container — confirmed live
+      # that this same limit can crash the renderer outright on a heavy page
+      # (LinkedIn's Easy Apply modal) even locally, where there's no such
+      # constraint. Defaults much higher here since local Docker Desktop
+      # typically has several GB available.
+      - CHROMIUM_RENDERER_HEAP_MB=${CHROMIUM_RENDERER_HEAP_MB:-1024}
     depends_on:
       postgres:
         condition: service_healthy

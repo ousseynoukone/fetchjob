@@ -125,10 +125,19 @@ export class BrowserSessionService implements OnModuleDestroy {
           // processes one application at a time, sequentially) -- if
           // restarts persist, the next step is watching Render's memory
           // graph during a run, not raising this further blind.
+          //
+          // Confirmed live AGAIN locally (a Docker container with 15GB
+          // available, nowhere near Render's 512MB): the exact same
+          // Easy Apply modal crashed the renderer outright ("Page
+          // crashed") — this budget is tuned specifically for Render's
+          // constraint, not a universal safe value, so it's configurable
+          // instead of hardcoded. Bump CHROMIUM_RENDERER_HEAP_MB in a local
+          // .env if renderer crashes show up in local testing; production
+          // keeps today's 160 unless Render's own env vars are changed.
           '--renderer-process-limit=1',
           '--disable-accelerated-2d-canvas',
           '--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider',
-          '--js-flags=--max-old-space-size=160',
+          `--js-flags=--max-old-space-size=${process.env.CHROMIUM_RENDERER_HEAP_MB || '160'}`,
           '--lang=fr-FR',
         ],
       });
