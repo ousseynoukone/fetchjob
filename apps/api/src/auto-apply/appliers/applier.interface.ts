@@ -11,6 +11,10 @@ export interface ApplyContext {
   };
   cv: CVData;
   cvPdfPath: string;
+  // The filename shown to the platform/recruiter on upload (see
+  // ats-common.ts's uploadCv) — derived from the candidate's own name, not
+  // the temp file's on-disk name (which is a generic, id-based filename).
+  cvFileName: string;
   coverLetter: string | null;
   // Custom/screening questions answered once before (see
   // CustomQuestionsService), keyed by normalized label text — appliers call

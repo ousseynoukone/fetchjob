@@ -35,6 +35,13 @@ import type { Page, BrowserContext, CDPSession } from 'playwright';
 // fallback-constant pattern as DigestService's DEFAULT_INTERVAL_HOURS.
 const DEFAULT_MAX_AI_CALLS_PER_ATTEMPT = 3;
 
+// Only strips characters that would actually break a filename on disk or in
+// an upload — keeps the name itself fully intact and readable.
+function sanitizeCvFileName(fullName: string): string {
+  const cleaned = (fullName || '').trim().replace(/[\\/:*?"<>|]+/g, '').replace(/\s+/g, ' ').trim();
+  return cleaned || 'CV';
+}
+
 const ATS_HOST_PATTERNS: { pattern: RegExp; key: string }[] = [
   { pattern: /(^|\.)greenhouse\.io$/i, key: 'greenhouse' },
   { pattern: /(^|\.)lever\.co$/i, key: 'lever' },
@@ -338,8 +345,13 @@ export class AutoApplyService {
 
     const cv = await this.buildCvData(application.id, userId);
     const pdfBuffer = await this.pdfService.generateCVPdf(cv);
+    // The temp file itself keeps an id-based name (avoids any cross-attempt
+    // collision) — the filename actually shown to the platform/recruiter is
+    // set separately at upload time (see ats-common.ts's uploadCv) using the
+    // candidate's own name instead.
     const cvPdfPath = join(tmpdir(), `findurjob-auto-apply-${application.id}.pdf`);
     await writeFile(cvPdfPath, pdfBuffer);
+    const cvFileName = `${sanitizeCvFileName(cv.fullName)} - CV.pdf`;
 
     const context = await this.browserSession.createContext(sessionState, platformKey);
     let cdpSession: CDPSession | null = null;
@@ -373,6 +385,7 @@ export class AutoApplyService {
         },
         cv,
         cvPdfPath,
+        cvFileName,
         coverLetter: application.coverLetter,
         knownAnswers,
         maxAiCallsPerAttempt,
@@ -410,6 +423,7 @@ export class AutoApplyService {
           },
           cv,
           cvPdfPath,
+          cvFileName,
           coverLetter: application.coverLetter,
           knownAnswers,
           maxAiCallsPerAttempt,

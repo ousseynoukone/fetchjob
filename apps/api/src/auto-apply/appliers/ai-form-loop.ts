@@ -57,14 +57,25 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
     if (await nextButton.isVisible().catch(() => false)) {
       await nextButton.click().catch(() => {});
       await page.waitForTimeout(1200);
-      continue;
+      // Some "next" buttons (e.g. HelloWork's "Continuer ma candidature")
+      // actually validate the current step rather than freely advancing —
+      // clicking one that's blocked by empty required fields just re-renders
+      // the same step with inline errors. Blindly `continue`-ing here would
+      // re-click the exact same button every remaining iteration, silently
+      // exhausting the whole attempt without ever trying the AI fallback
+      // (confirmed live: this is exactly what left Nom/Email/consent
+      // unfilled with the AI never once invoked). Only treat it as real
+      // progress if no validation error is now visible.
+      const stillBlocked = await page.locator('[role="alert"], [class*="error" i]').first().isVisible().catch(() => false);
+      if (!stillBlocked) continue;
     }
 
-    // Neither a known submit nor a known "next" matched this step — either a
-    // validation error is blocking progress, or this platform's copy/markup
-    // just isn't one of the ones already hardcoded for. Try the AI fallback
-    // before giving up, up to the user-configurable cap (Paramètres page —
-    // "autoApplyMaxAiCalls", 0 disables the fallback entirely).
+    // Neither a known submit nor a known "next" matched this step, or the
+    // "next" click above didn't actually get past a validation error —
+    // either way, this platform's copy/markup (or this particular required
+    // field) just isn't one of the ones already hardcoded for. Try the AI
+    // fallback before giving up, up to the user-configurable cap (Paramètres
+    // page — "autoApplyMaxAiCalls", 0 disables the fallback entirely).
     if (aiCallsUsed >= ctx.maxAiCallsPerAttempt) {
       const unknownFields = await scanInvalidFields(page);
       if (unknownFields.length) await ctx.reportUnknownFields(unknownFields);

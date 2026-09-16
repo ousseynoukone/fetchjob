@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, fillIdentityFields } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, fillIdentityFields, uploadCv } from './ats-common';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
 
@@ -110,7 +110,7 @@ export class FranceTravailApplier implements JobApplier {
     // across every applier here.
     const fileInput = page.locator('input[type="file"]').first();
     if (await fileInput.count().catch(() => 0)) {
-      await fileInput.setInputFiles(ctx.cvPdfPath).catch(() => {});
+      await uploadCv(fileInput, ctx).catch(() => {});
     }
 
     if (ctx.coverLetter) {

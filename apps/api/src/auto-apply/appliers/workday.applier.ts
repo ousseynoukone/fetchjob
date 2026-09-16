@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { dismissCookieBanner } from './ats-common';
+import { dismissCookieBanner, fillIdentityFields, uploadCv } from './ats-common';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
 
@@ -47,9 +47,14 @@ export class WorkdayApplier implements JobApplier {
     // across every applier here.
     const autofillInput = page.locator('input[type="file"]').first();
     if (await autofillInput.count().catch(() => 0)) {
-      await autofillInput.setInputFiles(ctx.cvPdfPath).catch(() => {});
+      await uploadCv(autofillInput, ctx).catch(() => {});
       await page.waitForTimeout(1500);
     }
+
+    // Workday's own resume-parsing autofill usually populates name/email
+    // from the uploaded CV, but only fills whatever it left empty — never
+    // overrides Workday's own autofill.
+    await fillIdentityFields(page, ctx.cv);
 
     return runFormLoop(page, ctx, this.ai, {
       maxSteps: 8,

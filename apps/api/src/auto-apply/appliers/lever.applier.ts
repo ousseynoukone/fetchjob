@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { fillIfVisible, dismissCookieBanner } from './ats-common';
+import { fillIfVisible, dismissCookieBanner, uploadCv } from './ats-common';
 import { fillKnownFields } from './form-fields';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
@@ -35,14 +35,14 @@ export class LeverApplier implements JobApplier {
     // at all yet, not merely whenever it happens to be hidden.
     const fileInput = page.locator('input[type="file"]').first();
     if (await fileInput.count().catch(() => 0)) {
-      await fileInput.setInputFiles(ctx.cvPdfPath).catch(() => {});
+      await uploadCv(fileInput, ctx).catch(() => {});
     } else {
       // Lever hides the file input behind an "Attach Resume/CV" button.
       const attachButton = page.getByText(/attach resume|attach cv/i).first();
       if (await attachButton.isVisible().catch(() => false)) {
         await attachButton.click().catch(() => {});
         await page.waitForTimeout(500);
-        await page.locator('input[type="file"]').first().setInputFiles(ctx.cvPdfPath).catch(() => {});
+        await uploadCv(page.locator('input[type="file"]').first(), ctx).catch(() => {});
       }
     }
 

@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { dismissCookieBanner, fillIdentityFields } from './ats-common';
+import { dismissCookieBanner, fillIdentityFields, uploadCv } from './ats-common';
 import { fillKnownFields } from './form-fields';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
@@ -37,7 +37,7 @@ export class GreenhouseApplier implements JobApplier {
     // its own styled button, same issue found and fixed across every applier.
     const fileInput = page.locator('input[type="file"]').first();
     if (await fileInput.count().catch(() => 0)) {
-      await fileInput.setInputFiles(ctx.cvPdfPath).catch(() => {});
+      await uploadCv(fileInput, ctx).catch(() => {});
     }
 
     if (ctx.coverLetter) {

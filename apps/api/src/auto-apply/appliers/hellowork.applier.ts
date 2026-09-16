@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, fillIdentityFields } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, fillIdentityFields, uploadCv } from './ats-common';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
 
@@ -45,6 +45,8 @@ export class HelloWorkApplier implements JobApplier {
       return { success: false, redirectToExternalUrl: externalUrl };
     }
 
+    await fillIdentityFields(page, ctx.cv);
+
     // `count()`, not `isVisible()` — confirmed live that Playwright's
     // setInputFiles works fine on a hidden input, and HelloWork (like most
     // modern upload UIs) hides the real <input type="file"> behind a
@@ -54,11 +56,9 @@ export class HelloWorkApplier implements JobApplier {
     // scanInvalidFields can ever surface (it deliberately excludes file
     // inputs), which is exactly what "à finaliser manuellement" without a
     // useful reason turned out to mean in practice.
-    await fillIdentityFields(page, ctx.cv);
-
     const fileInput = page.locator('input[type="file"]').first();
     if (await fileInput.count().catch(() => 0)) {
-      await fileInput.setInputFiles(ctx.cvPdfPath).catch(() => {});
+      await uploadCv(fileInput, ctx).catch(() => {});
     }
 
     if (ctx.coverLetter) {

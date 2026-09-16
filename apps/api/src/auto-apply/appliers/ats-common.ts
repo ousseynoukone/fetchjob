@@ -1,4 +1,10 @@
 import type { BrowserContext, Locator, Page } from 'playwright';
+import { readFile } from 'fs/promises';
+
+// The functions passed to page.evaluate() below run inside the browser, not
+// in Node — this project's tsconfig has no DOM lib, so `document` is
+// declared locally rather than pulling DOM types into the whole backend.
+declare const document: any;
 
 // Scraping/resolution only ever needs the text (job cards, JSON-LD, an
 // apply-button href) — company logos, hero photos and web fonts add real
@@ -27,22 +33,109 @@ export async function fillIfVisible(locator: Locator, value?: string | null): Pr
   }
 }
 
-// Tries each label pattern in turn (first visible, still-empty match wins)
-// — a plain getByLabel(onePattern) only ever covers one phrasing, and French
-// job boards (HelloWork, France Travail, Indeed's FR locale) never use the
-// English wording at all, so a single English pattern silently leaves the
-// field blank on every one of those platforms forever.
-async function fillFirstMatch(page: Page, patterns: RegExp[], value: string | undefined | null): Promise<boolean> {
-  if (!value) return false;
-  for (const pattern of patterns) {
-    const locator = page.getByLabel(pattern).or(page.getByPlaceholder(pattern)).first();
-    if (await locator.isVisible().catch(() => false)) {
-      const current = await locator.inputValue().catch(() => '');
-      if (!current) await locator.fill(value).catch(() => {});
-      return true;
+// Every applier here uploads the CV from a temp file on disk (see
+// auto-apply.service.ts). Playwright's setInputFiles(path) uses that path's
+// own basename as the uploaded filename — confirmed live, a recruiter would
+// see literally "findurjob-auto-apply-cm...pdf" attached to the
+// candidature. Reading the file once and re-uploading it as a buffer lets
+// the uploaded filename be the candidate's own name instead (see
+// ApplyContext.cvFileName), independent of whatever the temp file on disk
+// happens to be called.
+export async function uploadCv(fileInput: Locator, ctx: { cvPdfPath: string; cvFileName: string }): Promise<void> {
+  const buffer = await readFile(ctx.cvPdfPath);
+  await fileInput.setInputFiles({ name: ctx.cvFileName, mimeType: 'application/pdf', buffer });
+}
+
+const IDENTITY_PATTERNS = {
+  first: /first ?name|pr[ée]nom/i,
+  last: /last ?name|^nom\b|nom de famille/i,
+  full: /full ?name|^name$|nom complet|nom et pr[ée]nom/i,
+  email: /e-?mail|courriel/i,
+  phone: /phone|t[ée]l[ée]phone|mobile|portable/i,
+} as const;
+
+type IdentityRole = keyof typeof IDENTITY_PATTERNS;
+
+// Runs inside the browser (via page.evaluate): finds every empty, visible
+// text-like field, resolves its real label the same robust way the AI
+// snapshot does (id/for, wrapping <label>, aria-label, fieldset/legend,
+// previous-sibling text — NOT just a plain getByLabel, which misses custom
+// form widgets that skip a formal <label> association entirely), and
+// classifies it by matching label+placeholder+input-type against bilingual
+// patterns. Tags each match with a temporary attribute so Node-side code
+// can address the exact element without needing to reconstruct a selector.
+async function scanIdentityFields(page: Page): Promise<{ role: IdentityRole; idx: number }[]> {
+  return page.evaluate((patterns: Record<IdentityRole, { source: string; flags: string }>) => {
+    const doc: any = document;
+    const compiled = Object.fromEntries(
+      Object.entries(patterns).map(([role, p]) => [role, new RegExp(p.source, p.flags)]),
+    ) as Record<IdentityRole, RegExp>;
+
+    const isVisible = (el: any) => !!(el.offsetParent || (el.getClientRects && el.getClientRects().length));
+
+    const extractLabel = (el: any): string => {
+      const id = el.getAttribute('id');
+      if (id) {
+        const escape = (globalThis as any).CSS?.escape;
+        const lbl = doc.querySelector(`label[for="${escape ? escape(id) : id}"]`);
+        if (lbl?.textContent?.trim()) return lbl.textContent.trim();
+      }
+      const wrappingLabel = el.closest('label');
+      if (wrappingLabel?.textContent?.trim()) return wrappingLabel.textContent.trim();
+      const ariaLabel = el.getAttribute('aria-label');
+      if (ariaLabel?.trim()) return ariaLabel.trim();
+      const fieldset = el.closest('fieldset');
+      const legend = fieldset?.querySelector('legend');
+      if (legend?.textContent?.trim()) return legend.textContent.trim();
+      let prev = el.previousElementSibling;
+      while (prev) {
+        const text = prev.textContent?.trim();
+        if (text) return text;
+        prev = prev.previousElementSibling;
+      }
+      return '';
+    };
+
+    const matches: { role: IdentityRole; idx: number }[] = [];
+    // Seeded from any tags already on the page (not reset to 1 each call) —
+    // a stale tag left on an element from a previous, now-filled pass would
+    // otherwise collide with a fresh idx assigned on this pass, and
+    // `[data-identity-idx="1"]` would then match two different elements.
+    const existingIdxs = Array.from(doc.querySelectorAll('[data-identity-idx]')).map(
+      (e: any) => Number(e.getAttribute('data-identity-idx')) || 0,
+    );
+    let idx = existingIdxs.length ? Math.max(...existingIdxs) + 1 : 1;
+    const candidates = Array.from(
+      doc.querySelectorAll(
+        'input:not([type=file]):not([type=hidden]):not([type=submit]):not([type=button]):not([type=password]):not([type=radio]):not([type=checkbox]), textarea',
+      ),
+    ) as any[];
+
+    for (const el of candidates) {
+      if (!isVisible(el) || el.disabled) continue;
+      const value = (el.value || '').trim();
+      if (value) continue; // already filled — don't overwrite
+
+      const type = (el.type || '').toLowerCase();
+      const label = extractLabel(el);
+      const placeholder = el.getAttribute('placeholder') || '';
+      const haystack = `${label} ${placeholder}`;
+
+      let role: IdentityRole | null = null;
+      if (type === 'email' || compiled.email.test(haystack)) role = 'email';
+      else if (type === 'tel' || compiled.phone.test(haystack)) role = 'phone';
+      else if (compiled.first.test(haystack)) role = 'first';
+      else if (compiled.last.test(haystack)) role = 'last';
+      else if (compiled.full.test(haystack)) role = 'full';
+      if (!role) continue;
+
+      const tagIdx = idx++;
+      el.setAttribute('data-identity-idx', String(tagIdx));
+      matches.push({ role, idx: tagIdx });
     }
-  }
-  return false;
+
+    return matches;
+  }, Object.fromEntries(Object.entries(IDENTITY_PATTERNS).map(([role, re]) => [role, { source: re.source, flags: re.flags }])) as any);
 }
 
 // Fills first/last (or full) name, email and phone on whatever application
@@ -64,13 +157,35 @@ export async function fillIdentityFields(
   cv: { fullName: string; email: string; phone: string },
 ): Promise<void> {
   const { first, last } = splitName(cv.fullName);
-  const filledFirst = await fillFirstMatch(page, [/first name|pr[ée]nom/i], first);
-  const filledLast = await fillFirstMatch(page, [/last name|^nom$|nom de famille/i], last);
-  if (!filledFirst && !filledLast) {
-    await fillFirstMatch(page, [/full name|^name$|nom complet|nom et pr[ée]nom/i], cv.fullName);
+  const values: Record<IdentityRole, string | undefined> = {
+    first,
+    last,
+    full: cv.fullName,
+    email: cv.email,
+    phone: cv.phone,
+  };
+
+  // Always two passes, not "stop at the first success" — some SPA forms
+  // mount their identity fields a tick apart from one another (confirmed
+  // live: HelloWork filled "Prénom" immediately on pass one, but "Nom" and
+  // "Email" were still unfilled at that exact moment and only became
+  // fillable a moment later). Stopping as soon as *any* field got filled —
+  // the previous version of this loop — meant a single early success masked
+  // every other field that genuinely needed the second pass.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const matches = await scanIdentityFields(page).catch(() => []);
+    for (const m of matches) {
+      const value = values[m.role];
+      if (!value) continue;
+      await page
+        .locator(`[data-identity-idx="${m.idx}"]`)
+        .first()
+        .fill(value)
+        .catch(() => {});
+    }
+    if (attempt === 0) await page.waitForTimeout(700);
+    await page.waitForTimeout(700);
   }
-  await fillFirstMatch(page, [/^email|adresse e-?mail|courriel/i], cv.email);
-  await fillFirstMatch(page, [/phone|t[ée]l[ée]phone|mobile/i], cv.phone);
 }
 
 // Cookie-consent banners are near-universal on EU sites and sit on top of

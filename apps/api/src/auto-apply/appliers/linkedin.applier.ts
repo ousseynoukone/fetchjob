@@ -2,7 +2,7 @@
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
-import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, hasJobClosedIndicator, fillIdentityFields } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, hasJobClosedIndicator, fillIdentityFields, uploadCv } from './ats-common';
 import { buildFormSnapshot, applyFormPlan, formatFieldsForPrompt, formatButtonsForPrompt, buildCandidateBrief } from './ai-form-snapshot';
 import { AiService } from '../../ai/ai.service';
 
@@ -203,7 +203,7 @@ export class LinkedInApplier implements JobApplier {
       const hasFileInput = (await fileInput.count().catch(() => 0)) > 0;
       if (hasFileInput) {
         try {
-          await fileInput.setInputFiles(ctx.cvPdfPath);
+          await uploadCv(fileInput, ctx);
           await page.waitForTimeout(1500);
           await ctx.appendLog?.('CV téléversé avec succès.');
         } catch (e: any) {
@@ -262,7 +262,12 @@ export class LinkedInApplier implements JobApplier {
       if (await reviewButton.isVisible().catch(() => false)) {
         await reviewButton.click();
         await page.waitForTimeout(2000);
-        continue;
+        const blockedAfterReview = await page
+          .locator('[role="alert"], .artdeco-inline-feedback--error, [class*="error" i]')
+          .first()
+          .isVisible()
+          .catch(() => false);
+        if (!blockedAfterReview) continue;
       }
 
       // 11. Next button detection
@@ -274,7 +279,19 @@ export class LinkedInApplier implements JobApplier {
       if (await nextButton.isVisible().catch(() => false)) {
         await nextButton.click();
         await page.waitForTimeout(2000);
-        continue;
+        // LinkedIn's "Next" validates the current step — a required field it
+        // left empty just re-renders the same step with inline errors
+        // ("artdeco-inline-feedback--error"). Blindly `continue`-ing here
+        // would re-click the same button every remaining iteration and
+        // never give the AI fallback below a chance to fill whatever's
+        // actually blocking (confirmed live: this is exactly how a required
+        // screening question got skipped silently instead of resolved).
+        const blockedAfterNext = await page
+          .locator('[role="alert"], .artdeco-inline-feedback--error, [class*="error" i]')
+          .first()
+          .isVisible()
+          .catch(() => false);
+        if (!blockedAfterNext) continue;
       }
 
       // 12. None of the known button texts matched this step — fall back to
