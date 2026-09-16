@@ -44,9 +44,16 @@ if (!process.env.DATABASE_URL) {
 }
 console.log(`Target database: ${new URL(process.env.DATABASE_URL).hostname}\n`);
 
-const { chromium } = require('playwright-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-chromium.use(StealthPlugin());
+// No stealth plugin here on purpose — this script opens a real, visible
+// browser for a human to log in by hand, so there's nothing to evade in the
+// first place. Confirmed live: applying it anyway broke HelloWork's own
+// FriendlyCaptcha widget outright ("Échec de la vérification — Problème de
+// connexion avec https://eu-api.friendlycaptcha.eu/api/v1/puzzle"), almost
+// certainly because the plugin's low-level overrides (WebGL renderer,
+// canvas fingerprint, navigator properties, etc.) broke the JS the puzzle
+// widget itself depends on to run — a genuine human clicking in a plain,
+// unmodified Chromium window never needed the evasion at all.
+const { chromium } = require('playwright');
 const { PrismaClient } = require('@prisma/client');
 const { createCipheriv, randomBytes } = require('crypto');
 const readline = require('readline');
