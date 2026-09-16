@@ -84,6 +84,20 @@ const PROBE_QUOTA = 1;
 export class CampaignService implements OnModuleInit {
   private readonly logger = new Logger(CampaignService.name);
   private runningCampaigns = new Set<string>();
+  // Guards against genuinely concurrent execution. run()/retryFailed()/
+  // retryOne() each check-then-set `runningCampaigns` only after one or
+  // more `await`s (the campaign's own id isn't known any sooner) — a real
+  // race window: two nearly-simultaneous calls (a double-clicked "Lancer",
+  // or a retry click landing while the main run is still going) can both
+  // pass the check before either sets it, launching two genuinely
+  // concurrent executions that then fight over the single shared
+  // browser/renderer budget. Confirmed live: three consecutive apply
+  // attempts each timed out ~85s apart — less than the 120s per-attempt
+  // budget, meaning the next one's clock was already running before the
+  // previous one's had finished, which sequential execution alone can't
+  // produce. Checked and set synchronously, before any await, so there is
+  // no window left for a second call to slip through.
+  private launchInProgress = false;
   // Set by pause() while executeRun's background task for that campaign is
   // still in flight — checked between offers/sources/queries (and passed
   // into AutoApplyService for its own between-candidature check) so
@@ -191,46 +205,64 @@ export class CampaignService implements OnModuleInit {
   }
 
   async run() {
-    const campaign = await this.getOrCreateCampaign();
+    if (this.launchInProgress) {
+      return this.getLatestRun();
+    }
+    this.launchInProgress = true;
+    let handedOff = false;
 
-    const latestRun = await this.getLatestRun();
-    if (this.runningCampaigns.has(campaign.id)) {
-      if (latestRun && latestRun.finishedAt) {
-        this.logger.log(`Clearing stale in-memory runningCampaigns flag for campaign ${campaign.id}`);
-        this.runningCampaigns.delete(campaign.id);
-        this.cancelledCampaigns.delete(campaign.id);
-      } else {
-        return latestRun;
+    try {
+      const campaign = await this.getOrCreateCampaign();
+
+      const latestRun = await this.getLatestRun();
+      if (this.runningCampaigns.has(campaign.id)) {
+        if (latestRun && latestRun.finishedAt) {
+          this.logger.log(`Clearing stale in-memory runningCampaigns flag for campaign ${campaign.id}`);
+          this.runningCampaigns.delete(campaign.id);
+          this.cancelledCampaigns.delete(campaign.id);
+        } else {
+          return latestRun;
+        }
       }
-    }
-    // Reset ghost-running state left in DB after a server restart
-    if (campaign.status === 'running') {
-      await this.prisma.campaign.update({ where: { id: campaign.id }, data: { status: 'active' } });
-      await this.prisma.campaignRun.updateMany({
-        where: { campaignId: campaign.id, finishedAt: null },
-        data: { finishedAt: new Date(), error: 'Nouvelle campagne lancée — run précédente interrompue.' },
+      // Reset ghost-running state left in DB after a server restart
+      if (campaign.status === 'running') {
+        await this.prisma.campaign.update({ where: { id: campaign.id }, data: { status: 'active' } });
+        await this.prisma.campaignRun.updateMany({
+          where: { campaignId: campaign.id, finishedAt: null },
+          data: { finishedAt: new Date(), error: 'Nouvelle campagne lancée — run précédente interrompue.' },
+        });
+      }
+
+      const userId = await this.localUser.getDefaultUserId();
+
+      const run = await this.prisma.campaignRun.create({
+        data: { campaignId: campaign.id, userId, logs: ['Campagne démarrée'] },
       });
+
+      this.runningCampaigns.add(campaign.id);
+      this.cancelledCampaigns.delete(campaign.id);
+      await this.prisma.campaign.update({
+        where: { id: campaign.id },
+        data: { status: 'running' },
+      });
+
+      // Fire-and-forget: the frontend polls /campagne/logs for progress.
+      // launchInProgress is released once this actually finishes (see the
+      // .finally below), not by this method returning — it must stay locked
+      // for the whole background execution, not just this setup.
+      handedOff = true;
+      this.executeRun(campaign, run.id, userId)
+        .catch((err) => {
+          this.logger.error(`Campaign run ${run.id} crashed: ${err.message}`);
+        })
+        .finally(() => {
+          this.launchInProgress = false;
+        });
+
+      return run;
+    } finally {
+      if (!handedOff) this.launchInProgress = false;
     }
-
-    const userId = await this.localUser.getDefaultUserId();
-
-    const run = await this.prisma.campaignRun.create({
-      data: { campaignId: campaign.id, userId, logs: ['Campagne démarrée'] },
-    });
-
-    this.runningCampaigns.add(campaign.id);
-    this.cancelledCampaigns.delete(campaign.id);
-    await this.prisma.campaign.update({
-      where: { id: campaign.id },
-      data: { status: 'running' },
-    });
-
-    // Fire-and-forget: the frontend polls /campagne/logs for progress.
-    this.executeRun(campaign, run.id, userId).catch((err) => {
-      this.logger.error(`Campaign run ${run.id} crashed: ${err.message}`);
-    });
-
-    return run;
   }
 
   // Re-attempts every candidature currently marked "à vérifier" — most
@@ -242,101 +274,131 @@ export class CampaignService implements OnModuleInit {
   // exact same CampaignRun/log-stream/live-view infrastructure a normal
   // run uses, so nothing new was needed on the frontend to watch it happen.
   async retryFailed() {
-    const campaign = await this.getOrCreateCampaign();
+    if (this.launchInProgress) {
+      return this.getLatestRun();
+    }
+    this.launchInProgress = true;
+    let handedOff = false;
 
-    const latestRun = await this.getLatestRun();
-    if (this.runningCampaigns.has(campaign.id)) {
-      if (latestRun && latestRun.finishedAt) {
-        this.logger.log(`Clearing stale in-memory runningCampaigns flag for retryFailed ${campaign.id}`);
-        this.runningCampaigns.delete(campaign.id);
-        this.cancelledCampaigns.delete(campaign.id);
-      } else {
-        return latestRun;
+    try {
+      const campaign = await this.getOrCreateCampaign();
+
+      const latestRun = await this.getLatestRun();
+      if (this.runningCampaigns.has(campaign.id)) {
+        if (latestRun && latestRun.finishedAt) {
+          this.logger.log(`Clearing stale in-memory runningCampaigns flag for retryFailed ${campaign.id}`);
+          this.runningCampaigns.delete(campaign.id);
+          this.cancelledCampaigns.delete(campaign.id);
+        } else {
+          return latestRun;
+        }
       }
-    }
-    // Also reset ghost-running state left in DB after a restart
-    if (campaign.status === 'running') {
-      await this.prisma.campaign.update({ where: { id: campaign.id }, data: { status: 'active' } });
-      await this.prisma.campaignRun.updateMany({
-        where: { campaignId: campaign.id, finishedAt: null },
-        data: { finishedAt: new Date(), error: 'Relancé manuellement — run précédente interrompue.' },
-      });
-    }
-
-    const userId = await this.localUser.getDefaultUserId();
-    const failed = await this.prisma.application.findMany({
-      where: { userId, status: 'needs_review' },
-      select: { id: true },
-    });
-
-    if (!failed.length) {
-      throw new BadRequestException('Aucune candidature "à vérifier" pour le moment.');
-    }
-
-    const run = await this.prisma.campaignRun.create({
-      data: {
-        campaignId: campaign.id,
-        userId,
-        logs: [`Nouvelle tentative sur ${failed.length} candidature(s) à vérifier...`],
-      },
-    });
-
-    this.runningCampaigns.add(campaign.id);
-    this.cancelledCampaigns.delete(campaign.id);
-    await this.prisma.campaign.update({ where: { id: campaign.id }, data: { status: 'running' } });
-
-    this.executeRetry(campaign, run.id, userId, failed.map((a) => a.id)).catch((err) => {
-      this.logger.error(`Retry run ${run.id} crashed: ${err.message}`);
-    });
-
-    return run;
-  }
-
-  // Re-attempts a SINGLE targeted candidature on demand
-  async retryOne(applicationId: string) {
-    const campaign = await this.getOrCreateCampaign();
-
-    // Also guard against ghost-running state left in the DB after a restart
-    if (this.runningCampaigns.has(campaign.id) || campaign.status === 'running') {
-      // Reset the ghost state so the user can retry immediately
-      if (!this.runningCampaigns.has(campaign.id) && campaign.status === 'running') {
+      // Also reset ghost-running state left in DB after a restart
+      if (campaign.status === 'running') {
         await this.prisma.campaign.update({ where: { id: campaign.id }, data: { status: 'active' } });
         await this.prisma.campaignRun.updateMany({
           where: { campaignId: campaign.id, finishedAt: null },
           data: { finishedAt: new Date(), error: 'Relancé manuellement — run précédente interrompue.' },
         });
-      } else {
-        return this.getLatestRun();
       }
+
+      const userId = await this.localUser.getDefaultUserId();
+      const failed = await this.prisma.application.findMany({
+        where: { userId, status: 'needs_review' },
+        select: { id: true },
+      });
+
+      if (!failed.length) {
+        throw new BadRequestException('Aucune candidature "à vérifier" pour le moment.');
+      }
+
+      const run = await this.prisma.campaignRun.create({
+        data: {
+          campaignId: campaign.id,
+          userId,
+          logs: [`Nouvelle tentative sur ${failed.length} candidature(s) à vérifier...`],
+        },
+      });
+
+      this.runningCampaigns.add(campaign.id);
+      this.cancelledCampaigns.delete(campaign.id);
+      await this.prisma.campaign.update({ where: { id: campaign.id }, data: { status: 'running' } });
+
+      handedOff = true;
+      this.executeRetry(campaign, run.id, userId, failed.map((a) => a.id))
+        .catch((err) => {
+          this.logger.error(`Retry run ${run.id} crashed: ${err.message}`);
+        })
+        .finally(() => {
+          this.launchInProgress = false;
+        });
+
+      return run;
+    } finally {
+      if (!handedOff) this.launchInProgress = false;
     }
+  }
 
-    const userId = await this.localUser.getDefaultUserId();
-    const app = await this.prisma.application.findFirst({
-      where: { id: applicationId, userId },
-      select: { id: true, jobTitle: true, company: true },
-    });
-
-    if (!app) {
-      throw new NotFoundException('Candidature introuvable.');
+  // Re-attempts a SINGLE targeted candidature on demand
+  async retryOne(applicationId: string) {
+    if (this.launchInProgress) {
+      return this.getLatestRun();
     }
+    this.launchInProgress = true;
+    let handedOff = false;
 
-    const run = await this.prisma.campaignRun.create({
-      data: {
-        campaignId: campaign.id,
-        userId,
-        logs: [`Nouvelle tentative ciblée sur : ${app.jobTitle} chez ${app.company}...`],
-      },
-    });
+    try {
+      const campaign = await this.getOrCreateCampaign();
 
-    this.runningCampaigns.add(campaign.id);
-    this.cancelledCampaigns.delete(campaign.id);
-    await this.prisma.campaign.update({ where: { id: campaign.id }, data: { status: 'running' } });
+      // Also guard against ghost-running state left in the DB after a restart
+      if (this.runningCampaigns.has(campaign.id) || campaign.status === 'running') {
+        // Reset the ghost state so the user can retry immediately
+        if (!this.runningCampaigns.has(campaign.id) && campaign.status === 'running') {
+          await this.prisma.campaign.update({ where: { id: campaign.id }, data: { status: 'active' } });
+          await this.prisma.campaignRun.updateMany({
+            where: { campaignId: campaign.id, finishedAt: null },
+            data: { finishedAt: new Date(), error: 'Relancé manuellement — run précédente interrompue.' },
+          });
+        } else {
+          return this.getLatestRun();
+        }
+      }
 
-    this.executeRetry(campaign, run.id, userId, [app.id]).catch((err) => {
-      this.logger.error(`Retry run ${run.id} crashed: ${err.message}`);
-    });
+      const userId = await this.localUser.getDefaultUserId();
+      const app = await this.prisma.application.findFirst({
+        where: { id: applicationId, userId },
+        select: { id: true, jobTitle: true, company: true },
+      });
 
-    return run;
+      if (!app) {
+        throw new NotFoundException('Candidature introuvable.');
+      }
+
+      const run = await this.prisma.campaignRun.create({
+        data: {
+          campaignId: campaign.id,
+          userId,
+          logs: [`Nouvelle tentative ciblée sur : ${app.jobTitle} chez ${app.company}...`],
+        },
+      });
+
+      this.runningCampaigns.add(campaign.id);
+      this.cancelledCampaigns.delete(campaign.id);
+      await this.prisma.campaign.update({ where: { id: campaign.id }, data: { status: 'running' } });
+
+      handedOff = true;
+      this.executeRetry(campaign, run.id, userId, [app.id])
+        .catch((err) => {
+          this.logger.error(`Retry run ${run.id} crashed: ${err.message}`);
+        })
+        .finally(() => {
+          this.launchInProgress = false;
+        });
+
+      return run;
+    } finally {
+      if (!handedOff) this.launchInProgress = false;
+    }
   }
 
   private async executeRetry(campaign: any, runId: string, userId: string, applicationIds: string[]) {
