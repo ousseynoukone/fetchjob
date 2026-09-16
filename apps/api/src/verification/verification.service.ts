@@ -27,6 +27,18 @@ export interface VerificationStreamEvent {
 // account-based platforms are checkable this way (ATS-hosted postings and
 // aggregators don't have a "my applications" state to read without a login
 // tied to that specific system).
+//
+// Also revisits every "needs_review" candidature on those same platforms —
+// not just to double-check a reported success, but to catch the opposite,
+// equally real failure mode: the apply flow itself misjudging a genuine
+// success as blocked (confirmed live: an AI-driven action that WAS the real
+// final submit got labeled "next" rather than "submit", so the code never
+// checked for the confirmation text and reported "needs_review" for an
+// application HelloWork had actually already recorded). A "needs_review"
+// row confirmed here is promoted to "applied" — the campaign's own send
+// counter is incremented the same way a normal successful auto-apply
+// attempt would, so it isn't left permanently under-counted just because
+// the mistake happened at report time rather than submission time.
 @Injectable()
 export class VerificationService {
   private readonly logger = new Logger(VerificationService.name);
@@ -90,7 +102,7 @@ export class VerificationService {
       const applications = await this.prisma.application.findMany({
         where: {
           userId,
-          status: 'applied',
+          status: { in: ['applied', 'needs_review'] },
           verifiedAt: null,
           jobOffer: { source: { in: [...SUPPORTED_PLATFORMS] } },
         },
@@ -100,7 +112,7 @@ export class VerificationService {
       if (!applications.length) {
         await this.appendLog(
           runId,
-          "Rien à vérifier : aucune candidature 'envoyée' en attente de confirmation sur une plateforme vérifiable (LinkedIn, Indeed, France Travail, HelloWork).",
+          "Rien à vérifier : aucune candidature 'envoyée' ou 'à vérifier' en attente de confirmation sur une plateforme vérifiable (LinkedIn, Indeed, France Travail, HelloWork).",
         );
         await this.finishRun(runId, { checked, confirmed, unconfirmed });
         return;
@@ -146,20 +158,50 @@ export class VerificationService {
                 await this.appendLog(runId, `${label} : contrôle de sécurité, vérification impossible.`);
               } else if (await hasAlreadyAppliedIndicator(page)) {
                 confirmed++;
-                await this.prisma.application.update({
-                  where: { id: application.id },
-                  data: { verifiedAt: new Date(), verificationNote: null },
-                });
-                await this.appendLog(runId, `Confirmé : ${label}`);
+                if (application.status === 'needs_review') {
+                  // The platform actually recorded this one — promote it the
+                  // same way a normal successful auto-apply attempt would,
+                  // counter included, instead of leaving it stuck on a wrong
+                  // "needs_review" status forever.
+                  await this.prisma.$transaction([
+                    this.prisma.application.update({
+                      where: { id: application.id },
+                      data: {
+                        status: 'applied',
+                        appliedAt: application.appliedAt ?? new Date(),
+                        autoApplyNote: null,
+                        verifiedAt: new Date(),
+                        verificationNote: null,
+                      },
+                    }),
+                    this.prisma.campaign.update({
+                      where: { id: application.campaignId },
+                      data: { totalApplicationsSent: { increment: 1 } },
+                    }),
+                  ]);
+                  await this.appendLog(runId, `Confirmé et mis à jour (à vérifier → envoyée) : ${label}`);
+                } else {
+                  await this.prisma.application.update({
+                    where: { id: application.id },
+                    data: { verifiedAt: new Date(), verificationNote: null },
+                  });
+                  await this.appendLog(runId, `Confirmé : ${label}`);
+                }
               } else {
                 unconfirmed++;
-                await this.prisma.application.update({
-                  where: { id: application.id },
-                  data: {
-                    verificationNote:
-                      "Aucune confirmation détectée sur la page de l'offre — à vérifier manuellement.",
-                  },
-                });
+                // A "needs_review" row already carries its own explanation
+                // in autoApplyNote — leave it alone (and leave verifiedAt
+                // null so it's checked again next run) instead of
+                // overwriting it with a generic verification note.
+                if (application.status !== 'needs_review') {
+                  await this.prisma.application.update({
+                    where: { id: application.id },
+                    data: {
+                      verificationNote:
+                        "Aucune confirmation détectée sur la page de l'offre — à vérifier manuellement.",
+                    },
+                  });
+                }
                 await this.appendLog(runId, `Non confirmé : ${label}`);
               }
               await page.close().catch(() => {});
