@@ -73,9 +73,22 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
     // Neither a known submit nor a known "next" matched this step, or the
     // "next" click above didn't actually get past a validation error —
     // either way, this platform's copy/markup (or this particular required
-    // field) just isn't one of the ones already hardcoded for. Try the AI
-    // fallback before giving up, up to the user-configurable cap (Paramètres
-    // page — "autoApplyMaxAiCalls", 0 disables the fallback entirely).
+    // field) just isn't one of the ones already hardcoded for. Before
+    // trying the AI fallback (or giving up), check whether the application
+    // was actually already submitted successfully by an earlier step in
+    // this same loop — confirmed live on HelloWork: the real submit had
+    // already happened via an AI-driven "next"-labeled action a step
+    // earlier, landing on HelloWork's own post-submit "apply to more
+    // offers" upsell page, which has neither a submit/next button nor any
+    // fields the AI recognized as answerable — so it correctly said "stop",
+    // and this loop reported it as blocked/failed without ever checking
+    // whether the confirmation text was already sitting right there.
+    if (await detectFormSuccess(page, opts.successText, opts.successUrl)) {
+      return { success: true };
+    }
+
+    // Up to the user-configurable cap (Paramètres page —
+    // "autoApplyMaxAiCalls", 0 disables the fallback entirely).
     if (aiCallsUsed >= ctx.maxAiCallsPerAttempt) {
       const unknownFields = await scanInvalidFields(page);
       if (unknownFields.length) await ctx.reportUnknownFields(unknownFields);

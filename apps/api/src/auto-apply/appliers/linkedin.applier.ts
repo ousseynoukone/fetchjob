@@ -4,7 +4,10 @@ import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
 import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, hasJobClosedIndicator, fillIdentityFields, uploadCv } from './ats-common';
 import { buildFormSnapshot, applyFormPlan, formatFieldsForPrompt, formatButtonsForPrompt, buildCandidateBrief } from './ai-form-snapshot';
+import { detectFormSuccess } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
+
+const EASY_APPLY_SUCCESS_TEXT = /application sent|candidature envoy[eé]e|votre candidature a [eé]t[eé] envoy[eé]e/i;
 
 function formatFrenchPhone(raw: string): string {
   if (!raw) return '';
@@ -292,6 +295,20 @@ export class LinkedInApplier implements JobApplier {
           .isVisible()
           .catch(() => false);
         if (!blockedAfterNext) continue;
+      }
+
+      // Before trying the AI fallback (or giving up), check whether the
+      // application was actually already submitted successfully by an
+      // earlier AI-driven action in this same loop — an action the AI
+      // itself labeled "next"/"review" rather than "submit" can still be
+      // the real final click (confirmed live on the equivalent HelloWork
+      // loop: landing on a post-submit page with neither a submit/next
+      // button nor any fields left to answer was reported as blocked/failed
+      // without ever checking whether the confirmation text was already
+      // sitting right there).
+      if (await detectFormSuccess(page, EASY_APPLY_SUCCESS_TEXT)) {
+        await ctx.appendLog?.('Candidature Easy Apply soumise avec succès !');
+        return { success: true };
       }
 
       // 12. None of the known button texts matched this step — fall back to
