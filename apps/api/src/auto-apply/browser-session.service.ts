@@ -30,6 +30,46 @@ import {
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 stealthChromium.use(StealthPlugin());
 
+// A cookie export pasted from a browser extension (Cookie-Editor,
+// EditThisCookie, ...) is a bare array of cookie objects using Chrome's own
+// cookie-API field names/values (expirationDate, hostOnly, sameSite:
+// "no_restriction"/"unspecified"), not Playwright's storageState shape
+// ({cookies: [...]}) or field names (expires, sameSite: "None"|"Lax"|
+// "Strict"). Normalizing this is what lets someone paste a session exported
+// from their own regular, already-logged-in browser as a fallback —
+// confirmed necessary live: HelloWork's own FriendlyCaptcha widget failed
+// outright even inside establish-session.js's real, human-driven browser
+// window, with no automation-detection explanation (identical failure with
+// and without stealth patching), leaving "export from a normal browser" as
+// the only remaining way to get a working session at all.
+// Safe to run on an already-correct Playwright storageState array too: every
+// branch below passes already-well-formed fields through unchanged.
+function normalizeCookieExport(raw: any[]): any[] {
+  return raw
+    .filter((c) => c && typeof c.name === 'string' && typeof c.domain === 'string')
+    .map((c) => {
+      const domain = c.hostOnly === false && !c.domain.startsWith('.') ? `.${c.domain}` : c.domain;
+
+      const sameSiteRaw = String(c.sameSite ?? '').toLowerCase();
+      const sameSite: 'Strict' | 'Lax' | 'None' =
+        sameSiteRaw === 'strict' ? 'Strict' : sameSiteRaw === 'no_restriction' || sameSiteRaw === 'none' ? 'None' : 'Lax';
+
+      const expires =
+        typeof c.expires === 'number' ? c.expires : typeof c.expirationDate === 'number' ? c.expirationDate : -1;
+
+      return {
+        name: c.name,
+        value: c.value ?? '',
+        domain,
+        path: c.path || '/',
+        expires,
+        httpOnly: !!c.httpOnly,
+        secure: !!c.secure,
+        sameSite,
+      };
+    });
+}
+
 @Injectable()
 export class BrowserSessionService implements OnModuleDestroy {
   private readonly logger = new Logger(BrowserSessionService.name);
@@ -108,9 +148,17 @@ export class BrowserSessionService implements OnModuleDestroy {
             break;
           }
         }
+        // A pasted cookie-extension export is a bare array rather than
+        // Playwright's own {cookies: [...]} storageState shape — wrap it so
+        // the rest of this logic (and browser.newContext's own storageState
+        // option) can treat both the same way.
+        if (Array.isArray(parsed)) {
+          parsed = { cookies: parsed };
+        }
         if (parsed && typeof parsed === 'object') {
           storageState = parsed;
           if (Array.isArray(storageState.cookies)) {
+            storageState.cookies = normalizeCookieExport(storageState.cookies);
             if (siteName === 'linkedin') {
               storageState.cookies = storageState.cookies.filter((c: any) =>
                 c.domain && c.domain.includes('linkedin.com') && !c.domain.includes('fr.linkedin.com')

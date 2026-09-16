@@ -139,10 +139,18 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
           {!supportsAutoLogin && (
             <p className="text-xs text-base-content/60 bg-base-200 rounded-lg p-2 leading-relaxed">
               {PLATFORM_LABELS[platform]} bloque la connexion automatique par mot de passe (protection
-              anti-robot) — le bot ne peut réutiliser qu'une session déjà établie. Depuis votre machine,
-              lancez{' '}
-              <code className="font-mono">npm run establish-session -- {platform} votre@email.com</code>,
-              connectez-vous dans la fenêtre qui s'ouvre, puis collez le JSON de session obtenu ci-dessous.
+              anti-robot) — le bot ne peut réutiliser qu'une session déjà établie. Deux façons de
+              l'obtenir :
+              <br />
+              1) Depuis votre machine, lancez{' '}
+              <code className="font-mono">npm run establish-session -- {platform} votre@email.com</code>{' '}
+              et connectez-vous dans la fenêtre qui s'ouvre.
+              <br />
+              2) Si la vérification anti-robot bloque même cette fenêtre, connectez-vous à{' '}
+              {PLATFORM_LABELS[platform]} normalement dans votre navigateur habituel, puis utilisez une
+              extension comme <em>Cookie-Editor</em> pour exporter les cookies du site en JSON.
+              <br />
+              Collez le résultat obtenu (par l'une ou l'autre méthode) ci-dessous.
             </p>
           )}
 
