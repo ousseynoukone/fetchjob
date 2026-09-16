@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { splitName, dismissCookieBanner, hasSecurityCheck } from './ats-common';
+import { dismissCookieBanner, hasSecurityCheck, fillIdentityFields } from './ats-common';
 import { fillKnownFields } from './form-fields';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
@@ -65,14 +65,7 @@ export class GenericApplier implements JobApplier {
       await page.waitForTimeout(1000);
     }
 
-    const { first, last } = splitName(ctx.cv.fullName);
-    const filledFirst = await this.fillFirstMatch(page, [/first name|pr[ée]nom/i], first);
-    const filledLast = await this.fillFirstMatch(page, [/last name|^nom$|nom de famille/i], last);
-    if (!filledFirst && !filledLast) {
-      await this.fillFirstMatch(page, [/full name|^name$|nom complet|nom et pr[ée]nom/i], ctx.cv.fullName);
-    }
-    await this.fillFirstMatch(page, [/^email|adresse e-?mail/i], ctx.cv.email);
-    await this.fillFirstMatch(page, [/phone|t[ée]l[ée]phone|mobile/i], ctx.cv.phone);
+    await fillIdentityFields(page, ctx.cv);
 
     const hasPasswordField = await page.locator('input[type="password"]').first().isVisible().catch(() => false);
     if (hasPasswordField) {

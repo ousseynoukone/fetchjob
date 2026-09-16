@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, fillIdentityFields } from './ats-common';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
 
@@ -62,6 +62,8 @@ export class IndeedApplier implements JobApplier {
     const target = popup || page;
     await target.waitForTimeout(1500);
     if (popup) await dismissCookieBanner(popup);
+
+    await fillIdentityFields(target, ctx.cv);
 
     // `count()`, not `isVisible()` — confirmed live that Playwright's
     // setInputFiles works on a hidden input; gating on visibility silently

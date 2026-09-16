@@ -27,6 +27,52 @@ export async function fillIfVisible(locator: Locator, value?: string | null): Pr
   }
 }
 
+// Tries each label pattern in turn (first visible, still-empty match wins)
+// — a plain getByLabel(onePattern) only ever covers one phrasing, and French
+// job boards (HelloWork, France Travail, Indeed's FR locale) never use the
+// English wording at all, so a single English pattern silently leaves the
+// field blank on every one of those platforms forever.
+async function fillFirstMatch(page: Page, patterns: RegExp[], value: string | undefined | null): Promise<boolean> {
+  if (!value) return false;
+  for (const pattern of patterns) {
+    const locator = page.getByLabel(pattern).or(page.getByPlaceholder(pattern)).first();
+    if (await locator.isVisible().catch(() => false)) {
+      const current = await locator.inputValue().catch(() => '');
+      if (!current) await locator.fill(value).catch(() => {});
+      return true;
+    }
+  }
+  return false;
+}
+
+// Fills first/last (or full) name, email and phone on whatever application
+// form is currently visible — in both French and English phrasing.
+//
+// Confirmed live: HelloWork's, Indeed's and France Travail's own appliers
+// never filled these at all, on the (wrong) assumption that the platform's
+// own logged-in session would pre-fill them on the application form itself.
+// It doesn't — the form renders with genuinely blank Nom/Prénom/Email
+// inputs, which then fail validation on every single attempt with no way
+// for the user to "answer" a question that isn't really a custom question
+// at all (these labels are deliberately excluded from both the learned-
+// answers system and the AI fallback — see KNOWN_FIELD_LABEL_EXCLUDE in
+// form-fields.ts — precisely because they're supposed to be handled here,
+// not treated as a screening question). Shared by every applier instead of
+// each hand-rolling its own narrower, English-only version.
+export async function fillIdentityFields(
+  page: Page,
+  cv: { fullName: string; email: string; phone: string },
+): Promise<void> {
+  const { first, last } = splitName(cv.fullName);
+  const filledFirst = await fillFirstMatch(page, [/first name|pr[ée]nom/i], first);
+  const filledLast = await fillFirstMatch(page, [/last name|^nom$|nom de famille/i], last);
+  if (!filledFirst && !filledLast) {
+    await fillFirstMatch(page, [/full name|^name$|nom complet|nom et pr[ée]nom/i], cv.fullName);
+  }
+  await fillFirstMatch(page, [/^email|adresse e-?mail|courriel/i], cv.email);
+  await fillFirstMatch(page, [/phone|t[ée]l[ée]phone|mobile/i], cv.phone);
+}
+
 // Cookie-consent banners are near-universal on EU sites and sit on top of
 // the page, intercepting clicks on whatever's underneath (confirmed live on
 // France Travail: a `pe-cookies` overlay blocked the "Postuler" button).

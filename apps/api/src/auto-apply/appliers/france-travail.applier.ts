@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, fillIdentityFields } from './ats-common';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
 
@@ -102,6 +102,8 @@ export class FranceTravailApplier implements JobApplier {
         note: "Cette offre France Travail redirige vers le site de l'employeur — à traiter manuellement.",
       };
     }
+
+    await fillIdentityFields(page, ctx.cv);
 
     // `count()`, not `isVisible()` — confirmed live that Playwright's
     // setInputFiles works on a hidden input, same issue found and fixed

@@ -2,7 +2,7 @@
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
-import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, hasJobClosedIndicator } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, hasJobClosedIndicator, fillIdentityFields } from './ats-common';
 import { buildFormSnapshot, applyFormPlan, formatFieldsForPrompt, formatButtonsForPrompt, buildCandidateBrief } from './ai-form-snapshot';
 import { AiService } from '../../ai/ai.service';
 
@@ -333,6 +333,12 @@ export class LinkedInApplier implements JobApplier {
   }
 
   private async fillCvIdentityFields(page: Page, ctx: ApplyContext): Promise<void> {
+    // Easy Apply almost always reuses the logged-in account's own name/email
+    // (non-editable), but a handful of variants do show editable fields —
+    // harmless no-op everywhere else since fillIdentityFields only acts on
+    // fields it actually finds visible and empty.
+    await fillIdentityFields(page, ctx.cv);
+
     const rawPhone = ctx.cv.phone || '0612345678';
     const cleanPhone = formatFrenchPhone(rawPhone);
     const phoneSelectors = [

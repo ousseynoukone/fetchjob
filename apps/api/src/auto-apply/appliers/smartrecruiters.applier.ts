@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { splitName, fillIfVisible, dismissCookieBanner } from './ats-common';
+import { dismissCookieBanner, fillIdentityFields } from './ats-common';
 import { fillKnownFields } from './form-fields';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
@@ -38,11 +38,7 @@ export class SmartRecruitersApplier implements JobApplier {
       await page.waitForTimeout(2000);
     }
 
-    const { first, last } = splitName(ctx.cv.fullName);
-    await fillIfVisible(page.getByLabel(/first name/i).first(), first);
-    await fillIfVisible(page.getByLabel(/last name/i).first(), last);
-    await fillIfVisible(page.getByLabel(/^email/i).first(), ctx.cv.email);
-    await fillIfVisible(page.getByLabel(/phone/i).first(), ctx.cv.phone);
+    await fillIdentityFields(page, ctx.cv);
 
     // `count()`, not `isVisible()` — confirmed live that Playwright's
     // setInputFiles works on a hidden input, same issue found and fixed
