@@ -21,11 +21,11 @@ export class IndeedApplier implements JobApplier {
   constructor(private ai: AiService) {}
 
   async apply(page: Page, ctx: ApplyContext): Promise<ApplyResult> {
-    await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await dismissCookieBanner(page);
-
     const loginResult = await this.ensureLoggedIn(page);
     if (loginResult) return loginResult;
+
+    await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await dismissCookieBanner(page);
 
     const applyButton = page.getByRole('button', { name: /apply now|postuler maintenant|postuler dès maintenant/i }).first();
     const hasApplyButton = await applyButton.isVisible().catch(() => false);
@@ -93,6 +93,18 @@ export class IndeedApplier implements JobApplier {
   }
 
   private async ensureLoggedIn(page: Page): Promise<ApplyResult | null> {
+    // Checking for a login *form* against the job posting itself would be
+    // meaningless — Indeed postings render identically whether the visitor
+    // is authenticated or not, so this would never actually catch an
+    // expired session (same structural gap confirmed live on HelloWork:
+    // an invalid session sailed straight through to its own anonymous
+    // guest-apply flow instead of ever being flagged). Visiting the real
+    // account page first is the same page SessionHealthService's own
+    // proactive check already uses, and is the only way this check can
+    // mean anything.
+    await page.goto(SESSION_CHECKS.indeed.homeUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+    await dismissCookieBanner(page);
+
     const onLoginWall = await SESSION_CHECKS.indeed.isLoginWallVisible(page);
     if (!onLoginWall) return null; // already have a valid, reused session
 
