@@ -48,6 +48,18 @@ const PLATFORM_LABELS: Record<SupportedPlatform, string> = {
   hellowork: 'HelloWork',
 };
 
+// Only LinkedIn's applier ever attempts an automatic email/password login
+// (linkedin.applier.ts's performDirectLogin) — Indeed, France Travail and
+// HelloWork all run a real bot-detection check that blocks a headless
+// browser (confirmed live on HelloWork: FriendlyCaptcha), so their appliers
+// never even read a stored password; they only ever reuse a session
+// established once via `npm run establish-session`. The form below used to
+// show the same "enter your password, the bot logs in automatically" copy
+// for all four platforms — which was simply false for three of them, and
+// is exactly what led a real user to enter a HelloWork password expecting
+// auto-login, only to keep getting "session expired" regardless.
+const AUTO_LOGIN_PLATFORMS = new Set<SupportedPlatform>(['linkedin']);
+
 function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
   const { items, remove, saveCredentials } = usePlatformCredentialsStore();
   const item = items.find((i) => i.platform === platform);
@@ -57,12 +69,18 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
   const [sessionState, setSessionState] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [saving, setSaving] = useState(false);
+  const supportsAutoLogin = AUTO_LOGIN_PLATFORMS.has(platform);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email.trim()) return;
     setSaving(true);
-    const ok = await saveCredentials(platform, email.trim(), password || undefined, sessionState.trim() || undefined);
+    const ok = await saveCredentials(
+      platform,
+      email.trim(),
+      supportsAutoLogin ? password || undefined : undefined,
+      sessionState.trim() || undefined,
+    );
     setSaving(false);
     if (ok) {
       setIsEditing(false);
@@ -118,6 +136,16 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
 
       {isEditing ? (
         <form onSubmit={handleSubmit} className="mt-3 pt-3 border-t border-base-300 space-y-3">
+          {!supportsAutoLogin && (
+            <p className="text-xs text-base-content/60 bg-base-200 rounded-lg p-2 leading-relaxed">
+              {PLATFORM_LABELS[platform]} bloque la connexion automatique par mot de passe (protection
+              anti-robot) — le bot ne peut réutiliser qu'une session déjà établie. Depuis votre machine,
+              lancez{' '}
+              <code className="font-mono">npm run establish-session -- {platform} votre@email.com</code>,
+              connectez-vous dans la fenêtre qui s'ouvre, puis collez le JSON de session obtenu ci-dessous.
+            </p>
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <div>
               <label className="label py-0.5">
@@ -132,38 +160,54 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
                 className="input input-sm input-bordered w-full"
               />
             </div>
-            <div>
-              <label className="label py-0.5">
-                <span className="label-text text-xs">Mot de passe</span>
-              </label>
-              <input
-                type="password"
-                required={!item?.configured}
-                placeholder="••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="input input-sm input-bordered w-full"
-              />
-            </div>
-          </div>
-
-          <div>
-            <button
-              type="button"
-              className="text-xs text-base-content/50 hover:underline inline-block"
-              onClick={() => setShowAdvanced(!showAdvanced)}
-            >
-              {showAdvanced ? '− Masquer options avancées' : '+ Importer un cookie de session (optionnel)'}
-            </button>
-            {showAdvanced && (
-              <textarea
-                placeholder="Coller le JSON storageState (cookies) optionnel..."
-                value={sessionState}
-                onChange={(e) => setSessionState(e.target.value)}
-                className="textarea textarea-sm textarea-bordered w-full font-mono text-xs mt-1.5 h-16"
-              />
+            {supportsAutoLogin && (
+              <div>
+                <label className="label py-0.5">
+                  <span className="label-text text-xs">Mot de passe</span>
+                </label>
+                <input
+                  type="password"
+                  required={!item?.configured}
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="input input-sm input-bordered w-full"
+                />
+              </div>
             )}
           </div>
+
+          {supportsAutoLogin ? (
+            <div>
+              <button
+                type="button"
+                className="text-xs text-base-content/50 hover:underline inline-block"
+                onClick={() => setShowAdvanced(!showAdvanced)}
+              >
+                {showAdvanced ? '− Masquer options avancées' : '+ Importer un cookie de session (optionnel)'}
+              </button>
+              {showAdvanced && (
+                <textarea
+                  placeholder="Coller le JSON storageState (cookies) optionnel..."
+                  value={sessionState}
+                  onChange={(e) => setSessionState(e.target.value)}
+                  className="textarea textarea-sm textarea-bordered w-full font-mono text-xs mt-1.5 h-16"
+                />
+              )}
+            </div>
+          ) : (
+            <div>
+              <label className="label py-0.5">
+                <span className="label-text text-xs">JSON de session (obtenu via establish-session)</span>
+              </label>
+              <textarea
+                placeholder="Coller le JSON storageState (cookies)..."
+                value={sessionState}
+                onChange={(e) => setSessionState(e.target.value)}
+                className="textarea textarea-sm textarea-bordered w-full font-mono text-xs h-16"
+              />
+            </div>
+          )}
 
           <div className="flex items-center justify-end gap-2 pt-1">
             <button
@@ -185,7 +229,9 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
       ) : (
         !item?.configured && (
           <p className="text-xs text-base-content/50 mt-1">
-            Renseignez votre identifiant et mot de passe pour que le bot se connecte automatiquement et postule aux offres.
+            {supportsAutoLogin
+              ? 'Renseignez votre identifiant et mot de passe pour que le bot se connecte automatiquement et postule aux offres.'
+              : `${PLATFORM_LABELS[platform]} bloque la connexion automatique — établissez une session une fois depuis votre machine (npm run establish-session -- ${platform} votre@email.com), puis collez-la ici.`}
           </p>
         )
       )}

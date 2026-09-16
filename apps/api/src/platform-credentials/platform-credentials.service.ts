@@ -194,10 +194,21 @@ export class PlatformCredentialsService {
       data: { lastLoginError: 'Session expirée' },
     });
 
+    // Only LinkedIn's applier ever attempts an automatic password login —
+    // re-entering a password in Paramètres does nothing for the other three
+    // platforms (their own bot-detection blocks a headless login attempt
+    // outright), so telling every platform's user to "re-enter your
+    // password" was actively misleading for 3 out of 4 of them.
+    const fixInstructions =
+      platform === 'linkedin'
+        ? 'Renseignez à nouveau votre mot de passe dans Paramètres pour réactiver la connexion automatique.'
+        : `Cette plateforme bloque la connexion automatique par mot de passe — depuis votre machine, lancez ` +
+          `<code>npm run establish-session -- ${platform} votre@email.com</code>, connectez-vous dans la fenêtre qui ` +
+          `s'ouvre, puis collez le JSON de session obtenu dans Paramètres.`;
+
     await this.email.send(
       `Session ${platform} expirée`,
-      `<p>La session ${platform} utilisée par l'auto-apply a expiré.</p>` +
-        `<p>Renseignez à nouveau votre mot de passe dans Paramètres pour réactiver la connexion automatique.</p>`,
+      `<p>La session ${platform} utilisée par l'auto-apply a expiré.</p><p>${fixInstructions}</p>`,
     );
   }
 }
