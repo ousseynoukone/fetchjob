@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Subject, Observable } from 'rxjs';
+import type { Page } from 'playwright';
 import { PrismaService } from '../common/prisma.service';
 import { LocalUserService } from '../common/local-user.service';
 import { PlatformCredentialsService } from '../platform-credentials/platform-credentials.service';
@@ -144,8 +145,17 @@ export class VerificationService {
           for (const application of apps) {
             checked++;
             const label = `${application.jobTitle} chez ${application.company}`;
+            // Declared outside the try so the finally block below can always
+            // close it — confirmed live as a real container-OOM cause: on an
+            // error (a stale job URL, a navigation timeout, ...) execution
+            // jumped straight to the catch block, which never closed the
+            // page, leaking a whole Chromium tab per failed check. Harmless
+            // at a handful of "applied" rows; became a real crash the moment
+            // this run started also covering the much larger "needs_review"
+            // backlog, where more rows genuinely fail to load.
+            let page: Page | null = null;
             try {
-              const page = await context.newPage();
+              page = await context.newPage();
               await page.goto(application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
               await dismissCookieBanner(page);
 
@@ -204,10 +214,11 @@ export class VerificationService {
                 }
                 await this.appendLog(runId, `Non confirmé : ${label}`);
               }
-              await page.close().catch(() => {});
             } catch (error: any) {
               unconfirmed++;
               await this.appendLog(runId, `Erreur en vérifiant ${label} : ${error.message}`);
+            } finally {
+              if (page) await page.close().catch(() => {});
             }
 
             await this.browserSession.randomDelay(2000, 5000);
