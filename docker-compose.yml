@@ -1,6 +1,9 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    # Matches the production Neon database's own version (18) — kept in sync
+    # on purpose so a local dump/restore of prod data never hits a
+    # server-version mismatch, and local testing behaves the same as prod.
+    image: postgres:18-alpine
     container_name: findurjob_postgres
     restart: unless-stopped
     environment:
@@ -9,8 +12,11 @@ services:
       POSTGRES_DB: findurjob
     ports:
       - '5432:5432'
+    # Postgres 18's own image mounts the parent dir, not .../data directly
+    # (it places versioned subdirectories itself) — confirmed live, the old
+    # .../data mount point made the image refuse to start.
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U findurjob -d findurjob']
       interval: 5s
@@ -43,18 +49,28 @@ services:
       - NODE_ENV=production
       - PORT=4000
       - DATABASE_URL=postgresql://findurjob:${DATABASE_PASSWORD:-password}@postgres:5432/findurjob?schema=public
+      # Neon needs separate pooled/direct connections (schema.prisma); the
+      # local single-instance Postgres here has no pooler, so both point at
+      # the exact same place.
+      - DIRECT_DATABASE_URL=postgresql://findurjob:${DATABASE_PASSWORD:-password}@postgres:5432/findurjob?schema=public
       - REDIS_URL=redis://redis:6379
       - FRONTEND_URL=http://localhost:3001
       - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key-change-in-production}
       - JWT_EXPIRES_IN=${JWT_EXPIRES_IN:-15m}
       - REFRESH_TOKEN_SECRET=${REFRESH_TOKEN_SECRET:-your-super-secret-refresh-token-key-change-in-production}
       - REFRESH_TOKEN_EXPIRES_IN=${REFRESH_TOKEN_EXPIRES_IN:-7d}
+      # Required — CryptoService throws at boot without it (encrypts stored
+      # platform credentials/sessions). Generate with `openssl rand -base64 32`.
+      - CREDENTIALS_ENCRYPTION_KEY=${CREDENTIALS_ENCRYPTION_KEY}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - FRANCE_TRAVAIL_CLIENT_ID=${FRANCE_TRAVAIL_CLIENT_ID:-}
       - FRANCE_TRAVAIL_CLIENT_SECRET=${FRANCE_TRAVAIL_CLIENT_SECRET:-}
       - ADZUNA_APP_ID=${ADZUNA_APP_ID:-}
       - ADZUNA_API_KEY=${ADZUNA_API_KEY:-}
+      # Same headless default as production (see render.yaml) — no display
+      # exists inside the container anyway.
+      - AUTO_APPLY_HEADLESS=${AUTO_APPLY_HEADLESS:-true}
     depends_on:
       postgres:
         condition: service_healthy

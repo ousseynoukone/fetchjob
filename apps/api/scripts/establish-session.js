@@ -12,22 +12,40 @@
 //   npm run establish-session -- hellowork you@example.com
 //   npm run establish-session -- france_travail you@example.com
 //
-// Reads CREDENTIALS_ENCRYPTION_KEY and DATABASE_URL from .env.production.local
-// — deliberately NOT .env.local, which points at the dev-auto-apply branch.
-// A session saved there would be invisible to the deployed Render app,
-// which is the only thing that ever actually reuses it. Only `email` is
-// stored (as a display label) — there is no password field on
-// PlatformCredential anymore; login itself always happens in the real
-// browser window below.
+// Add --local as a 3rd arg to target the local Docker-Compose stack instead
+// of production — e.g. `npm run establish-session -- linkedin you@example.com --local`.
+// Needed because a session cookie is IP-bound: reusing one established from
+// Render's server IP breaks the moment it's replayed from a different
+// network (confirmed live — LinkedIn treats it as a hijacked session and
+// forces a fresh challenge), so testing auto-apply against LinkedIn locally
+// needs its own session established from this machine's own IP.
+//
+// By default, reads CREDENTIALS_ENCRYPTION_KEY and DATABASE_URL from
+// .env.production.local — deliberately NOT .env.local, which points at the
+// dev-auto-apply branch. A session saved there would be invisible to the
+// deployed Render app, which is the only thing that ever actually reuses
+// it. Only `email` is stored (as a display label) — there is no password
+// field on PlatformCredential anymore; login itself always happens in the
+// real browser window below.
 
 const fs = require('fs');
 const path = require('path');
 
-const envCandidates = [
-  path.join(__dirname, '..', '.env.production.local'),
-  path.join(process.cwd(), 'apps', 'api', '.env.production.local'),
-  path.join(process.cwd(), '.env.production.local'),
-];
+const targetLocal = process.argv.includes('--local');
+
+const envCandidates = targetLocal
+  ? [
+      // The repo-root .env docker-compose.yml itself reads from — same
+      // CREDENTIALS_ENCRYPTION_KEY the local `api` container uses, so a
+      // session saved here decrypts correctly for it.
+      path.join(__dirname, '..', '..', '..', '.env'),
+      path.join(process.cwd(), '.env'),
+    ]
+  : [
+      path.join(__dirname, '..', '.env.production.local'),
+      path.join(process.cwd(), 'apps', 'api', '.env.production.local'),
+      path.join(process.cwd(), '.env.production.local'),
+    ];
 for (const cand of envCandidates) {
   if (fs.existsSync(cand)) {
     require('dotenv').config({ path: cand });
@@ -35,14 +53,25 @@ for (const cand of envCandidates) {
   }
 }
 
+// docker-compose.yml gives the `api` container DATABASE_URL as
+// postgres://.../@postgres:5432/... — that hostname only resolves inside
+// the Docker network. This script runs on the host, so it needs the same
+// local Postgres reached via localhost's exposed port instead.
+if (targetLocal && !process.env.DATABASE_URL) {
+  const password = process.env.DATABASE_PASSWORD || 'password';
+  process.env.DATABASE_URL = `postgresql://findurjob:${password}@localhost:5432/findurjob?schema=public`;
+}
+
 if (!process.env.DATABASE_URL) {
   console.error(
-    'DATABASE_URL is not set — expected it in apps/api/.env.production.local (production database + ' +
-      'CREDENTIALS_ENCRYPTION_KEY, matching Render\'s env vars). Create that file first.',
+    targetLocal
+      ? 'DATABASE_URL could not be determined for --local — make sure the root .env exists and `docker compose up -d postgres` has been run.'
+      : 'DATABASE_URL is not set — expected it in apps/api/.env.production.local (production database + ' +
+        'CREDENTIALS_ENCRYPTION_KEY, matching Render\'s env vars). Create that file first.',
   );
   process.exit(1);
 }
-console.log(`Target database: ${new URL(process.env.DATABASE_URL).hostname}\n`);
+console.log(`Target database: ${new URL(process.env.DATABASE_URL).hostname}${targetLocal ? ' (local)' : ''}\n`);
 
 // No stealth plugin here on purpose — this script opens a real, visible
 // browser for a human to log in by hand, so there's nothing to evade in the

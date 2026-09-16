@@ -157,8 +157,18 @@ export class LinkedInApplier implements JobApplier {
     for (let attempt = 0; attempt < 18; attempt++) {
       await page.waitForTimeout(1000);
 
+      // `[role="progressbar"]` used to be in this selector too — confirmed
+      // live that it also matches Easy Apply's own permanent step-completion
+      // bar ("0%" at the top of the modal, visible for the entire multi-step
+      // flow, not just while loading), which made hasSpinner stay true
+      // forever. modalLoaded then never flips true, the 18s timeout always
+      // fires, and the whole step loop below (identity fields, upload, cover
+      // letter, submit) never runs at all — even though the form was fully
+      // rendered and ready (confirmed: a captured screenshot from exactly
+      // this failure showed a completely usable, pre-filled form). Scoped to
+      // LinkedIn's own actual spinner classes only.
       const hasSpinner = await page
-        .locator('.artdeco-loader, [role="progressbar"], .artdeco-loader__bars')
+        .locator('.artdeco-loader, .artdeco-loader__bars')
         .first()
         .isVisible()
         .catch(() => false);
