@@ -153,8 +153,15 @@ export class LinkedInApplier implements JobApplier {
     const modalDialog = page.locator('.jobs-easy-apply-modal, [role="dialog"], .artdeco-modal').first();
     await modalDialog.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
 
+    // 18s used to be the budget; widened since confirmed live that a
+    // genuinely-fine modal can still take longer than that to render on a
+    // slower/variable connection (a home network vs. a datacenter's), and
+    // the orchestrator-level timeout (auto-apply.service.ts) already bounds
+    // the whole attempt regardless, so a more generous wait here doesn't
+    // risk a real hang — it just gives real slow-but-working loads a fair
+    // chance before giving up.
     let modalLoaded = false;
-    for (let attempt = 0; attempt < 18; attempt++) {
+    for (let attempt = 0; attempt < 35; attempt++) {
       await page.waitForTimeout(1000);
 
       // `[role="progressbar"]` used to be in this selector too — confirmed
