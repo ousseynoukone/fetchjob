@@ -382,16 +382,32 @@ export class AutoApplyService {
       context.close().catch(() => {});
     }, APPLY_TIMEOUT_MS);
 
+    // Set once the race times out — a browser that's unresponsive enough to
+    // stall apply() this way is presumed unresponsive for anything else
+    // touching the same page/context too (confirmed live: the very next
+    // operation after a timed-out apply(), a plain screenshot, hung the
+    // exact same way). Every step below checks this before touching the
+    // page again instead of finding out the hard way one call at a time.
+    let unresponsive = false;
+
     const raceForResult = (pending: Promise<ApplyResult>): Promise<ApplyResult> =>
       Promise.race([
         pending,
         new Promise<ApplyResult>((resolve) => {
           setTimeout(() => {
             this.logger.warn(`Auto-apply attempt for ${application.id} timed out at the orchestrator level — abandoning it.`);
+            unresponsive = true;
             resolve({ success: false, note: `Tentative interrompue après ${APPLY_TIMEOUT_MS / 1000}s sans réponse — à vérifier manuellement.` });
           }, APPLY_TIMEOUT_MS);
         }),
       ]);
+
+    // Bounds a cleanup step that itself touches the (possibly dead)
+    // browser/context — used in the finally block below so a hung close()
+    // or screenshot can't block the run() loop any more than the apply()
+    // call itself could.
+    const withCleanupTimeout = <T>(pending: Promise<T>, ms: number): Promise<T | null> =>
+      Promise.race([pending, new Promise<null>((resolve) => setTimeout(() => resolve(null), ms))]);
 
     try {
       const page = await context.newPage();
@@ -458,34 +474,43 @@ export class AutoApplyService {
         }));
       }
 
-      // Every attempt, success or failure, leaves a screenshot — the only
-      // record of what the page actually showed once the browser closes.
-      await this.captureScreenshot(page, application.id);
+      // Every one of these touches the same page/context the timed-out
+      // apply() call was stuck on — confirmed live that a plain screenshot
+      // hung the exact same way immediately after an orchestrator timeout,
+      // so once the browser's shown itself unresponsive there's no reason
+      // to expect any of these to behave any better. Skipped entirely
+      // rather than attempted-and-hoping, since `result` from the race
+      // already has a usable note either way.
+      if (!unresponsive) {
+        // Every attempt, success or failure, leaves a screenshot — the only
+        // record of what the page actually showed once the browser closes.
+        await this.captureScreenshot(page, application.id);
 
-      // Belt-and-braces: even if an applier's own error branch didn't call
-      // `reportUnknownFields` itself, a failed attempt often still leaves
-      // the invalid field(s) visible on the page — catch those too so no
-      // blocking question goes unrecorded.
-      if (!result.success) {
-        await this.captureUnknownFields(page, finalPlatformKey, finalUrl, userId);
-      }
+        // Belt-and-braces: even if an applier's own error branch didn't call
+        // `reportUnknownFields` itself, a failed attempt often still leaves
+        // the invalid field(s) visible on the page — catch those too so no
+        // blocking question goes unrecorded.
+        if (!result.success) {
+          await this.captureUnknownFields(page, finalPlatformKey, finalUrl, userId);
+        }
 
-      await this.browserSession.persistContextCookies(context, finalPlatformKey).catch(() => {});
+        await this.browserSession.persistContextCookies(context, finalPlatformKey).catch(() => {});
 
-      if (platform) {
-        if (result.sessionExpired) {
-          await this.credentials.recordSessionExpired(userId, platform).catch((error: any) => {
-            this.logger.warn(`Failed to record expired session for ${platform}: ${error.message}`);
-          });
-        } else {
-          try {
-            const newState = await context.storageState();
-            if (platform === 'linkedin' && newState && Array.isArray(newState.cookies)) {
-              newState.cookies = newState.cookies.filter((c: any) => c.domain && c.domain.includes('linkedin.com'));
+        if (platform) {
+          if (result.sessionExpired) {
+            await this.credentials.recordSessionExpired(userId, platform).catch((error: any) => {
+              this.logger.warn(`Failed to record expired session for ${platform}: ${error.message}`);
+            });
+          } else {
+            try {
+              const newState = await context.storageState();
+              if (platform === 'linkedin' && newState && Array.isArray(newState.cookies)) {
+                newState.cookies = newState.cookies.filter((c: any) => c.domain && c.domain.includes('linkedin.com'));
+              }
+              await this.credentials.saveSessionState(userId, platform, JSON.stringify(newState));
+            } catch (error: any) {
+              this.logger.warn(`Failed to persist session state for ${platform}: ${error.message}`);
             }
-            await this.credentials.saveSessionState(userId, platform, JSON.stringify(newState));
-          } catch (error: any) {
-            this.logger.warn(`Failed to persist session state for ${platform}: ${error.message}`);
           }
         }
       }
@@ -497,8 +522,10 @@ export class AutoApplyService {
       return result;
     } finally {
       clearTimeout(timeoutHandle);
-      await this.stopScreencast(cdpSession);
-      await context.close().catch(() => {});
+      // Bounded the same way as everything above — a hung close() on a
+      // genuinely dead browser must not block the run() loop either.
+      await withCleanupTimeout(this.stopScreencast(cdpSession), 10_000);
+      await withCleanupTimeout(context.close(), 10_000).catch(() => {});
       await unlink(cvPdfPath).catch(() => {});
     }
   }

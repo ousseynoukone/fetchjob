@@ -76,6 +76,16 @@ export class BrowserSessionService implements OnModuleDestroy {
   private browser: Browser | null = null;
 
   private async getBrowser(): Promise<Browser> {
+    // Confirmed live: a genuinely dead/unresponsive browser process doesn't
+    // always throw or disconnect cleanly — but when it does disconnect,
+    // reusing the same cached reference would silently hand every future
+    // apply attempt a broken browser forever, with no way to recover short
+    // of restarting the whole container. Checked on every call instead of
+    // only at launch.
+    if (this.browser && !this.browser.isConnected()) {
+      this.logger.warn('Cached browser is disconnected — relaunching.');
+      this.browser = null;
+    }
     if (!this.browser) {
       this.browser = await stealthChromium.launch({
         headless: process.env.AUTO_APPLY_HEADLESS !== 'false',
