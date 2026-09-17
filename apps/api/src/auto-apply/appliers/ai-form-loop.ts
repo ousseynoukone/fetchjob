@@ -45,8 +45,23 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
   for (let step = 0; step < maxSteps; step++) {
     await fillKnownFields(page, ctx.knownAnswers);
 
+    // Confirmed live on a Viveris career-site apply attempt: its "Postuler"
+    // submit button is visible on the page from the very first step,
+    // alongside two still-unchecked required GDPR-consent checkboxes that
+    // neither fillIdentityFields nor fillKnownFields ever touch. This fast
+    // path used to fire on ANY step purely off "is a known submit button
+    // visible", so it clicked submit immediately on step 0 — failing
+    // validation — and returned "unresolved" without ever reaching the
+    // AI-snapshot path below, since aiCallsUsed never left 0. A quick,
+    // AI-free snapshot scan (buildFormSnapshot only reads the DOM; the AI
+    // call is the separate, costed step further down) now gates the fast
+    // path on there being nothing left it can already see as unresolved —
+    // preserving the free/fast route for the common case (a form
+    // fillIdentityFields/fillKnownFields already fully completed) while
+    // deferring to the AI for a field neither of those own.
+    const preSubmitSnapshot = await buildFormSnapshot(page);
     const submitButton = page.getByRole('button', { name: opts.submitText }).first();
-    if (await submitButton.isVisible().catch(() => false)) {
+    if (!preSubmitSnapshot.fields.length && (await submitButton.isVisible().catch(() => false))) {
       await submitButton.click().catch(() => {});
       await page.waitForTimeout(2500);
       const confirmed = await detectFormSuccess(page, opts.successText, opts.successUrl);
@@ -126,9 +141,21 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
 
     if (plan.action.kind === 'submit') {
       const confirmed = await detectFormSuccess(page, opts.successText, opts.successUrl);
-      return confirmed ? { success: true } : { success: false, note: opts.unresolvedNote };
+      if (confirmed) return { success: true };
+      // Confirmed live on a Viveris career-site apply attempt: the model's
+      // completion was only 33 tokens — barely enough to address ONE of two
+      // separate required GDPR-consent checkboxes — then it called "submit"
+      // anyway, which stayed on the same page blocked by the other one.
+      // Previously this returned "unresolved" immediately, wasting the rest
+      // of the attempt's step/AI-call budget on a form that was one field
+      // away from done. Falls through to loop again instead — a fresh
+      // snapshot won't re-offer whatever the plan already answered (checked
+      // boxes and filled fields are excluded by buildFormSnapshot itself),
+      // so this either finishes the job on the next pass or, if the page
+      // genuinely has nothing left to act on, hits the loop's own
+      // no-fields-no-buttons break just below instead of looping forever.
     }
-    // 'next' / 'review' — loop again with a fresh snapshot.
+    // 'next' / 'review' / an unconfirmed 'submit' — loop again with a fresh snapshot.
   }
 
   return { success: false, note: opts.blockedNote };

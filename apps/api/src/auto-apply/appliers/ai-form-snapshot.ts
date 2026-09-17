@@ -143,9 +143,34 @@ export async function buildFormSnapshot(page: Page): Promise<FormSnapshot> {
 
         if (type === 'checkbox') {
           if (el.checked) continue;
-          const required = el.required || el.getAttribute('aria-required') === 'true';
+          // Confirmed live on a Viveris career-site apply-time screenshot:
+          // two mandatory GDPR-consent checkboxes were left unchecked and
+          // blocked submission with a "Ce champ est obligatoire" error — but
+          // neither had a real `required`/`aria-required` attribute, since
+          // the site enforces them via its own JS validation instead of
+          // native HTML5 validation. Widening the required-detection regex
+          // alone didn't fix it: extractLabel() came back EMPTY for this
+          // exact checkbox (no id/for, no wrapping <label>, no aria-label,
+          // no previous-sibling text — its long consent paragraph sits
+          // beside it in the DOM in a way none of those heuristics reach),
+          // so the regex was being tested against '' and could never match.
+          // Falls back to the checkbox's whole containing block's text for
+          // the consent-wording check specifically — broader than a real
+          // label, but only ever used to decide "is this mandatory", not
+          // shown verbatim (the field's own `truncate()` caps it either way
+          // for the model, and a genuinely optional checkbox's surrounding
+          // text — newsletters, marketing opt-ins — doesn't use this kind of
+          // wording, so this doesn't risk opting into those).
+          let label = extractLabel(el);
+          const consentContext = label || el.closest('div, li, tr, fieldset')?.textContent || '';
+          const required =
+            el.required ||
+            el.getAttribute('aria-required') === 'true' ||
+            /obligatoire|vous êtes tenu|en cochant cette case|j'accepte|je certifie|conditions générales|politique de confidentialité|traitement de mes données|required|you must agree|i agree/i.test(
+              consentContext,
+            );
           if (!required) continue; // optional checkboxes (newsletters, etc.) are never worth asking about
-          const label = extractLabel(el);
+          if (!label) label = consentContext;
           if (!label || excludeRe.test(label)) continue;
           fields.push({ idx: tag(el), label: truncate(label), kind: 'checkbox' });
           continue;

@@ -205,12 +205,15 @@ export async function fillIdentityFields(
 // Accepting one is exactly what a human visitor has to do too — not an
 // anti-bot workaround, just clearing an actual UI element. Called once,
 // right after navigation, before any other interaction.
+// Confirmed live via a Cegedim career-site apply-time screenshot: its
+// consent modal's button reads "Accepter & Fermer" — not matched by any
+// earlier alternative here (closest was `^accepter$`, an exact-text match),
+// so the modal sat there un-dismissed through the whole rest of the attempt.
+const COOKIE_ACCEPT_TEXT =
+  /tout accepter|accepter tout|accepter les cookies|^accepter$|accepter (&|et) fermer|j'accepte|accept all|accept cookies|^accept$|i agree/i;
+
 export async function dismissCookieBanner(page: Page): Promise<void> {
-  const acceptButton = page
-    .getByRole('button', {
-      name: /tout accepter|accepter tout|accepter les cookies|^accepter$|j'accepte|accept all|accept cookies|^accept$|i agree/i,
-    })
-    .first();
+  const acceptButton = page.getByRole('button', { name: COOKIE_ACCEPT_TEXT }).first();
 
   if (await acceptButton.isVisible({ timeout: 3000 }).catch(() => false)) {
     await acceptButton.click().catch(() => {});

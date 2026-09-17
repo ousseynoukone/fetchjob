@@ -92,6 +92,14 @@ export class GenericApplier implements JobApplier {
 
     await fillKnownFields(page, ctx.knownAnswers);
 
+    // Confirmed live on a Cegedim career-site apply-time screenshot: its
+    // cookie-consent modal was STILL sitting there, undismissed, this deep
+    // into the flow — a slower-loading consent-management script can render
+    // it after the single dismiss attempt right after page.goto() already
+    // ran. A second, cheap attempt right before submission catches that
+    // case without duplicating work on sites where it was already cleared.
+    await dismissCookieBanner(page);
+
     const result = await runFormLoop(page, ctx, this.ai, {
       maxSteps: 5,
       submitText: SUBMIT_BUTTON_TEXT,
