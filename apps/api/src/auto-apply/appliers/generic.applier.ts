@@ -19,8 +19,14 @@ const REVEAL_BUTTON_TEXT =
 // missed. Unanchored now, consistent with every other term in this list.
 const SUBMIT_BUTTON_TEXT =
   /submit application|submit my application|apply now|postuler|envoyer( ma candidature)?|soumettre|valider ma candidature/i;
+// Confirmed live on a France Travail external partner site (jobposting.pro):
+// its own real confirmation page reads "Nous accusons réception de votre
+// candidature..." — "réception" before "candidature", the reverse word
+// order from every existing "candidature (reçue|...)" alternative here, so
+// none of them matched and a genuinely successful submission was reported
+// as "confirmation non détectée" instead.
 const SUCCESS_TEXT =
-  /application submitted|application received|thank you for applying|thanks for applying|we('| ha)ve received your application|your application (has been|was) (received|submitted)|candidature (envoyée|reçue|transmise|enregistrée|bien reçue|prise en compte)|merci (pour votre candidature|d'avoir postulé)|votre candidature a (bien )?été (envoyée|transmise|enregistrée|prise en compte)/i;
+  /application submitted|application received|thank you for applying|thanks for applying|we('| ha)ve received your application|your application (has been|was) (received|submitted)|candidature (envoyée|reçue|transmise|enregistrée|bien reçue|prise en compte)|accusons? r[ée]ception de (votre |la )?candidature|merci (pour votre candidature|d'avoir postulé)|votre candidature a (bien )?été (envoyée|transmise|enregistrée|prise en compte)/i;
 
 // Some ATS confirmation pages navigate to a distinct URL (a "thank-you" /
 // "confirmation" page) rather than showing inline text on the same page --
