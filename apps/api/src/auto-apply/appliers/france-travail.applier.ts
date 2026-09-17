@@ -21,6 +21,11 @@ export class FranceTravailApplier implements JobApplier {
   async apply(page: Page, ctx: ApplyContext): Promise<ApplyResult> {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await dismissCookieBanner(page);
+    // Reassigned, not `page` itself, once the genuinely-native flow below
+    // (see the `#contactZone` branch) opens its real form in a new tab --
+    // every check and fill from that point on needs to run against that new
+    // tab instead of the original job-listing tab it came from.
+    let activePage = page;
 
     const loginResult = await this.ensureLoggedIn(page);
     if (loginResult) return loginResult;
@@ -84,6 +89,59 @@ export class FranceTravailApplier implements JobApplier {
       }
     }
 
+    // France Travail's OWN native apply form (`/candidature/postulerenligne/
+    // <offerId>`) — its actual, genuinely-in-house flow -- is reached
+    // through neither of the two branches above: confirmed live via a real,
+    // human-recorded click-through, clicking "Postuler" instead reveals a
+    // `#contactZone` panel containing a link accessibly named "Envoyer ma
+    // candidature pour l'offre ... (nouvelle fenêtre)" -- "nouvelle fenêtre"
+    // because it opens the real form in a NEW TAB, not the current one.
+    // Every offer tested before that recording (PROPULSE IT, Collective.work,
+    // SOPRA STERIA -> SmartRecruiters) happened to be an aggregator listing
+    // that redirects off-platform, so this specific, genuinely-native path
+    // had simply never been exercised until now. Unlike the partner-modal
+    // and employer-redirect branches above, the destination here STAYS on
+    // francetravail.fr -- so the new tab is followed and adopted as the
+    // page every subsequent step runs against, instead of being treated as
+    // an external hand-off.
+    const nativeApplyLink = page
+      .locator('#contactZone a, #contactZone button')
+      .filter({ hasText: /envoyer ma candidature|postuler en ligne/i })
+      .first();
+    // Actively polls for up to 5s (matching the analogous `menuItem` check
+    // just above) rather than a single instant check right after the fixed
+    // 2500ms sleep above -- confirmed live that the fixed sleep alone was
+    // occasionally NOT quite enough under the real stealth/fingerprint/
+    // route-blocking overhead this runs with in production (an isolated
+    // repro without any of that overhead found the link reliably), leaving
+    // the applier stuck operating on the original job-listing page instead
+    // of the real form.
+    if (await nativeApplyLink.isVisible({ timeout: 5000 }).catch(() => false)) {
+      await ctx.appendLog?.('Ouverture du formulaire natif France Travail (nouvel onglet)...');
+      const popupPromise = page.waitForEvent('popup', { timeout: 8000 }).catch(() => null);
+      await nativeApplyLink.click().catch(() => {});
+      const popup = await popupPromise;
+      if (popup) {
+        await popup.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+        if (popup.url().includes('francetravail.fr')) {
+          activePage = popup;
+          await dismissCookieBanner(activePage);
+          await ctx.appendLog?.(`Formulaire natif chargé : ${popup.url()}`);
+        } else {
+          const url = popup.url();
+          await popup.close().catch(() => {});
+          if (url) return { success: false, redirectToExternalUrl: url };
+        }
+      } else {
+        await ctx.appendLog?.('Aucun nouvel onglet détecté après le clic — poursuite sur la page actuelle.');
+        // No separate tab actually opened (e.g. `target` was stripped, or
+        // the click navigated the current tab instead) -- if the CURRENT
+        // page already moved to the native apply URL, there's nothing left
+        // to adopt; `activePage` already points at it.
+        await page.waitForTimeout(1500);
+      }
+    }
+
     // France Travail sometimes acts as an aggregator rather than hosting the
     // application itself: clicking "Postuler" can reveal a "Choisissez le
     // partenaire" panel offering one or more external ATS partners (confirmed
@@ -115,7 +173,7 @@ export class FranceTravailApplier implements JobApplier {
     // unrelated "Destinataire" field from a "share by email" widget
     // elsewhere on the page, reporting it as a blocking question that was
     // never actually part of any application form.
-    const partnerModal = page
+    const partnerModal = activePage
       .locator('[role="dialog"], .modal, [class*="popin" i], [class*="popup" i], .dropdown-menu')
       .filter({ hasText: /choisissez le partenaire|postuler sur le site du recruteur/i })
       .first();
@@ -126,7 +184,7 @@ export class FranceTravailApplier implements JobApplier {
         .filter({ hasNotText: /fermer|close|annuler/i })
         .first();
       if (await partnerLink.isVisible().catch(() => false)) {
-        const externalUrl = await resolveExternalApplyUrl(page, partnerLink, /francetravail\.fr/i);
+        const externalUrl = await resolveExternalApplyUrl(activePage, partnerLink, /francetravail\.fr/i);
         if (externalUrl) {
           return { success: false, redirectToExternalUrl: externalUrl };
         }
@@ -142,14 +200,14 @@ export class FranceTravailApplier implements JobApplier {
     // text with no separate link to follow. If the URL already left
     // francetravail.fr by this point, report the real destination instead of
     // a generic "traiter manuellement" note with no actionable link.
-    const externalRedirectNotice = await page
+    const externalRedirectNotice = await activePage
       .getByText(/site de l'employeur|candidature externe|vous allez être redirigé/i)
       .first()
       .isVisible()
       .catch(() => false);
-    if (externalRedirectNotice || !page.url().includes('francetravail.fr')) {
-      if (!page.url().includes('francetravail.fr')) {
-        return { success: false, redirectToExternalUrl: page.url() };
+    if (externalRedirectNotice || !activePage.url().includes('francetravail.fr')) {
+      if (!activePage.url().includes('francetravail.fr')) {
+        return { success: false, redirectToExternalUrl: activePage.url() };
       }
       return {
         success: false,
@@ -157,32 +215,91 @@ export class FranceTravailApplier implements JobApplier {
       };
     }
 
-    await fillIdentityFields(page, ctx.cv);
+    // The native `postulerenligne` form (reached via the `#contactZone`
+    // branch above) has its own specific widgets a generic identity-field
+    // scan was never going to recognize -- confirmed live via the same
+    // human recording: a list of the candidate's own already-uploaded CVs
+    // to pick from (`[id^="cv-"]`, not a file input -- `uploadCv` below
+    // only ever handles the latter), a "carte de visite" pitch/profile
+    // blurb to pick (`[id^="choix-carte-visite-"]`), and a required
+    // "j'confirme que mes coordonnées sont valides" consent checkbox
+    // (`#confirmcoordonnees`). Best-effort: pick the first (often only)
+    // option Playwright finds for the first two, matching what a candidate
+    // with a single CV/pitch on file would click anyway; skip silently if
+    // none exist; on either, no consequence if empty.
+    const cvOption = activePage.locator('[id^="cv-"]').first();
+    if (await cvOption.isVisible().catch(() => false)) {
+      await cvOption.click().catch(() => {});
+    }
+    const carteVisiteOption = activePage.locator('[id^="choix-carte-visite-"]').first();
+    if (await carteVisiteOption.isVisible().catch(() => false)) {
+      await carteVisiteOption.click().catch(() => {});
+    }
+
+    await fillIdentityFields(activePage, ctx.cv);
 
     // `count()`, not `isVisible()` — confirmed live that Playwright's
     // setInputFiles works on a hidden input, same issue found and fixed
     // across every applier here.
-    const fileInput = page.locator('input[type="file"]').first();
+    const fileInput = activePage.locator('input[type="file"]').first();
     if (await fileInput.count().catch(() => 0)) {
       await uploadCv(fileInput, ctx).catch(() => {});
     }
 
+    const consentCheckbox = activePage.locator('#confirmcoordonnees').first();
+    if (await consentCheckbox.isVisible().catch(() => false)) {
+      await consentCheckbox.check().catch(() => {});
+    }
+
+    // Confirmed live via a real submitted candidature (DATAMED RESEARCH,
+    // offer 213XKDH): the "lettre de motivation" field arrives pre-filled
+    // with France Travail's OWN generic boilerplate ("Je me permets de vous
+    // solliciter pour le poste de ..."), set client-side by the Angular
+    // form some time after the page's own initial load/render -- a fill()
+    // called too early (right after fillIdentityFields, as this used to be
+    // ordered) got silently reverted back to that boilerplate by the time
+    // the form was actually submitted, so a fully-configured AI cover
+    // letter never reached the real employer even though the fill call
+    // itself reported no error. Filling as the LAST action before submit
+    // (right here) and re-asserting once after a short wait closes that
+    // race instead of trusting a single early fill to survive it.
     if (ctx.coverLetter) {
-      const coverLetterField = page
+      const coverLetterField = activePage
         .locator('textarea[id*="lettre" i], textarea[aria-label*="lettre" i], textarea[name*="message" i]')
         .first();
       if (await coverLetterField.isVisible().catch(() => false)) {
-        await coverLetterField.fill(ctx.coverLetter).catch(() => {});
+        // France Travail's own cap ("* Saisissez votre lettre de motivation
+        // (obligatoire) 1500 caractères maximum") -- an AI-generated cover
+        // letter meant for a full-page PDF/email is almost always longer.
+        // Truncated here rather than relying on the field's own maxlength
+        // to silently clip it, so the fill always lands a complete
+        // sentence rather than a mid-word cut.
+        const trimmed =
+          ctx.coverLetter.length > 1500 ? `${ctx.coverLetter.slice(0, 1499).trimEnd()}…` : ctx.coverLetter;
+        await coverLetterField.fill(trimmed).catch(() => {});
+        await activePage.waitForTimeout(800);
+        const current = await coverLetterField.inputValue().catch(() => trimmed);
+        if (current !== trimmed) {
+          await coverLetterField.fill(trimmed).catch(() => {});
+        }
       }
     }
 
-    return runFormLoop(page, ctx, this.ai, {
-      submitText: /envoyer( ma)? candidature|valider ma candidature/i,
+    const loopResult = await runFormLoop(activePage, ctx, this.ai, {
+      // Confirmed live: the native form's real submit button is simply
+      // named "Envoyer" -- no "candidature" suffix -- which the previous
+      // pattern never matched, so a fully-completed native form would have
+      // sat there unsubmitted until the AI fallback (or the step budget)
+      // eventually gave up on it.
+      submitText: /^envoyer$|envoyer( ma)? candidature|valider ma candidature/i,
       nextText: /suivant|continuer/i,
       successText: /candidature envoyée|votre candidature a bien été (envoyée|transmise)/i,
       blockedNote: 'Le formulaire de candidature France Travail contient un champ non renseigné — à finaliser manuellement.',
       unresolvedNote: 'Soumission France Travail envoyée mais confirmation non détectée — à vérifier manuellement.',
     });
+    // See ApplyResult.finalPage -- only actually differs from `page` once
+    // the `#contactZone` branch above adopted a new tab.
+    return activePage === page ? loopResult : { ...loopResult, finalPage: activePage };
   }
 
   private async ensureLoggedIn(page: Page): Promise<ApplyResult | null> {

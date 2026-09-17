@@ -482,16 +482,25 @@ export class AutoApplyService {
       // rather than attempted-and-hoping, since `result` from the race
       // already has a usable note either way.
       if (!unresponsive) {
+        // Some appliers (see ApplyResult.finalPage) end up filling/
+        // submitting the real form on a DIFFERENT page than the one they
+        // were handed -- France Travail's native apply link opens in a new
+        // tab via `target="_blank"`, confirmed live. Without this fallback,
+        // every screenshot and unknown-field scan below kept running
+        // against the original, now-irrelevant tab (still showing the job
+        // listing) instead of the actual form the attempt ran on.
+        const reportedPage = result.finalPage || page;
+
         // Every attempt, success or failure, leaves a screenshot — the only
         // record of what the page actually showed once the browser closes.
-        await this.captureScreenshot(page, application.id);
+        await this.captureScreenshot(reportedPage, application.id);
 
         // Belt-and-braces: even if an applier's own error branch didn't call
         // `reportUnknownFields` itself, a failed attempt often still leaves
         // the invalid field(s) visible on the page — catch those too so no
         // blocking question goes unrecorded.
         if (!result.success) {
-          await this.captureUnknownFields(page, finalPlatformKey, finalUrl, userId);
+          await this.captureUnknownFields(reportedPage, finalPlatformKey, finalUrl, userId);
         }
 
         if (platform) {

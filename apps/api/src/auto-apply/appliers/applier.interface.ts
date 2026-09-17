@@ -52,6 +52,14 @@ export interface ApplyResult {
   // own site) — the caller re-routes to whichever applier owns that URL (a
   // known ATS, or the generic fallback) instead of giving up here.
   redirectToExternalUrl?: string;
+  // Set when the applier ended up filling/submitting the form on a
+  // DIFFERENT page than the one it was handed (e.g. France Travail's native
+  // apply link opens its real form in a new tab via `target="_blank"`) --
+  // confirmed live: without this, the caller's own post-attempt screenshot
+  // and "unanswered field" scan kept running against the original,
+  // now-irrelevant tab, showing/reporting whatever was left on it instead
+  // of the actual form the attempt succeeded or failed on.
+  finalPage?: Page;
 }
 
 export interface JobApplier {
