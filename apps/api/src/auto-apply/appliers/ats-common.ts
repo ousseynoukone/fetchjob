@@ -213,9 +213,39 @@ const COOKIE_ACCEPT_TEXT =
   /tout accepter|accepter tout|accepter les cookies|^accepter$|accepter (&|et) fermer|j'accepte|accept all|accept cookies|^accept$|i agree/i;
 
 export async function dismissCookieBanner(page: Page): Promise<void> {
-  const acceptButton = page.getByRole('button', { name: COOKIE_ACCEPT_TEXT }).first();
+  // Confirmed live via a real production screenshot on France Travail: a
+  // page can carry MORE THAN ONE consent widget in the DOM at once — a
+  // hidden `<pe-cookies>` custom element (its own shadow-root "Tout
+  // accepter" button, which Playwright's locators do reach into) alongside
+  // a completely separate, currently-VISIBLE "Faites un choix pour vos
+  // cookies" modal with its own "Tout accepter" button. `.first()` here
+  // used to pick whichever matched first in DOM order — if that happened
+  // to be the hidden one, isVisible() correctly returned false and this
+  // function gave up without ever discovering the real, visible modal
+  // elsewhere on the page, leaving it blocking everything for the rest of
+  // the attempt. Checks every match instead of stopping at the first.
+  const acceptButtons = await page.getByRole('button', { name: COOKIE_ACCEPT_TEXT }).all().catch(() => []);
+  let acceptButton: typeof acceptButtons[number] | null = null;
+  for (const candidate of acceptButtons) {
+    if (await candidate.isVisible().catch(() => false)) {
+      acceptButton = candidate;
+      break;
+    }
+  }
+  // A brand-new widget can still take a moment to render after
+  // navigation — one bounded retry of the same "check every match" pass
+  // instead of a single instant snapshot.
+  if (!acceptButton) {
+    await page.waitForTimeout(1500);
+    for (const candidate of await page.getByRole('button', { name: COOKIE_ACCEPT_TEXT }).all().catch(() => [])) {
+      if (await candidate.isVisible().catch(() => false)) {
+        acceptButton = candidate;
+        break;
+      }
+    }
+  }
 
-  if (await acceptButton.isVisible({ timeout: 3000 }).catch(() => false)) {
+  if (acceptButton) {
     await acceptButton.click().catch(() => {});
     // Confirmed live on a Cegedim career-site retry: this button triggers a
     // real page reload rather than just fading out an overlay in place — a
