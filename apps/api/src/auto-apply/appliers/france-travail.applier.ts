@@ -57,7 +57,21 @@ export class FranceTravailApplier implements JobApplier {
     // banner is a decorative overlay with no functional purpose beyond
     // consent, not something that needs to visibly receive this click.
     await applyButton.click({ force: true }).catch(() => applyButton.click());
-    await page.waitForTimeout(800);
+    // Confirmed live via a real debug trace: this "Postuler" toggle has
+    // data-async-trigger="true" — its dropdown's actual content (a
+    // "postuler" menu item, OR the "choisissez le partenaire" partner
+    // picker checked further below) is fetched via AJAX after the click,
+    // not present in the initial DOM. The isVisible() checks right after
+    // this used to resolve near-instantly when nothing matched yet (their
+    // own timeouts only bound how long they'll keep *polling*, not how
+    // long they take to give up once Playwright decides nothing will ever
+    // match), so the real wall-clock gap between this click and those
+    // checks could end up far shorter than 800ms — not long enough for the
+    // AJAX call to land. A real reproduction confirmed both branches
+    // finding nothing (count=0) purely from this timing gap, on a job
+    // whose partner-picker markup was independently confirmed correct.
+    // Widened to give that request genuine room to complete.
+    await page.waitForTimeout(2500);
 
     if (isDropdownToggle) {
       const menuItem = page
