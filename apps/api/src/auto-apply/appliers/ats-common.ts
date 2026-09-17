@@ -130,7 +130,17 @@ async function scanIdentityFields(page: Page): Promise<{ role: IdentityRole; idx
       const type = (el.type || '').toLowerCase();
       const label = extractLabel(el);
       const placeholder = el.getAttribute('placeholder') || '';
-      const haystack = `${label} ${placeholder}`;
+      // Confirmed live on an external partner site's own apply form: with no
+      // structural label found, this used to be `" Nom"` (a leading space
+      // from the empty label) — `last`'s own `^nom\b` anchor (there
+      // specifically so "Nom" doesn't also match inside "Prénom", since JS's
+      // ASCII-only \b treats the accented "é" as a non-word character and
+      // would otherwise let it) then requires the match to start at
+      // position 0, which is now a space, not "N". The field was silently
+      // never classified or filled at all — trimming keeps the anchor
+      // meaningful regardless of whether label or placeholder is the one
+      // that's empty.
+      const haystack = `${label} ${placeholder}`.trim();
 
       let role: IdentityRole | null = null;
       if (type === 'email' || compiled.email.test(haystack)) role = 'email';

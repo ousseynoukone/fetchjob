@@ -38,6 +38,29 @@ export async function detectFormSuccess(page: Page, successText: RegExp, success
 // nothing does it fall back to an AI-read snapshot of the visible form —
 // which is what lets the exact same code keep working on a platform whose
 // copy/markup this project has never seen before.
+// Confirmed live on an external partner site's own apply form: a required
+// "Nom" field was left empty (a separate, since-fixed bug in
+// fillIdentityFields), the browser's own native HTML5 validation silently
+// blocked the click on submit — a required-but-empty field is never
+// missable to `:invalid`/`el.required && !el.value`, that's exactly what
+// scanInvalidFields already checks for on the AI-fallback paths below — yet
+// a submit that never got confirmed used to always report the same vague
+// "submitted, but couldn't confirm" note regardless of WHY, indistinguishable
+// from a submission that genuinely went through but whose confirmation text
+// just didn't match. Actively checking what's actually still wrong on the
+// page turns "check manually" into either a specific, learnable question
+// (a real unknown/invalid field) or the original honest "can't tell" note
+// when nothing is actually detectably wrong.
+async function reportBlockedState(page: Page, ctx: ApplyContext, fallbackNote: string): Promise<ApplyResult> {
+  const unknownFields = await scanInvalidFields(page).catch(() => []);
+  if (unknownFields.length) {
+    await ctx.reportUnknownFields(unknownFields);
+    const labels = unknownFields.map((f) => f.questionText).join(', ');
+    return { success: false, note: `${fallbackNote} (champ(s) bloquant(s) détecté(s) : ${labels})` };
+  }
+  return { success: false, note: fallbackNote };
+}
+
 export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, opts: FormLoopOptions): Promise<ApplyResult> {
   const maxSteps = opts.maxSteps ?? 6;
   let aiCallsUsed = 0;
@@ -65,7 +88,7 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
       await submitButton.click().catch(() => {});
       await page.waitForTimeout(2500);
       const confirmed = await detectFormSuccess(page, opts.successText, opts.successUrl);
-      return confirmed ? { success: true } : { success: false, note: opts.unresolvedNote };
+      return confirmed ? { success: true } : await reportBlockedState(page, ctx, opts.unresolvedNote);
     }
 
     const nextButton = page.getByRole('button', { name: opts.nextText }).first();
@@ -105,9 +128,7 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
     // Up to the user-configurable cap (Paramètres page —
     // "autoApplyMaxAiCalls", 0 disables the fallback entirely).
     if (aiCallsUsed >= ctx.maxAiCallsPerAttempt) {
-      const unknownFields = await scanInvalidFields(page);
-      if (unknownFields.length) await ctx.reportUnknownFields(unknownFields);
-      return { success: false, note: opts.blockedNote };
+      return await reportBlockedState(page, ctx, opts.blockedNote);
     }
 
     const snapshot = await buildFormSnapshot(page);
@@ -131,9 +152,7 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
     }
 
     if (!plan || plan.action.kind === 'stop') {
-      const unknownFields = await scanInvalidFields(page);
-      if (unknownFields.length) await ctx.reportUnknownFields(unknownFields);
-      return { success: false, note: opts.blockedNote };
+      return await reportBlockedState(page, ctx, opts.blockedNote);
     }
 
     await applyFormPlan(page, plan);
@@ -158,5 +177,5 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
     // 'next' / 'review' / an unconfirmed 'submit' — loop again with a fresh snapshot.
   }
 
-  return { success: false, note: opts.blockedNote };
+  return await reportBlockedState(page, ctx, opts.blockedNote);
 }
