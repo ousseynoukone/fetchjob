@@ -11,6 +11,7 @@ import {
   hasSecurityCheck,
   hasAlreadyAppliedIndicator,
   blockHeavyResources,
+  normalizeLinkedInUrl,
 } from '../auto-apply/appliers/ats-common';
 
 export interface VerificationStreamEvent {
@@ -166,7 +167,12 @@ export class VerificationService {
             let page: Page | null = null;
             try {
               page = await context.newPage();
-              await page.goto(application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+              // Confirmed live: a stored sourceUrl on LinkedIn's own locale
+              // subdomain (fr.linkedin.com, ...) throws
+              // ERR_TOO_MANY_REDIRECTS with a stored session cookie — the
+              // same bug already fixed in linkedin.applier.ts's own
+              // navigation, which this call site never shared.
+              await page.goto(normalizeLinkedInUrl(application.sourceUrl), { waitUntil: 'domcontentloaded', timeout: 30000 });
               await dismissCookieBanner(page);
 
               if (await hasSecurityCheck(page)) {

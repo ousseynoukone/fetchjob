@@ -19,6 +19,17 @@ export async function blockHeavyResources(context: BrowserContext): Promise<void
   });
 }
 
+// LinkedIn's own locale subdomains (fr.linkedin.com, de.linkedin.com, ...)
+// throw ERR_TOO_MANY_REDIRECTS with a stored session cookie — confirmed
+// live both in the auto-apply flow and, separately, in VerificationService
+// revisiting a stored sourceUrl directly (the same bug, just two different
+// call sites that had each grown their own navigation code instead of
+// sharing this). Normalizing to www. before any navigation avoids it
+// entirely; harmless no-op on a URL that's already on another host.
+export function normalizeLinkedInUrl(url: string): string {
+  return url.replace(/https?:\/\/[a-z]{2}\.linkedin\.com/i, 'https://www.linkedin.com');
+}
+
 export function splitName(fullName: string): { first: string; last: string } {
   const parts = (fullName || '').trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return { first: '', last: '' };
