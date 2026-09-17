@@ -228,7 +228,8 @@ export class FranceTravailApplier implements JobApplier {
     // with a single CV/pitch on file would click anyway; skip silently if
     // none exist; on either, no consequence if empty.
     const cvOption = activePage.locator('[id^="cv-"]').first();
-    if (await cvOption.isVisible().catch(() => false)) {
+    const pickedExistingCv = await cvOption.isVisible().catch(() => false);
+    if (pickedExistingCv) {
       await cvOption.click().catch(() => {});
     }
     const carteVisiteOption = activePage.locator('[id^="choix-carte-visite-"]').first();
@@ -238,12 +239,23 @@ export class FranceTravailApplier implements JobApplier {
 
     await fillIdentityFields(activePage, ctx.cv);
 
-    // `count()`, not `isVisible()` — confirmed live that Playwright's
-    // setInputFiles works on a hidden input, same issue found and fixed
-    // across every applier here.
-    const fileInput = activePage.locator('input[type="file"]').first();
-    if (await fileInput.count().catch(() => 0)) {
-      await uploadCv(fileInput, ctx).catch(() => {});
+    // Confirmed live: uploading a brand-new CV via the generic file input
+    // WHILE an existing CV was already picked above leaves the form in a
+    // half-finished state (the upload opens its own separate "nommez ce
+    // fichier" confirmation step, never resolved) and led straight to
+    // France Travail's own "Une erreur technique a eu lieu et votre
+    // candidature n'a pu aboutir" on submit -- the two are mutually
+    // exclusive actions on this form, not a fill-everything-you-can-find
+    // situation like every other applier's identity/file fields. Only
+    // falls back to a fresh upload when there was no existing CV to pick.
+    if (!pickedExistingCv) {
+      // `count()`, not `isVisible()` — confirmed live that Playwright's
+      // setInputFiles works on a hidden input, same issue found and fixed
+      // across every applier here.
+      const fileInput = activePage.locator('input[type="file"]').first();
+      if (await fileInput.count().catch(() => 0)) {
+        await uploadCv(fileInput, ctx).catch(() => {});
+      }
     }
 
     const consentCheckbox = activePage.locator('#confirmcoordonnees').first();
