@@ -34,7 +34,7 @@ export class LinkedInApplier implements JobApplier {
     await ctx.appendLog?.(`Navigation vers l'offre LinkedIn : ${ctx.application.jobTitle}...`);
     const targetUrl = normalizeLinkedInUrl(ctx.application.sourceUrl);
     try {
-      await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await this.gotoWithRateLimitRetry(page, ctx, targetUrl);
     } catch (err: any) {
       if (err.message && err.message.includes('ERR_TOO_MANY_REDIRECTS')) {
         await ctx.appendLog?.('Session LinkedIn révoquée ou invalide (boucle de redirection détectée).');
@@ -381,6 +381,33 @@ export class LinkedInApplier implements JobApplier {
       success: false,
       note: 'Formulaire Easy Apply non finalisé (étape inattendue) -- à vérifier manuellement.',
     };
+  }
+
+  // Confirmed live: every LinkedIn job-view navigation in a campaign run can
+  // fail with net::ERR_HTTP_RESPONSE_CODE_FAILURE (a malformed HTTP
+  // response), consistently, right after that same run's own LinkedIn
+  // search scrape (linkedin-stealth.ts) hit up to ~30 job-view/detail pages
+  // in a tight burst from the same un-proxied IP (LINKEDIN_PROXIES isn't
+  // configured). Manually replaying the exact same session/URL a few
+  // minutes later — after the burst — succeeded immediately, so this reads
+  // as a short-lived, IP-level rate-limit reaction rather than a real
+  // network fault or a broken session. A real network/DNS failure or an
+  // actually-revoked session would keep failing on retry too, so this
+  // costs nothing in those cases beyond the wait already worth trying.
+  private async gotoWithRateLimitRetry(page: Page, ctx: ApplyContext, url: string): Promise<void> {
+    const delaysMs = [8000, 20000];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        return;
+      } catch (err: any) {
+        if (!/ERR_HTTP_RESPONSE_CODE_FAILURE/.test(err.message || '') || attempt >= delaysMs.length) throw err;
+        await ctx.appendLog?.(
+          `LinkedIn a renvoyé une réponse invalide (limitation probable) — nouvelle tentative dans ${delaysMs[attempt] / 1000}s...`,
+        );
+        await page.waitForTimeout(delaysMs[attempt]);
+      }
+    }
   }
 
   private async fillCvIdentityFields(page: Page, ctx: ApplyContext): Promise<void> {
