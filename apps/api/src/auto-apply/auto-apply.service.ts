@@ -494,14 +494,24 @@ export class AutoApplyService {
           await this.captureUnknownFields(page, finalPlatformKey, finalUrl, userId);
         }
 
-        await this.browserSession.persistContextCookies(context, finalPlatformKey).catch(() => {});
-
         if (platform) {
           if (result.sessionExpired) {
             await this.credentials.recordSessionExpired(userId, platform).catch((error: any) => {
               this.logger.warn(`Failed to record expired session for ${platform}: ${error.message}`);
             });
           } else {
+            // Confirmed live: persistContextCookies used to run unconditionally,
+            // right above this branch, before this same sessionExpired check
+            // existed for the DB-stored session state. A CAPTCHA/checkpoint hit
+            // leaves the context holding only unauthenticated challenge-page
+            // cookies (no li_at at all) — persisting those to disk here silently
+            // overwrote the last known-good file, which then got layered on top
+            // of every subsequent attempt's otherwise-valid session via
+            // createContext()'s own addCookies(loadCookies(...)) call,
+            // cascading one CAPTCHA hit into CAPTCHA hits on every following
+            // LinkedIn attempt in the same run. Gated on the exact same
+            // condition the DB-stored session state already correctly used.
+            await this.browserSession.persistContextCookies(context, finalPlatformKey).catch(() => {});
             try {
               const newState = await context.storageState();
               if (platform === 'linkedin' && newState && Array.isArray(newState.cookies)) {
