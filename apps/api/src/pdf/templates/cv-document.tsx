@@ -38,14 +38,21 @@ export function CVDocument({ cv }: { cv: CVData }) {
   return <SidebarCVDocument cv={cv} />;
 }
 
-// The default fontSize a fit scale of 1 was calibrated against — the
-// "Taille de police" control in the CV builder is a multiplier off this,
-// not an absolute point size, so a short CV can be sized up to actually
-// fill the page instead of always rendering at the smallest safe size.
-const BASE_FONT_SIZE = 11;
+// The "Taille de police" control's own default/no-op value — matches the
+// slider's starting position in the CV builder UI.
+const DEFAULT_FONT_SIZE = 11;
+// What the hardcoded per-element pt values below (9.5, 8, 7.5, ...) were
+// actually tuned against. Confirmed live: comparing a generated CV against
+// the user's own real reference CV side by side, the default output (no
+// custom font size chosen) rendered meaningfully smaller and airier-looking
+// text than the reference — DEFAULT_FONT_SIZE / this ratio was exactly 1
+// (no scaling at all) for anyone who never touches the slider, which is
+// most users. Set below DEFAULT_FONT_SIZE so the untouched default output
+// is scaled up to a size that actually matches a normal real-world CV.
+const BASE_FONT_SIZE = 9;
 
 export function getUserScale(cv: CVData): number {
-  return (cv.options?.fontSize || BASE_FONT_SIZE) / BASE_FONT_SIZE;
+  return (cv.options?.fontSize || DEFAULT_FONT_SIZE) / BASE_FONT_SIZE;
 }
 
 // The CV builder lets a user select a word inside certain fields (company
