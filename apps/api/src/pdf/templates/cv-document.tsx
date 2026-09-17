@@ -38,51 +38,6 @@ export function CVDocument({ cv }: { cv: CVData }) {
   return <SidebarCVDocument cv={cv} />;
 }
 
-// Rough content-volume estimate used to shrink font sizes and spacing so a
-// dense CV still fits on a single A4 page instead of spilling onto a second.
-// Not a real layout measurement — a calibrated heuristic based on character
-// counts, tuned against real multi-experience/multi-project CVs.
-export function estimateFitScale(
-  cv: CVData,
-  { twoColumn, allowTwoPages = false }: { twoColumn: boolean; allowTwoPages?: boolean },
-): number {
-  let volume = 0;
-  volume += cv.summary?.length || 0;
-
-  for (const exp of cv.experiences || []) {
-    volume += 40;
-    for (const b of exp.bullets || []) volume += b.length + 8;
-  }
-  for (const proj of cv.projects || []) {
-    volume += 30;
-    for (const b of proj.bullets || []) volume += b.length + 8;
-  }
-  volume += (cv.education?.length || 0) * 55;
-  volume += (cv.certifications?.length || 0) * 35;
-  volume += (cv.languages?.length || 0) * 18;
-  for (const g of cv.skillGroups || []) {
-    volume += 18;
-    for (const item of g.items || []) volume += item.length + 3;
-  }
-  volume += (cv.interests?.length || 0) * 10;
-
-  // Two-column layouts fit roughly 1.6x as much content per page as a
-  // single ATS column, so scale the thresholds accordingly. When the user
-  // has opted into a two-page CV, double the budget again — a CV with
-  // enough content to actually fill a second page shouldn't be shrunk as if
-  // it had to fit on one.
-  const factor = (twoColumn ? 1.6 : 1) * (allowTwoPages ? 2 : 1);
-  const t = (n: number) => n * factor;
-
-  if (volume < t(1600)) return 1;
-  if (volume < t(2300)) return 0.92;
-  if (volume < t(3000)) return 0.85;
-  if (volume < t(3700)) return 0.78;
-  if (volume < t(4500)) return 0.71;
-  if (volume < t(5400)) return 0.65;
-  return 0.6;
-}
-
 // The default fontSize a fit scale of 1 was calibrated against — the
 // "Taille de police" control in the CV builder is a multiplier off this,
 // not an absolute point size, so a short CV can be sized up to actually
@@ -192,7 +147,7 @@ function getAtsStyles(scale: number) {
 }
 
 function AtsCVDocument({ cv }: { cv: CVData }) {
-  const scale = getUserScale(cv) * estimateFitScale(cv, { twoColumn: false, allowTwoPages: !!cv.options?.twoPage });
+  const scale = getUserScale(cv);
   const atsStyles = getAtsStyles(scale);
 
   const contactTextParts = [cv.email, cv.phone, cv.location].filter(Boolean);
@@ -573,7 +528,7 @@ function Bullet({ text, styles }: { text: string; styles: ReturnType<typeof getS
 
 function SidebarCVDocument({ cv }: { cv: CVData }) {
   const ACCENT = cv.options?.accent || DEFAULT_SIDEBAR_ACCENT;
-  const scale = getUserScale(cv) * estimateFitScale(cv, { twoColumn: true, allowTwoPages: !!cv.options?.twoPage });
+  const scale = getUserScale(cv);
   const styles = getSidebarStyles(ACCENT, scale);
 
   return (
