@@ -191,15 +191,31 @@ export class VerificationService {
 
               // See REVEAL_APPLY_BUTTON_TEXT — the "already applied" message
               // on some platforms only shows reactively, never on the job
-              // page itself. Stops at revealing the form; never fills or
-              // submits anything, so this can't produce a real duplicate
-              // application.
+              // page itself. Never fills or submits anything, so this can't
+              // produce a real duplicate application — confirmed live that
+              // HelloWork's own backend rejects an actual re-submission with
+              // this exact "déjà postulé" message rather than sending it
+              // twice, which is the whole signal being looked for here.
+              //
+              // Confirmed live this needs up to TWO clicks, not one: the
+              // first "Postuler" on the job page only reveals a small
+              // pre-filled quick-apply widget (its own "Postuler" button,
+              // same text) — a captured verification screenshot showed
+              // exactly that fresh, empty-looking form instead of any
+              // "déjà postulé" text after a single click. Only clicking
+              // that widget's own submit button is what actually re-hits
+              // the platform's apply endpoint and gets it to react.
               const revealButtonText = REVEAL_APPLY_BUTTON_TEXT[platform];
               if (revealButtonText) {
-                const revealButton = page.getByRole('button', { name: revealButtonText }).or(page.getByRole('link', { name: revealButtonText })).first();
-                if (await revealButton.isVisible().catch(() => false)) {
+                for (let clickAttempt = 0; clickAttempt < 2; clickAttempt++) {
+                  const revealButton = page.getByRole('button', { name: revealButtonText }).or(page.getByRole('link', { name: revealButtonText })).first();
+                  if (!(await revealButton.isVisible().catch(() => false))) break;
                   await revealButton.click().catch(() => {});
                   await page.waitForTimeout(1500);
+                  // Stop as soon as the indicator shows up rather than
+                  // always spending the second click — a platform whose
+                  // first click already surfaces the message needs no more.
+                  if (await hasAlreadyAppliedIndicator(page)) break;
                 }
               }
 
