@@ -14,21 +14,19 @@ function countPdfPages(buffer: Buffer): number {
 // When the user has opted into a second page, never shrink their chosen
 // size by more than this — past this point the CV should spill onto that
 // second page (which is exactly what they asked for) rather than become
-// illegible. Without that opt-in, one page is the goal but not an
-// unconditional one: confirmed live, a genuinely dense real-world CV never
-// visibly responded to the font-size slider at all without "allow 2 pages"
-// checked, because whatever size was chosen kept getting shrunk back down
-// to fit one page regardless — down to as low as 7pt at the time, well
-// below readable. This floor matches BASE_FONT_SIZE (cv-document.tsx) —
-// the calibration anchor the per-element pt values were tuned against, i.e.
-// never shrink below what an entirely unscaled render already looks like.
-// If even that doesn't fit one page, the search (below) simply returns that
-// floor-sized render as-is rather than shrinking further — a CV dense
-// enough to hit this floor spills onto a second page automatically,
-// without needing the user to opt in, because a readable CV was the actual
-// goal all along, not a strict page count.
+// illegible. Without that opt-in, one page is a HARD requirement — the CV
+// builder's own promise, and confirmed directly by the user comparing
+// output against their own real reference CV, which fits one page: an
+// unrequested second page is not an acceptable trade for a bigger font, no
+// matter how dense the content. (A higher floor here was tried briefly to
+// improve readability automatically, but it made the one-page case spill
+// onto an unwanted second page for a normal CV — reverted.) This floor
+// only needs to be low enough that a real CV's content can always be made
+// to fit; DEFAULT_FONT_SIZE/BASE_FONT_SIZE (cv-document.tsx) already
+// handles making the common case look good without ever needing to shrink
+// this far.
 const MIN_SCALE_OF_ORIGINAL_WHEN_TWO_PAGE = 0.6;
-const ABSOLUTE_MIN_FONT_SIZE_ONE_PAGE = 9;
+const ABSOLUTE_MIN_FONT_SIZE_ONE_PAGE = 6;
 // Binary search over font size, not a fixed-percentage shrink loop: the old
 // approach (repeatedly cut the size by 8% and stop at the first size that
 // happened to fit) could overshoot well past the true fitting size —
