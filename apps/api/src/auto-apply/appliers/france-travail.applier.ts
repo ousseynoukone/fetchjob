@@ -105,9 +105,19 @@ export class FranceTravailApplier implements JobApplier {
     // its real URL and hand off to whichever applier owns it, instead of
     // ever reaching the AI loop for a step this applier could never have
     // filled in anyway.
+    // Confirmed live AGAIN on a SOPRA STERIA offer: this same dropdown can
+    // instead read "Postuler sur le site du recruteur" with a single link
+    // named after the employer itself (not a generic ATS partner) — a third
+    // phrasing neither "choisissez le partenaire" nor a literal "postuler"
+    // menu item matches. With no branch recognizing it, the applier fell
+    // through onto the job-description page (dropdown still open over it,
+    // no real form anywhere on it) and scanInvalidFields picked up an
+    // unrelated "Destinataire" field from a "share by email" widget
+    // elsewhere on the page, reporting it as a blocking question that was
+    // never actually part of any application form.
     const partnerModal = page
       .locator('[role="dialog"], .modal, [class*="popin" i], [class*="popup" i], .dropdown-menu')
-      .filter({ hasText: /choisissez le partenaire/i })
+      .filter({ hasText: /choisissez le partenaire|postuler sur le site du recruteur/i })
       .first();
     if (await partnerModal.isVisible().catch(() => false)) {
       await ctx.appendLog?.('Cette offre France Travail redirige vers un partenaire externe...');

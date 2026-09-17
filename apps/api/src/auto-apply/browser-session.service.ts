@@ -228,11 +228,30 @@ export class BrowserSessionService implements OnModuleDestroy {
     // Inject fingerprint overrides before any page script runs
     await context.addInitScript(buildFingerprintScript(fp));
 
-    // Restore persisted site cookies (supplements storageState)
+    // Restore persisted site cookies (supplements storageState) — but never
+    // let a stale on-disk cookie from a PAST run clobber a same-name/domain
+    // cookie the caller just supplied via sessionStateJson (the DB-stored
+    // session, which is always the freshest source of truth: it's what
+    // gets overwritten every time a real session is (re-)established).
+    // Confirmed live: this file can accumulate cookies across many apply
+    // attempts in one night (33 here, vs. 17 in a freshly re-saved DB
+    // session) — `addCookies` applied on top of `newContext({storageState})`
+    // blindly overwrites any matching cookie, so a single leftover, now-
+    // invalid JSESSIONID_CANDIDAT from hours earlier silently downgraded a
+    // just-verified, working France Travail session back to a logged-out
+    // one on every single apply attempt, with no error anywhere in the
+    // chain — the isolated reproduction (which never calls loadCookies)
+    // kept succeeding while the real app kept failing identically.
     if (siteName) {
       const saved = loadCookies(siteName);
       if (saved.length > 0) {
-        await context.addCookies(saved as Parameters<typeof context.addCookies>[0]).catch(() => {});
+        const existingKeys = new Set(
+          (storageState?.cookies || []).map((c: any) => `${c.name}|${c.domain}|${c.path}`),
+        );
+        const supplemental = saved.filter((c: any) => !existingKeys.has(`${c.name}|${c.domain}|${c.path}`));
+        if (supplemental.length > 0) {
+          await context.addCookies(supplemental as Parameters<typeof context.addCookies>[0]).catch(() => {});
+        }
       }
     }
 
