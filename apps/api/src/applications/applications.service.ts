@@ -53,7 +53,7 @@ export class ApplicationsService {
     return this.prisma.application.findMany({
       where,
       include: { jobOffer: true },
-      omit: { screenshot: true },
+      omit: { screenshot: true, verificationScreenshot: true },
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -94,7 +94,7 @@ export class ApplicationsService {
     const application = await this.prisma.application.findUnique({
       where: { id },
       include: { jobOffer: true },
-      omit: { screenshot: true },
+      omit: { screenshot: true, verificationScreenshot: true },
     });
 
     if (!application) {
@@ -113,6 +113,18 @@ export class ApplicationsService {
       select: { screenshot: true },
     });
     return application?.screenshot ?? null;
+  }
+
+  // Same reasoning as getScreenshot() above, for the separate screenshot a
+  // Vérification pass captures — a different moment (does the platform now
+  // show this as recorded?) from the apply-time one, so kept as its own
+  // field rather than overwriting it.
+  async getVerificationScreenshot(id: string): Promise<Buffer | null> {
+    const application = await this.prisma.application.findUnique({
+      where: { id },
+      select: { verificationScreenshot: true },
+    });
+    return application?.verificationScreenshot ?? null;
   }
 
   async updateStatus(id: string, status: string) {

@@ -32,6 +32,7 @@ export interface Application {
   verifiedAt?: string;
   verificationNote?: string;
   screenshotTakenAt?: string;
+  verificationScreenshotTakenAt?: string;
   appliedAt?: string;
   createdAt: string;
   jobOffer: JobOffer;

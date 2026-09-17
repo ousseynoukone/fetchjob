@@ -14,6 +14,20 @@ import {
   normalizeLinkedInUrl,
 } from '../auto-apply/appliers/ats-common';
 
+// Confirmed live via a captured screenshot: HelloWork's own "vous avez déjà
+// postulé..." message only appears as a reaction to actually starting the
+// apply flow again — it never shows on the job posting page itself, which
+// is all hasAlreadyAppliedIndicator's passive page.goto()+text-check could
+// ever see. Clicking each platform's own "reveal the apply form" button
+// (never proceeding to fill or submit anything) is what surfaces it. Not
+// attempted for LinkedIn/Indeed — no live confirmation yet that clicking is
+// necessary (or safe) there; passive text-checking stays the only method
+// until there's real evidence either way.
+const REVEAL_APPLY_BUTTON_TEXT: Partial<Record<string, RegExp>> = {
+  hellowork: /^postuler/i,
+  france_travail: /^postuler/i,
+};
+
 export interface VerificationStreamEvent {
   runId: string;
   type: 'log' | 'done';
@@ -175,6 +189,27 @@ export class VerificationService {
               await page.goto(normalizeLinkedInUrl(application.sourceUrl), { waitUntil: 'domcontentloaded', timeout: 30000 });
               await dismissCookieBanner(page);
 
+              // See REVEAL_APPLY_BUTTON_TEXT — the "already applied" message
+              // on some platforms only shows reactively, never on the job
+              // page itself. Stops at revealing the form; never fills or
+              // submits anything, so this can't produce a real duplicate
+              // application.
+              const revealButtonText = REVEAL_APPLY_BUTTON_TEXT[platform];
+              if (revealButtonText) {
+                const revealButton = page.getByRole('button', { name: revealButtonText }).or(page.getByRole('link', { name: revealButtonText })).first();
+                if (await revealButton.isVisible().catch(() => false)) {
+                  await revealButton.click().catch(() => {});
+                  await page.waitForTimeout(1500);
+                }
+              }
+
+              // Captured for every check, confirmed or not — the only way
+              // to tell a real detection gap (hasAlreadyAppliedIndicator's
+              // text patterns were never verified against a real logged-in
+              // session) apart from a genuine non-recording, instead of
+              // guessing from the note text alone.
+              await this.captureVerificationScreenshot(page, application.id);
+
               if (await hasSecurityCheck(page)) {
                 unconfirmed++;
                 await this.prisma.application.update({
@@ -266,5 +301,20 @@ export class VerificationService {
     await this.prisma.verificationRun.update({ where: { id: runId }, data: { finishedAt: new Date(), ...stats } });
     this.running = false;
     this.logStream.next({ runId, type: 'done', message: '', at: new Date().toISOString() });
+  }
+
+  // Mirrors AutoApplyService's own captureScreenshot — same format/quality,
+  // separate DB field (see schema.prisma) since this captures a different
+  // moment than the apply-time one.
+  private async captureVerificationScreenshot(page: Page, applicationId: string): Promise<void> {
+    try {
+      const screenshot = await page.screenshot({ type: 'jpeg', quality: 60, fullPage: false });
+      await this.prisma.application.update({
+        where: { id: applicationId },
+        data: { verificationScreenshot: screenshot, verificationScreenshotTakenAt: new Date() },
+      });
+    } catch (error: any) {
+      this.logger.warn(`Failed to capture verification screenshot for ${applicationId}: ${error.message}`);
+    }
   }
 }

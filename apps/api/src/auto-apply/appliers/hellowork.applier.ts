@@ -93,7 +93,12 @@ export class HelloWorkApplier implements JobApplier {
     return runFormLoop(page, ctx, this.ai, {
       submitText: /envoyer( ma)? candidature|valider ma candidature/i,
       nextText: /suivant|continuer/i,
-      successText: /candidature envoyée|votre candidature a bien été (envoyée|transmise)/i,
+      // Confirmed live via a captured screenshot: HelloWork's real
+      // confirmation toast reads "Félicitations ! Votre candidature au
+      // poste de [X] va être transmise à [Y]." — future tense ("va être"),
+      // which the original past-tense-only pattern never matched, so every
+      // real success was reported as "confirmation non détectée" instead.
+      successText: /candidature envoyée|votre candidature (a bien été|va être) (envoyée|transmise)|f[ée]licitations ! votre candidature/i,
       blockedNote: 'Le formulaire de candidature HelloWork contient un champ non renseigné — à finaliser manuellement.',
       unresolvedNote: 'Soumission HelloWork envoyée mais confirmation non détectée — à vérifier manuellement.',
     });

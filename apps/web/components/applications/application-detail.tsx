@@ -238,6 +238,19 @@ export default function ApplicationDetail({ id }: { id: string }) {
             </details>
           )}
 
+          {current.verificationScreenshotTakenAt && (
+            <details className="mt-3">
+              <summary className="cursor-pointer text-sm text-base-content/60 hover:text-base-content">
+                Capture de la dernière vérification ({formatDateTime(current.verificationScreenshotTakenAt)})
+              </summary>
+              <img
+                src={`${apiClient.defaults.baseURL}/api/candidatures/${id}/verification-screenshot`}
+                alt="Capture d'écran de la page lors de la dernière vérification"
+                className="mt-3 rounded-lg border border-base-300 max-w-full"
+              />
+            </details>
+          )}
+
           <div className="flex flex-wrap gap-2 mt-5">
             <button
               className="btn btn-warning btn-sm gap-2"

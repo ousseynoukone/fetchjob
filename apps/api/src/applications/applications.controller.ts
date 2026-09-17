@@ -84,6 +84,18 @@ export class ApplicationsController {
     res.send(screenshot);
   }
 
+  @Get(':id/verification-screenshot')
+  async getVerificationScreenshot(@Param('id') id: string, @Res() res: Response) {
+    const screenshot = await this.applicationsService.getVerificationScreenshot(id);
+    if (!screenshot) throw new NotFoundException('Aucune capture de vérification disponible pour cette candidature');
+
+    res.set({
+      'Content-Type': 'image/jpeg',
+      'Cache-Control': 'private, max-age=3600',
+    });
+    res.send(screenshot);
+  }
+
   @Get(':id/lettre')
   async getCoverLetterPdf(@Param('id') id: string, @Res() res: Response) {
     const application = await this.applicationsService.getById(id);

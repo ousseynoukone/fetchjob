@@ -362,6 +362,17 @@ model Application {
   screenshot        Bytes?
   screenshotTakenAt DateTime?
 
+  // Captured during a Vérification pass, separately from the apply-time
+  // screenshot above — different moment, different question ("does the
+  // platform now show this as recorded?" vs. "what did the page look like
+  // when we submitted it?"). Added because hasAlreadyAppliedIndicator's own
+  // text patterns were never verified against a real logged-in session
+  // (see its own comment in ats-common.ts) and a real run reported 0
+  // confirmed out of 25 checked — with no screenshot, there was no way to
+  // tell whether that's a real detection gap or genuine non-recording.
+  verificationScreenshot        Bytes?
+  verificationScreenshotTakenAt DateTime?
+
   appliedAt DateTime?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
