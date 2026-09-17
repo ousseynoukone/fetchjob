@@ -6,14 +6,12 @@ import { LocalUserService } from '../common/local-user.service';
 import { PlatformCredentialsService } from '../platform-credentials/platform-credentials.service';
 import { SUPPORTED_PLATFORMS, SupportedPlatform } from '../platform-credentials/dto/upsert-credential.dto';
 import { BrowserSessionService } from '../auto-apply/browser-session.service';
-import { CvService } from '../cv/cv.service';
 import {
   dismissCookieBanner,
   hasSecurityCheck,
   hasAlreadyAppliedIndicator,
   blockHeavyResources,
   normalizeLinkedInUrl,
-  fillIdentityFields,
 } from '../auto-apply/appliers/ats-common';
 
 // Confirmed live via a captured screenshot: HelloWork's own "vous avez déjà
@@ -68,7 +66,6 @@ export class VerificationService {
     private localUser: LocalUserService,
     private credentials: PlatformCredentialsService,
     private browserSession: BrowserSessionService,
-    private cvService: CvService,
   ) {}
 
   streamLogs(): Observable<VerificationStreamEvent> {
@@ -118,7 +115,6 @@ export class VerificationService {
     let unconfirmed = 0;
 
     try {
-      const cv = await this.cvService.getCV(userId);
       // Capped, not "every matching row at once" — this app runs a single
       // shared Chromium instance inside a 512MB container (confirmed live:
       // an OOM crash), so an unbounded backlog (every "needs_review" row
@@ -195,37 +191,47 @@ export class VerificationService {
 
               // See REVEAL_APPLY_BUTTON_TEXT — the "already applied" message
               // on some platforms only shows reactively, never on the job
-              // page itself. Never fills or submits anything, so this can't
-              // produce a real duplicate application — confirmed live that
-              // HelloWork's own backend rejects an actual re-submission with
-              // this exact "déjà postulé" message rather than sending it
-              // twice, which is the whole signal being looked for here.
+              // page itself. Never fills anything beyond what the platform
+              // already pre-filled and only ever clicks the platform's own
+              // pre-existing button, so this can't produce a real duplicate
+              // application — confirmed live that HelloWork's own backend
+              // rejects an actual re-submission with this exact "déjà
+              // postulé" message rather than sending it twice, which is the
+              // whole signal being looked for here.
               //
-              // Confirmed live this needs up to TWO clicks, not one: the
-              // first "Postuler" on the job page only reveals a small
-              // quick-apply widget (its own "Postuler" button, same text).
-              // Confirmed live AGAIN on a second capture: that widget's
-              // Email field only shows a placeholder, never an actual
-              // value — HelloWork's own client-side required-field check
-              // then silently swallows the click with the form left exactly
-              // as before, so the "déjà postulé" reaction never had a
-              // chance to fire. fillIdentityFields (the same helper the
-              // HelloWork applier itself uses) needs to run on the widget
-              // before every click, not just the first, since the widget
-              // shown after the first click is a distinct DOM instance
-              // from whatever it replaced.
+              // A captured DOM dump (via a temporary debug log, since two
+              // earlier screenshots wrongly suggested an empty field) showed
+              // the widget's Email input was NEVER actually empty — HelloWork
+              // pre-fills it from the account itself (data-controller
+              // "from-account-data") with the exact real address, just
+              // rendered readOnly/greyed so it visually looks like a
+              // placeholder. fillIdentityFields was solving a problem that
+              // didn't exist.
+              //
+              // Confirmed live via a click diagnostic (matches=2,
+              // clickError=none, URL gaining only a #postuler hash) that
+              // "Postuler" resolves to TWO separate elements: an anchor link
+              // near the top of the page that just scrolls down to the apply
+              // section (the one .first() always hit, on every attempt, no
+              // matter how many times it was clicked — it's the same
+              // topmost DOM match every time), and the actual submit button
+              // inside the revealed widget itself, further down and never
+              // reached before. Clicks the anchor to reveal the widget, then
+              // explicitly clicks the *other* match for the real submit.
               const revealButtonText = REVEAL_APPLY_BUTTON_TEXT[platform];
               if (revealButtonText) {
-                for (let clickAttempt = 0; clickAttempt < 2; clickAttempt++) {
-                  const revealButton = page.getByRole('button', { name: revealButtonText }).or(page.getByRole('link', { name: revealButtonText })).first();
-                  if (!(await revealButton.isVisible().catch(() => false))) break;
-                  await fillIdentityFields(page, cv as { fullName: string; email: string; phone: string }).catch(() => {});
-                  await revealButton.click().catch(() => {});
-                  await page.waitForTimeout(1500);
-                  // Stop as soon as the indicator shows up rather than
-                  // always spending the second click — a platform whose
-                  // first click already surfaces the message needs no more.
-                  if (await hasAlreadyAppliedIndicator(page)) break;
+                const revealButtonAll = page.getByRole('button', { name: revealButtonText }).or(page.getByRole('link', { name: revealButtonText }));
+                if (await revealButtonAll.first().isVisible().catch(() => false)) {
+                  await revealButtonAll.first().click({ timeout: 8000 }).catch(() => {});
+                  await page.waitForTimeout(800);
+                  const submitButton = revealButtonAll.last();
+                  if (await submitButton.isVisible().catch(() => false)) {
+                    await submitButton.click({ timeout: 8000 }).catch(() => {});
+                  }
+                  for (let poll = 0; poll < 8; poll++) {
+                    if (await hasAlreadyAppliedIndicator(page)) break;
+                    await page.waitForTimeout(400);
+                  }
                 }
               }
 
