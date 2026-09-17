@@ -43,6 +43,24 @@ const MAX_LABEL_LEN = 100;
 // filling already owns (name/email/phone/CV/cover letter) are excluded, so
 // only genuinely unresolved fields ever reach the model.
 export async function buildFormSnapshot(page: Page): Promise<FormSnapshot> {
+  try {
+    return await buildFormSnapshotOnce(page);
+  } catch (error: any) {
+    // Confirmed live via a real stack trace on a Cegedim career-site retry:
+    // a click just before this (the reveal-button click in
+    // generic.applier.ts, only followed by a fixed 1000ms wait) can still
+    // be navigating when this runs, tearing down the very execution
+    // context page.evaluate() is running in. Retrying once after letting
+    // the page settle handles this without needing every single call site
+    // upstream to guess the right fixed delay for a redirect whose timing
+    // varies per site.
+    if (!/execution context was destroyed/i.test(error?.message || '')) throw error;
+    await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
+    return buildFormSnapshotOnce(page);
+  }
+}
+
+function buildFormSnapshotOnce(page: Page): Promise<FormSnapshot> {
   return page.evaluate(
     ({ excludeSource, excludeFlags, maxFields, maxButtons, maxLabelLen }) => {
       const doc: any = document;

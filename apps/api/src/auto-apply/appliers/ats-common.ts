@@ -217,6 +217,16 @@ export async function dismissCookieBanner(page: Page): Promise<void> {
 
   if (await acceptButton.isVisible({ timeout: 3000 }).catch(() => false)) {
     await acceptButton.click().catch(() => {});
+    // Confirmed live on a Cegedim career-site retry: this button triggers a
+    // real page reload rather than just fading out an overlay in place — a
+    // plain fixed wait raced it, and the very next page.evaluate() call
+    // (generic.applier.ts's second dismiss attempt, right before the AI
+    // form loop) crashed the whole attempt with "Execution context was
+    // destroyed, most likely because of a navigation". Waiting for
+    // domcontentloaded too covers that case; it's a same-tick no-op on the
+    // far more common case (a banner that fades out with no navigation at
+    // all), so this doesn't slow down every other site's happy path.
+    await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
     await page.waitForTimeout(300);
   }
 }
