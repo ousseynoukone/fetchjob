@@ -39,6 +39,13 @@ export class FranceTravailApplier implements JobApplier {
     // action instead of navigating (confirmed live: id="detail-apply",
     // data-toggle="dropdown"). Click through to the actual item if so.
     const isDropdownToggle = (await applyButton.getAttribute('aria-haspopup').catch(() => null)) === 'true';
+    // Confirmed live via a real crash trace: the `pe-cookies` banner isn't
+    // necessarily there yet when dismissCookieBanner ran right after
+    // navigation — it showed up later, intercepting this exact click after
+    // ensureLoggedIn's own checks had already run. Same reasoning as the
+    // Cegedim case elsewhere: cheap, harmless to call again immediately
+    // before the click that's actually at risk of being blocked by it.
+    await dismissCookieBanner(page);
     await applyButton.click();
     await page.waitForTimeout(800);
 
