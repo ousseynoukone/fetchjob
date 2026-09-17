@@ -46,7 +46,17 @@ export class FranceTravailApplier implements JobApplier {
     // Cegedim case elsewhere: cheap, harmless to call again immediately
     // before the click that's actually at risk of being blocked by it.
     await dismissCookieBanner(page);
-    await applyButton.click();
+    // Confirmed live AGAIN even with the above: the banner can reappear in
+    // the narrow gap between that dismiss call and this exact click,
+    // making the "when do we dismiss it" timing genuinely impossible to
+    // pin down from outside. `force: true` sidesteps the whole problem —
+    // it skips Playwright's "element actually receives pointer events"
+    // actionability check (the literal reason every one of these crashes
+    // fired: "<pe-cookies> intercepts pointer events"), while still
+    // requiring the real target element to exist and be attached. The
+    // banner is a decorative overlay with no functional purpose beyond
+    // consent, not something that needs to visibly receive this click.
+    await applyButton.click({ force: true }).catch(() => applyButton.click());
     await page.waitForTimeout(800);
 
     if (isDropdownToggle) {
