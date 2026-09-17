@@ -6,12 +6,14 @@ import { LocalUserService } from '../common/local-user.service';
 import { PlatformCredentialsService } from '../platform-credentials/platform-credentials.service';
 import { SUPPORTED_PLATFORMS, SupportedPlatform } from '../platform-credentials/dto/upsert-credential.dto';
 import { BrowserSessionService } from '../auto-apply/browser-session.service';
+import { CvService } from '../cv/cv.service';
 import {
   dismissCookieBanner,
   hasSecurityCheck,
   hasAlreadyAppliedIndicator,
   blockHeavyResources,
   normalizeLinkedInUrl,
+  fillIdentityFields,
 } from '../auto-apply/appliers/ats-common';
 
 // Confirmed live via a captured screenshot: HelloWork's own "vous avez déjà
@@ -66,6 +68,7 @@ export class VerificationService {
     private localUser: LocalUserService,
     private credentials: PlatformCredentialsService,
     private browserSession: BrowserSessionService,
+    private cvService: CvService,
   ) {}
 
   streamLogs(): Observable<VerificationStreamEvent> {
@@ -115,6 +118,7 @@ export class VerificationService {
     let unconfirmed = 0;
 
     try {
+      const cv = await this.cvService.getCV(userId);
       // Capped, not "every matching row at once" — this app runs a single
       // shared Chromium instance inside a 512MB container (confirmed live:
       // an OOM crash), so an unbounded backlog (every "needs_review" row
@@ -199,17 +203,23 @@ export class VerificationService {
               //
               // Confirmed live this needs up to TWO clicks, not one: the
               // first "Postuler" on the job page only reveals a small
-              // pre-filled quick-apply widget (its own "Postuler" button,
-              // same text) — a captured verification screenshot showed
-              // exactly that fresh, empty-looking form instead of any
-              // "déjà postulé" text after a single click. Only clicking
-              // that widget's own submit button is what actually re-hits
-              // the platform's apply endpoint and gets it to react.
+              // quick-apply widget (its own "Postuler" button, same text).
+              // Confirmed live AGAIN on a second capture: that widget's
+              // Email field only shows a placeholder, never an actual
+              // value — HelloWork's own client-side required-field check
+              // then silently swallows the click with the form left exactly
+              // as before, so the "déjà postulé" reaction never had a
+              // chance to fire. fillIdentityFields (the same helper the
+              // HelloWork applier itself uses) needs to run on the widget
+              // before every click, not just the first, since the widget
+              // shown after the first click is a distinct DOM instance
+              // from whatever it replaced.
               const revealButtonText = REVEAL_APPLY_BUTTON_TEXT[platform];
               if (revealButtonText) {
                 for (let clickAttempt = 0; clickAttempt < 2; clickAttempt++) {
                   const revealButton = page.getByRole('button', { name: revealButtonText }).or(page.getByRole('link', { name: revealButtonText })).first();
                   if (!(await revealButton.isVisible().catch(() => false))) break;
+                  await fillIdentityFields(page, cv as { fullName: string; email: string; phone: string }).catch(() => {});
                   await revealButton.click().catch(() => {});
                   await page.waitForTimeout(1500);
                   // Stop as soon as the indicator shows up rather than
