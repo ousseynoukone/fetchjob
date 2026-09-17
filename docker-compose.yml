@@ -11,7 +11,10 @@ services:
       POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-password}
       POSTGRES_DB: findurjob
     ports:
-      - '5432:5432'
+      # Host-side port only — the api container still reaches this over the
+      # internal docker network as postgres:5432 either way (see
+      # DATABASE_URL below), unaffected by whatever the host maps this to.
+      - '5433:5432'
     # Postgres 18's own image mounts the parent dir, not .../data directly
     # (it places versioned subdirectories itself) — confirmed live, the old
     # .../data mount point made the image refuse to start.
