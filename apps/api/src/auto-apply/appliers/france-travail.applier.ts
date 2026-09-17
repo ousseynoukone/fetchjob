@@ -72,14 +72,27 @@ export class FranceTravailApplier implements JobApplier {
 
     // France Travail sometimes acts as an aggregator rather than hosting the
     // application itself: clicking "Postuler" can reveal a "Choisissez le
-    // partenaire" modal offering one or more external ATS partners (confirmed
-    // live: a single "XTRAMILE" card) instead of a native form. Mirrors the
-    // Welcome to the Jungle resolution pattern (see resolveWelcomeToTheJungleApplyUrl)
-    // -- follow the partner link out to its real URL and hand off to whichever
-    // applier owns it, instead of reporting "étape inattendue" for a step this
-    // applier could never have filled in anyway.
+    // partenaire" panel offering one or more external ATS partners (confirmed
+    // live: a single "XTRAMILE" card in a modal, AND separately a single
+    // "PMEJOB" link inside the SAME dropdown menu the isDropdownToggle branch
+    // above already opens) instead of a native form. That branch only ever
+    // looks for a menu item literally reading "postuler" — a partner-picker
+    // dropdown never has one (its links are named after the partner, e.g.
+    // "PMEJOB"), so it silently falls through here every time, and this
+    // check used to require a `[role="dialog"]`/`.modal`/`popin`/`popup`
+    // container, none of which a plain `.dropdown-menu` ever matches either.
+    // Confirmed live via a real form snapshot: with neither branch ever
+    // firing, the applier ran fillIdentityFields/runFormLoop against the
+    // original job page with the dropdown still open over it — no real form
+    // ever existed there, so every AI call saw the same near-empty snapshot
+    // and produced the same stuck non-answer every single time. Mirrors the
+    // Welcome to the Jungle resolution pattern (see
+    // resolveWelcomeToTheJungleApplyUrl) -- follow the partner link out to
+    // its real URL and hand off to whichever applier owns it, instead of
+    // ever reaching the AI loop for a step this applier could never have
+    // filled in anyway.
     const partnerModal = page
-      .locator('[role="dialog"], .modal, [class*="popin" i], [class*="popup" i]')
+      .locator('[role="dialog"], .modal, [class*="popin" i], [class*="popup" i], .dropdown-menu')
       .filter({ hasText: /choisissez le partenaire/i })
       .first();
     if (await partnerModal.isVisible().catch(() => false)) {
