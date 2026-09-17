@@ -229,6 +229,29 @@ export async function dismissCookieBanner(page: Page): Promise<void> {
     await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
     await page.waitForTimeout(300);
   }
+
+  // France Travail's own `<pe-cookies>` custom element was the ORIGINAL
+  // reason this function exists at all (see the comment above), but it was
+  // never actually fixed — confirmed live, real auto-apply attempts kept
+  // crashing on "<pe-cookies> intercepts pointer events" after a 30s
+  // locator.click() timeout, on every single France Travail offer.
+  // Root-caused directly: page.getByRole/getByText/a plain CSS id selector
+  // all fail to find its "Tout accepter" button at all (isVisible() false
+  // even given 6s), while a raw page.evaluate() reading
+  // el.shadowRoot.querySelector() finds and clicks it immediately, and the
+  // element genuinely collapses to display:none afterward — so this isn't a
+  // missed text pattern or a timing race, Playwright's locator engine
+  // simply never reaches inside this specific shadow root. Reaches in
+  // directly instead; a harmless no-op via optional chaining on every site
+  // that doesn't have this exact custom element.
+  await page
+    .evaluate(() => {
+      const doc: any = (globalThis as any).document;
+      const host = doc.querySelector('pe-cookies');
+      const btn = host?.shadowRoot?.querySelector('#pecookies-accept-all') as any;
+      btn?.click();
+    })
+    .catch(() => {});
 }
 
 // Confirmed live on HelloWork: a failed bot-detection check (FriendlyCaptcha)
