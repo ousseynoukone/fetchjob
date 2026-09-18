@@ -36,7 +36,7 @@ export default function RemoteLoginModal({
   const sessionIdRef = useRef<string | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
   const imgRef = useRef<HTMLImageElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   // Every event here matters in the exact order it happened (a mouse release
   // has to land after its own press; keystrokes have to land in the order
   // typed) -- firing each as its own unawaited POST let the browser send
@@ -80,6 +80,12 @@ export default function RemoteLoginModal({
             return;
           }
           if (payload.dataUrl) setFrame(payload.dataUrl);
+          // Keeps keyboard focus on the live view by default (not just
+          // after a click) -- confirmed live that autoFocus alone wasn't
+          // enough once real frames started replacing the loading spinner.
+          if (document.activeElement === document.body || document.activeElement == null) {
+            containerRef.current?.focus();
+          }
           setStatus(payload.status);
           if (payload.message) setMessage(payload.message);
           if (payload.status === 'done') {
@@ -119,7 +125,14 @@ export default function RemoteLoginModal({
   };
 
   const handleMouseDown = (e: React.MouseEvent<HTMLImageElement>) => {
-    inputRef.current?.focus();
+    // Confirmed live: an invisible <input> used purely as a focus target
+    // for onKeyDown was unreliable (clicks visibly focused the REMOTE
+    // page's field -- proof the click relay itself worked fine -- but
+    // physical keystrokes never made it into React's handler). Focusing
+    // the whole container div directly instead, the same pattern every
+    // canvas-based remote-input UI (noVNC, remote debuggers, ...) uses,
+    // removes the extra hidden-element indirection entirely.
+    containerRef.current?.focus();
     const { x, y } = toNativeCoords(e);
     sendInput({ kind: 'mousePressed', x, y });
     sendInput({ kind: 'mouseReleased', x, y });
@@ -130,7 +143,7 @@ export default function RemoteLoginModal({
     sendInput({ kind: 'wheel', x, y, deltaX: e.deltaX, deltaY: e.deltaY });
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (['Enter', 'Backspace', 'Tab', 'Escape'].includes(e.key)) {
       e.preventDefault();
       sendInput({ kind: 'key', key: e.key });
@@ -157,7 +170,13 @@ export default function RemoteLoginModal({
           </button>
         </div>
 
-        <div className="relative bg-black" style={{ aspectRatio: `${NATIVE_WIDTH} / ${NATIVE_HEIGHT}` }}>
+        <div
+          ref={containerRef}
+          tabIndex={0}
+          onKeyDown={handleKeyDown}
+          className="relative bg-black outline-none"
+          style={{ aspectRatio: `${NATIVE_WIDTH} / ${NATIVE_HEIGHT}` }}
+        >
           {frame ? (
             <img
               ref={imgRef}
@@ -173,17 +192,6 @@ export default function RemoteLoginModal({
               <Loader2 className="w-6 h-6 animate-spin" />
             </div>
           )}
-
-          {/* Invisible focus target that actually receives keystrokes and relays them */}
-          <input
-            ref={inputRef}
-            type="text"
-            value=""
-            onChange={() => {}}
-            onKeyDown={handleKeyDown}
-            className="absolute opacity-0 pointer-events-none w-1 h-1"
-            autoFocus
-          />
 
           {status === 'done' && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/70">
