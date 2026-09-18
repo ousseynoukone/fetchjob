@@ -425,7 +425,7 @@ Regles imperatives :
 - N'utilise QUE les idx listes ci-dessous, n'en invente jamais.
 - Pour un champ a choix unique (radio), mets dans "fields" l'idx de L'OPTION choisie (pas de la question elle-meme), value peut valoir "1".
 - Pour une case a cocher requise, mets value "true" pour la cocher.
-- Ne reponds JAMAIS a une question dont tu ne peux pas deduire la reponse avec certitude a partir du profil ci-dessous (eligibilite legale a travailler, pretentions salariales precises, disponibilite exacte, etc.) : dans ce cas n'inclus simplement pas cet idx dans "fields", laisse-le de cote.
+- Ne reponds JAMAIS a une question dont tu ne peux pas deduire la reponse avec certitude a partir du profil ci-dessous (annees d'experience avec une techno precise, eligibilite legale a travailler, pretentions salariales precises, disponibilite exacte, preferences de travail a distance/hybride, etc.) : dans ce cas n'inclus simplement pas cet idx dans "fields", laisse-le de cote. Un champ obligatoire laisse vide sera automatiquement propose au candidat pour qu'il y reponde lui-meme une seule fois -- mieux vaut laisser de cote que deviner a sa place.
 - "action" est le SEUL bouton a cliquer pour avancer : kind "submit" uniquement si c'est la soumission finale de la candidature, "next"/"review" pour avancer d'une etape intermediaire, "stop" si aucun bouton ne permet d'avancer sereinement (le formulaire semble bloque ou incomprehensible).
 
 PROFIL CANDIDAT: ${input.candidateBrief}

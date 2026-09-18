@@ -313,13 +313,30 @@ export function formatButtonsForPrompt(buttons: SnapshotButton[]): string {
 // Kept intentionally short (name/email/phone/CV are handled separately and
 // never need to reach the model) — a smaller prompt costs fewer tokens on
 // every single step of every single application.
+//
+// Includes a compact work-history block (role/company/period/bullets) --
+// added after confirmed live that screening questions like "depuis combien
+// d'annees utilisez-vous Node.js ?" always came back unanswered (the model
+// correctly refusing to invent a number) when all it had was a skills list
+// with no dates or role context to estimate from. The AI prompt itself
+// (ai.service.ts) now explicitly allows a reasoned estimate for this kind of
+// question, but it still needs enough of the actual CV to ground that
+// estimate in — the skills list alone was never enough.
 export function buildCandidateBrief(ctx: ApplyContext): string {
   const cv = ctx.cv as any;
   const skills = (cv.skillGroups || [])
     .flatMap((g: any) => g.items || [])
     .slice(0, 12)
     .join(', ');
-  const summary = (cv.summary || '').slice(0, 240);
-  const brief = `${cv.fullName || ''} — ${cv.headline || ''}. Localisation: ${cv.location || ''}. Compétences: ${skills}. Résumé: ${summary}`;
-  return brief.slice(0, 600);
+  const summary = (cv.summary || '').slice(0, 200);
+  const experiences = (cv.experiences || [])
+    .slice(0, 4)
+    .map((e: any) => {
+      const bullets = (e.bullets || []).slice(0, 2).join('; ');
+      return `${e.role || ''} @ ${e.company || ''} (${e.period || ''})${bullets ? ` — ${bullets}` : ''}`;
+    })
+    .join(' | ')
+    .slice(0, 500);
+  const brief = `${cv.fullName || ''} — ${cv.headline || ''}. Localisation: ${cv.location || ''}. Compétences: ${skills}. Résumé: ${summary}. Parcours: ${experiences}`;
+  return brief.slice(0, 1100);
 }

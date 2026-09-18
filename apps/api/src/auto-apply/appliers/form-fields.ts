@@ -48,6 +48,26 @@ function extractLabel(el: any): string {
   return '';
 }
 
+// A radio GROUP's question text lives outside any single option (fieldset
+// legend, or the nearest preceding text) -- mirrors the equivalent grouping
+// logic in ai-form-snapshot.ts's buildFormSnapshotOnce, duplicated here for
+// the same reason the rest of this file's DOM helpers are: these run
+// serialized into the page context, not shared across the two files.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractRadioGroupLabel(el: any): string {
+  const fieldset = el.closest('fieldset');
+  const legend = fieldset?.querySelector('legend');
+  if (legend?.textContent?.trim()) return legend.textContent.trim();
+  const container = fieldset || el.closest('div, li') || el.parentElement;
+  let prev = container?.previousElementSibling;
+  while (prev) {
+    const text = prev.textContent?.trim();
+    if (text) return text;
+    prev = prev.previousElementSibling;
+  }
+  return '';
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function isInvalid(el: any): boolean {
   if (el.getAttribute('aria-invalid') === 'true') return true;
@@ -104,6 +124,23 @@ function normalizeLabel(text: string): string {
     .trim();
 }
 
+// Radio-group legends commonly concatenate the visible question text with a
+// screen-reader-only duplicate of the exact same text, plus a trailing
+// "Requis"/"Required" badge -- confirmed live on a LinkedIn Easy Apply
+// screening question, whose captured label came back as the full question
+// literally twice in a row followed by "Requis". Runs Node-side (after
+// `.evaluate()` returns a plain string), not inside the page, so it applies
+// uniformly to whatever DOM structure produced the duplication.
+function cleanLabel(text: string): string {
+  const trimmed = (text || '').replace(/\s+/g, ' ').trim();
+  const noBadge = trimmed.replace(/\s*(requis|required)\s*$/i, '').trim();
+  const half = Math.floor(noBadge.length / 2);
+  if (half > 3 && noBadge.slice(0, half).trim() === noBadge.slice(half).trim()) {
+    return noBadge.slice(0, half).trim();
+  }
+  return noBadge;
+}
+
 const FIELD_SELECTOR =
   'input:not([type=file]):not([type=hidden]):not([type=submit]):not([type=button]):not([type=password]), textarea, select';
 
@@ -122,6 +159,28 @@ export async function fillKnownFields(page: Page, knownAnswers: Map<string, stri
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function fillIfKnown(handle: ElementHandle<any>, knownAnswers: Map<string, string>): Promise<void> {
+  const type = await handle.evaluate((el) => el.type || '');
+  if (type === 'password') return;
+
+  if (type === 'radio') {
+    // A radio option's own label is just "Oui"/"Non" -- the learned answer
+    // is keyed by the GROUP's question text (matching how scanInvalidFields
+    // now reports it), and the option to click is whichever one's own
+    // label/value matches the stored answer text.
+    const groupLabel = cleanLabel(await handle.evaluate(extractRadioGroupLabel));
+    if (!groupLabel || KNOWN_FIELD_LABEL_EXCLUDE.test(groupLabel)) return;
+    const answer = knownAnswers.get(normalizeLabel(groupLabel));
+    if (!answer) return;
+    const normalizedGroup = normalizeLabel(groupLabel);
+    const extracted = cleanLabel(await handle.evaluate(extractLabel));
+    const optionLabel = extracted && normalizeLabel(extracted) !== normalizedGroup ? extracted : '';
+    const optionValue = await handle.evaluate((el) => el.value || '');
+    if (normalizeLabel(optionLabel) === normalizeLabel(answer) || normalizeLabel(optionValue) === normalizeLabel(answer)) {
+      await handle.evaluate((el) => { if (!el.checked) el.click(); });
+    }
+    return;
+  }
+
   const label = await handle.evaluate(extractLabel);
   if (!label || KNOWN_FIELD_LABEL_EXCLUDE.test(label)) return;
 
@@ -129,18 +188,13 @@ async function fillIfKnown(handle: ElementHandle<any>, knownAnswers: Map<string,
   if (!answer) return;
 
   const tag = await handle.evaluate((el) => el.tagName.toLowerCase());
-  const type = await handle.evaluate((el) => el.type || '');
-  if (type === 'password') return;
 
   if (tag === 'select') {
     await handle.selectOption({ label: answer }).catch(() => handle.selectOption(answer).catch(() => {}));
-  } else if (type === 'radio' || type === 'checkbox') {
-    // The answer is expected to match this option's own label/value for
-    // radio groups; for a single checkbox, any truthy answer checks it.
-    const optionLabel = await handle.evaluate(extractLabel);
-    if (type === 'checkbox' || normalizeLabel(optionLabel) === normalizeLabel(answer)) {
-      await handle.evaluate((el) => el.click());
-    }
+  } else if (type === 'checkbox') {
+    // Any truthy stored answer checks it -- a single checkbox has no
+    // "options" to match against, unlike a radio group.
+    await handle.evaluate((el) => { if (!el.checked) el.click(); });
   } else {
     await handle.fill(answer).catch(() => {});
   }
@@ -151,11 +205,62 @@ async function fillIfKnown(handle: ElementHandle<any>, knownAnswers: Map<string,
 // invalid, so the exact question text can be stored for the user to answer
 // once, instead of just recording "something was wrong".
 export async function scanInvalidFields(page: Page): Promise<DetectedField[]> {
-  const handles = await page.locator(FIELD_SELECTOR).elementHandles();
   const results: DetectedField[] = [];
   const seen = new Set<string>();
 
+  // Radio groups get their own pass -- confirmed live that a required
+  // LinkedIn screening radio ("travail hybride ?") never surfaced on the
+  // Questions page at all: `isInvalid()` below only ever fires off a
+  // SINGLE element's own `required`/empty-value state, but no individual
+  // `<input type=radio>` option is ever itself required or has a
+  // meaningful empty "value" -- the group as a whole is required, which is
+  // a property only visible by looking at all its options together (none
+  // checked).
+  const radioHandles = await page.locator('input[type="radio"]').elementHandles();
+  const groups = new Map<string, ElementHandle<any>[]>();
+  for (const handle of radioHandles) {
+    const visible = await handle.isVisible().catch(() => false);
+    const disabled = await handle.evaluate((el: any) => !!el.disabled).catch(() => true);
+    if (!visible || disabled) continue;
+    const name = await handle.evaluate((el: any) => el.name || '').catch(() => '');
+    const key = name || `__ungrouped_${groups.size}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(handle);
+  }
+  for (const options of groups.values()) {
+    const checkedFlags = await Promise.all(
+      options.map((o) => o.evaluate((el: any) => !!el.checked).catch(() => false)),
+    );
+    if (checkedFlags.some(Boolean)) continue; // already answered
+
+    const groupLabel = cleanLabel(await options[0].evaluate(extractRadioGroupLabel).catch(() => ''));
+    if (!groupLabel || KNOWN_FIELD_LABEL_EXCLUDE.test(groupLabel)) continue;
+
+    const normalized = normalizeLabel(groupLabel);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+
+    const optionLabels: string[] = [];
+    for (const o of options) {
+      // extractLabel() falls back to the fieldset/legend when an option has
+      // no label of its own -- indistinguishable here from the group label
+      // itself, so that specific case is discarded in favor of the radio's
+      // own `value` attribute instead of storing the group question twice.
+      const extracted = cleanLabel(await o.evaluate(extractLabel).catch(() => ''));
+      const value = await o.evaluate((el: any) => el.value || '').catch(() => '');
+      const lbl = extracted && normalizeLabel(extracted) !== normalized ? extracted : value;
+      if (lbl) optionLabels.push(lbl);
+    }
+    results.push({ questionText: groupLabel, fieldType: 'radio', options: optionLabels });
+  }
+
+  const handles = await page.locator(FIELD_SELECTOR).elementHandles();
+
   for (const handle of handles) {
+    const type = await handle.evaluate((el) => el.type || '');
+    if (type === 'radio') continue; // handled above as a group
+    if (type === 'password') continue;
+
     const invalid = await handle.evaluate(isInvalid).catch(() => false);
     if (!invalid) continue;
 
@@ -167,8 +272,6 @@ export async function scanInvalidFields(page: Page): Promise<DetectedField[]> {
     seen.add(normalized);
 
     const tag = await handle.evaluate((el) => el.tagName.toLowerCase());
-    const type = await handle.evaluate((el) => el.type || '');
-    if (type === 'password') continue;
 
     let fieldType: DetectedField['fieldType'] = 'text';
     let options: string[] = [];
@@ -178,8 +281,7 @@ export async function scanInvalidFields(page: Page): Promise<DetectedField[]> {
       options = await handle.evaluate((el) =>
         Array.from(el.options as any[]).map((o: any) => (o.textContent || '').trim()).filter(Boolean),
       );
-    } else if (type === 'radio') fieldType = 'radio';
-    else if (type === 'checkbox') fieldType = 'checkbox';
+    } else if (type === 'checkbox') fieldType = 'checkbox';
 
     results.push({ questionText: label, fieldType, options });
   }
