@@ -129,26 +129,33 @@ export default function RemoteLoginModal({
     sendInput({ kind: 'wheel', x, y, deltaX: e.deltaX, deltaY: e.deltaY });
   };
 
-  // Confirmed live, twice: neither an invisible <input> nor a focusable
-  // container <div> reliably received physical keystrokes, even though the
-  // click relay itself was confirmed working (the remote field's own
-  // cursor blinked after a click). Rather than keep guessing at browser
-  // focus behavior blind, this uses a REAL, always-visible text box the
-  // person explicitly clicks into -- the one interaction pattern that's
-  // guaranteed to receive keyboard focus with zero custom focus-management
-  // code, at the cost of one extra click when switching between "point at
-  // a field in the video" and "type into it".
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (['Enter', 'Backspace', 'Tab', 'Escape'].includes(e.key)) {
-      e.preventDefault();
-      sendInput({ kind: 'key', key: e.key });
-      return;
-    }
-    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      e.preventDefault();
-      sendInput({ kind: 'insertText', text: e.key });
-    }
-  };
+  // Confirmed live, three times over: an invisible <input>, a focusable
+  // container <div>, and even a real, always-visible <input> the person
+  // explicitly clicked into ALL failed identically -- server-side logging
+  // proved mouse events relayed every time while ZERO keydown-derived
+  // events ever arrived, no matter which element supposedly had focus.
+  // That points at something intercepting keydown before it ever reaches
+  // React's own synthetic event system (a browser extension, or some
+  // other capture-phase listener elsewhere on the page) rather than a
+  // focus-management bug in this component. A native, capture-phase
+  // `window.addEventListener` attached directly (bypassing React's event
+  // delegation entirely) is the most robust remaining way to intercept
+  // keystrokes EARLY, before anything else downstream gets a chance to.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (['Enter', 'Backspace', 'Tab', 'Escape'].includes(e.key)) {
+        e.preventDefault();
+        sendInput({ kind: 'key', key: e.key as any });
+        return;
+      }
+      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        sendInput({ kind: 'insertText', text: e.key });
+      }
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [sendInput]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
@@ -212,10 +219,8 @@ export default function RemoteLoginModal({
               type="text"
               value=""
               onChange={() => {}}
-              onKeyDown={handleKeyDown}
-              placeholder="Cliquez d'abord sur un champ dans l'aperçu, puis tapez ici..."
+              placeholder="Tapez n'importe où pendant que cette fenêtre est ouverte..."
               className="input input-sm input-bordered w-full font-mono"
-              disabled={status !== 'active'}
               autoComplete="off"
             />
           </div>
