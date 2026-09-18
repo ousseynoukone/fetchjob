@@ -37,13 +37,24 @@ export default function RemoteLoginModal({
   const sourceRef = useRef<EventSource | null>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Every event here matters in the exact order it happened (a mouse release
+  // has to land after its own press; keystrokes have to land in the order
+  // typed) -- firing each as its own unawaited POST let the browser send
+  // them out of order under any real typing speed, which is exactly what
+  // made typing "not work". Chained onto this promise instead, so each
+  // event's request only starts once the previous one has actually been
+  // sent.
+  const inputQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   const sendInput = useCallback((event: Record<string, any>) => {
     const sessionId = sessionIdRef.current;
     if (!sessionId) return;
-    apiClient
-      .post(`/api/parametres/identifiants/${platform}/remote-login/${sessionId}/input`, event)
-      .catch(() => {});
+    inputQueueRef.current = inputQueueRef.current.then(() =>
+      apiClient
+        .post(`/api/parametres/identifiants/${platform}/remote-login/${sessionId}/input`, event)
+        .then(() => {})
+        .catch(() => {}),
+    );
   }, [platform]);
 
   useEffect(() => {
