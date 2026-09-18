@@ -5,7 +5,8 @@ import AppShell from '@/components/layout/app-shell';
 import { useSettingsStore, SettingsStatus } from '@/lib/settings-store';
 import { usePlatformCredentialsStore, SupportedPlatform } from '@/lib/platform-credentials-store';
 import { useKnowledgeStore } from '@/lib/knowledge-store';
-import { CheckCircle2, XCircle, Sparkles, Search, ShieldAlert, Trash2, BookOpen, RefreshCw, Mail } from 'lucide-react';
+import RemoteLoginModal from './remote-login-modal';
+import { CheckCircle2, XCircle, Sparkles, Search, ShieldAlert, Trash2, BookOpen, RefreshCw, Mail, MonitorPlay } from 'lucide-react';
 
 type FieldKey = keyof SettingsStatus;
 type FieldSpec = { key: FieldKey; label: string; placeholder: string; type?: string };
@@ -61,7 +62,7 @@ const PLATFORM_LABELS: Record<SupportedPlatform, string> = {
 const AUTO_LOGIN_PLATFORMS = new Set<SupportedPlatform>(['linkedin']);
 
 function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
-  const { items, remove, saveCredentials } = usePlatformCredentialsStore();
+  const { items, remove, saveCredentials, fetchStatus } = usePlatformCredentialsStore();
   const item = items.find((i) => i.platform === platform);
   const [isEditing, setIsEditing] = useState(false);
   const [email, setEmail] = useState('');
@@ -69,6 +70,7 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
   const [sessionState, setSessionState] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [showRemoteLogin, setShowRemoteLogin] = useState(false);
   const supportsAutoLogin = AUTO_LOGIN_PLATFORMS.has(platform);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -100,6 +102,14 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
             </span>
             <button
               type="button"
+              className="btn btn-ghost btn-xs text-base-content/60 hover:text-primary gap-1"
+              onClick={() => setShowRemoteLogin(true)}
+              title="Se reconnecter via un navigateur intégré"
+            >
+              <MonitorPlay className="w-3.5 h-3.5" /> Reconnecter
+            </button>
+            <button
+              type="button"
               className="btn btn-ghost btn-xs text-base-content/60 hover:text-primary"
               onClick={() => setIsEditing(!isEditing)}
             >
@@ -119,13 +129,20 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
             <span className="badge badge-ghost badge-sm gap-1 text-xs text-base-content/60">
               <XCircle className="w-3 h-3" /> Non configuré
             </span>
+            <button
+              type="button"
+              className="btn btn-primary btn-xs gap-1"
+              onClick={() => setShowRemoteLogin(true)}
+            >
+              <MonitorPlay className="w-3.5 h-3.5" /> Se connecter
+            </button>
             {!isEditing && (
               <button
                 type="button"
-                className="btn btn-primary btn-xs"
+                className="btn btn-ghost btn-xs text-base-content/60"
                 onClick={() => setIsEditing(true)}
               >
-                Connecter
+                Autre méthode
               </button>
             )}
           </div>
@@ -237,11 +254,19 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
       ) : (
         !item?.configured && (
           <p className="text-xs text-base-content/50 mt-1">
-            {supportsAutoLogin
-              ? 'Renseignez votre identifiant et mot de passe pour que le bot se connecte automatiquement et postule aux offres.'
-              : `${PLATFORM_LABELS[platform]} bloque la connexion automatique — établissez une session une fois depuis votre machine (npm run establish-session -- ${platform} votre@email.com), puis collez-la ici.`}
+            Cliquez sur « Se connecter » pour vous connecter à {PLATFORM_LABELS[platform]} directement
+            depuis un navigateur intégré à l'application — vos identifiants ne sont jamais envoyés à
+            findurjob, seule la session qui en résulte est enregistrée.
           </p>
         )
+      )}
+
+      {showRemoteLogin && (
+        <RemoteLoginModal
+          platform={platform}
+          onClose={() => setShowRemoteLogin(false)}
+          onLoggedIn={() => fetchStatus()}
+        />
       )}
     </div>
   );
@@ -451,10 +476,11 @@ export default function SettingsPage() {
                 <h2 className="font-semibold">Comptes externes (auto-apply)</h2>
               </div>
               <p className="text-xs text-base-content/40 mb-4">
-                Aucun mot de passe n'est stocké ici. Le bot réutilise une session que vous établissez
-                vous-même en vous connectant une fois dans un vrai navigateur (script local, voir
-                ci-dessous) — il ne tente jamais d'automatiser la connexion. Quand la session expire,
-                vous recevez un email pour la rétablir.
+                « Se connecter » ouvre un navigateur piloté par l'application, affiché en direct ici —
+                connectez-vous exactement comme d'habitude (y compris CAPTCHA/2FA si demandé) et la
+                session est enregistrée automatiquement dès la connexion détectée. Aucun mot de passe
+                n'est stocké pour les besoins de cette méthode. Quand la session expire, vous recevez
+                un email pour la rétablir.
               </p>
               <div className="space-y-3">
                 <PlatformCredentialRow platform="linkedin" />
