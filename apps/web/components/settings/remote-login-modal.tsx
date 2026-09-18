@@ -36,7 +36,7 @@ export default function RemoteLoginModal({
   const sessionIdRef = useRef<string | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
   const imgRef = useRef<HTMLImageElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const typeBoxRef = useRef<HTMLInputElement>(null);
   // Every event here matters in the exact order it happened (a mouse release
   // has to land after its own press; keystrokes have to land in the order
   // typed) -- firing each as its own unawaited POST let the browser send
@@ -80,12 +80,6 @@ export default function RemoteLoginModal({
             return;
           }
           if (payload.dataUrl) setFrame(payload.dataUrl);
-          // Keeps keyboard focus on the live view by default (not just
-          // after a click) -- confirmed live that autoFocus alone wasn't
-          // enough once real frames started replacing the loading spinner.
-          if (document.activeElement === document.body || document.activeElement == null) {
-            containerRef.current?.focus();
-          }
           setStatus(payload.status);
           if (payload.message) setMessage(payload.message);
           if (payload.status === 'done') {
@@ -125,14 +119,6 @@ export default function RemoteLoginModal({
   };
 
   const handleMouseDown = (e: React.MouseEvent<HTMLImageElement>) => {
-    // Confirmed live: an invisible <input> used purely as a focus target
-    // for onKeyDown was unreliable (clicks visibly focused the REMOTE
-    // page's field -- proof the click relay itself worked fine -- but
-    // physical keystrokes never made it into React's handler). Focusing
-    // the whole container div directly instead, the same pattern every
-    // canvas-based remote-input UI (noVNC, remote debuggers, ...) uses,
-    // removes the extra hidden-element indirection entirely.
-    containerRef.current?.focus();
     const { x, y } = toNativeCoords(e);
     sendInput({ kind: 'mousePressed', x, y });
     sendInput({ kind: 'mouseReleased', x, y });
@@ -143,7 +129,16 @@ export default function RemoteLoginModal({
     sendInput({ kind: 'wheel', x, y, deltaX: e.deltaX, deltaY: e.deltaY });
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+  // Confirmed live, twice: neither an invisible <input> nor a focusable
+  // container <div> reliably received physical keystrokes, even though the
+  // click relay itself was confirmed working (the remote field's own
+  // cursor blinked after a click). Rather than keep guessing at browser
+  // focus behavior blind, this uses a REAL, always-visible text box the
+  // person explicitly clicks into -- the one interaction pattern that's
+  // guaranteed to receive keyboard focus with zero custom focus-management
+  // code, at the cost of one extra click when switching between "point at
+  // a field in the video" and "type into it".
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (['Enter', 'Backspace', 'Tab', 'Escape'].includes(e.key)) {
       e.preventDefault();
       sendInput({ kind: 'key', key: e.key });
@@ -170,13 +165,7 @@ export default function RemoteLoginModal({
           </button>
         </div>
 
-        <div
-          ref={containerRef}
-          tabIndex={0}
-          onKeyDown={handleKeyDown}
-          className="relative bg-black outline-none"
-          style={{ aspectRatio: `${NATIVE_WIDTH} / ${NATIVE_HEIGHT}` }}
-        >
+        <div className="relative bg-black" style={{ aspectRatio: `${NATIVE_WIDTH} / ${NATIVE_HEIGHT}` }}>
           {frame ? (
             <img
               ref={imgRef}
@@ -211,16 +200,36 @@ export default function RemoteLoginModal({
           )}
         </div>
 
-        <div className="px-5 py-3 border-t border-base-300 flex items-center justify-between">
-          <span className="text-xs text-base-content/50">
-            {status === 'connecting' && 'Ouverture du navigateur...'}
-            {status === 'active' && 'Session active — cliquez dans la fenêtre pour interagir.'}
-            {status === 'done' && 'Terminé.'}
-            {status === 'error' && 'Échec.'}
-          </span>
-          <button className="btn btn-ghost btn-xs" onClick={onClose}>
-            Fermer
-          </button>
+        <div className="px-5 py-3 border-t border-base-300 space-y-2">
+          <div>
+            <label className="label py-0.5">
+              <span className="label-text text-xs">
+                Cliquez ici puis tapez — le texte est relayé dans le champ actif de la fenêtre ci-dessus
+              </span>
+            </label>
+            <input
+              ref={typeBoxRef}
+              type="text"
+              value=""
+              onChange={() => {}}
+              onKeyDown={handleKeyDown}
+              placeholder="Cliquez d'abord sur un champ dans l'aperçu, puis tapez ici..."
+              className="input input-sm input-bordered w-full font-mono"
+              disabled={status !== 'active'}
+              autoComplete="off"
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-base-content/50">
+              {status === 'connecting' && 'Ouverture du navigateur...'}
+              {status === 'active' && 'Session active — cliquez dans la fenêtre, puis tapez dans le champ ci-dessus.'}
+              {status === 'done' && 'Terminé.'}
+              {status === 'error' && 'Échec.'}
+            </span>
+            <button className="btn btn-ghost btn-xs" onClick={onClose}>
+              Fermer
+            </button>
+          </div>
         </div>
       </div>
     </div>
