@@ -249,7 +249,23 @@ export class BrowserSessionService implements OnModuleDestroy {
     // one on every single apply attempt, with no error anywhere in the
     // chain — the isolated reproduction (which never calls loadCookies)
     // kept succeeding while the real app kept failing identically.
-    if (siteName) {
+    //
+    // LinkedIn specifically skips this merge entirely rather than trying to
+    // filter it more precisely: confirmed live AGAIN, a second time, that
+    // an exact name+domain+path match wasn't narrow enough -- a stale
+    // on-disk cookie (a different domain variant of the same logical
+    // cookie, e.g. `li_at` under a slightly different scope) slipped past
+    // the "already exists" check as "supplemental" and still broke a
+    // freshly-established, genuinely valid session (the login page's own
+    // wall check started reporting logged-out again), which then cascaded
+    // into performDirectLogin attempting a password login with a WRONG,
+    // unrelated password borrowed from a different credential row's own
+    // fallback lookup. LinkedIn's session is always captured as one
+    // complete storageState snapshot (establish-session.js, and now
+    // RemoteLoginService) -- there's no legitimate case where it still
+    // needs supplementing from this file, only ways for it to get hurt by
+    // one.
+    if (siteName && siteName !== 'linkedin') {
       const saved = loadCookies(siteName);
       if (saved.length > 0) {
         const existingKeys = new Set(
