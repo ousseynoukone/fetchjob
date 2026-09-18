@@ -150,7 +150,15 @@ export class LinkedInApplier implements JobApplier {
     }
 
     await ctx.appendLog?.('Chargement du formulaire Easy Apply...');
-    const modalDialog = page.locator('.jobs-easy-apply-modal, [role="dialog"], .artdeco-modal').first();
+    // `:visible` matters here -- LinkedIn pages carry other permanently-hidden
+    // `[role="dialog"]` elements (confirmed live: the messaging overlay
+    // bubble in the bottom-right corner is one). A bare `.first()` over
+    // DOM order can land on one of those instead of the real Easy Apply
+    // modal, so this waits forever on an element that will never show while
+    // the actual form is already fully rendered right next to it.
+    const modalDialog = page
+      .locator('.jobs-easy-apply-modal:visible, [role="dialog"]:visible, .artdeco-modal:visible')
+      .first();
     await modalDialog.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
 
     // 18s used to be the budget; widened since confirmed live that a
@@ -180,13 +188,23 @@ export class LinkedInApplier implements JobApplier {
         .isVisible()
         .catch(() => false);
 
-      const hasInteractive = await page.evaluate(() => {
-        const doc = (globalThis as any).document;
-        const dialog = doc?.querySelector('.jobs-easy-apply-modal, [role="dialog"], .artdeco-modal');
-        if (!dialog) return false;
-        const inputs = Array.from(dialog.querySelectorAll('input:not([type=hidden]), textarea, select, button'));
-        return inputs.length > 0;
-      }).catch(() => false);
+      // Deliberately NOT `page.evaluate(() => document.querySelectorAll(...))`
+      // here -- confirmed live that it always found zero dialog candidates
+      // even while a screenshot taken at the exact same moment showed a
+      // fully rendered, usable modal. LinkedIn's Easy Apply modal is built
+      // with web components and lives inside a shadow root; raw DOM
+      // querySelectorAll does not pierce shadow roots, but Playwright's own
+      // locator CSS engine does (same reason `hasSpinner` above, which was
+      // always a `page.locator`, never had this problem). Using locators
+      // throughout avoids the blind spot entirely.
+      const visibleDialog = page
+        .locator('.jobs-easy-apply-modal:visible, [role="dialog"]:visible, .artdeco-modal:visible')
+        .first();
+      const dialogVisible = await visibleDialog.isVisible().catch(() => false);
+      const inputCount = dialogVisible
+        ? await visibleDialog.locator('input:not([type=hidden]), textarea, select, button').count().catch(() => 0)
+        : 0;
+      const hasInteractive = dialogVisible && inputCount > 0;
 
       if (!hasSpinner && hasInteractive) {
         modalLoaded = true;
@@ -209,7 +227,7 @@ export class LinkedInApplier implements JobApplier {
     let aiCallsUsed = 0;
     for (let step = 0; step < 8; step++) {
       const stepHeader = await page
-        .locator('[role="dialog"] h3, [role="dialog"] h2, .artdeco-modal__header')
+        .locator('[role="dialog"]:visible h3, [role="dialog"]:visible h2, .artdeco-modal__header:visible')
         .first()
         .innerText()
         .catch(() => '');
