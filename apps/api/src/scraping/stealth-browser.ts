@@ -112,6 +112,27 @@ export function randomProfile(): FingerprintProfile {
   return FINGERPRINT_PROFILES[Math.floor(Math.random() * FINGERPRINT_PROFILES.length)];
 }
 
+// Confirmed live: these profiles' own "Chrome/127.0.0.0" / "Chrome/126.0.0.0"
+// strings are hardcoded and drift out of date the moment a newer Chromium
+// build gets installed (`browser.version()` reported 153.0.8010.12 against
+// these -- a 26-major-version gap) -- exactly the kind of UA-vs-real-engine
+// mismatch Cloudflare/PerimeterX-style bot management checks for: modern
+// Chrome also exposes its REAL version via `navigator.userAgentData`
+// (Client Hints), which puppeteer-extra-plugin-stealth's own user-agent
+// override derives from whatever UA string it's handed rather than probing
+// the engine itself -- so a stale profile UA propagates into a stale (but
+// self-consistent-looking) Client Hints payload too, not just the legacy
+// header. Rewriting the Chrome version segment to match the ACTUAL running
+// browser at context-creation time removes this whole class of mismatch
+// instead of periodically hand-editing these strings as Chromium updates.
+// Left alone for a profile with no "Chrome/" segment (the Safari one) --
+// Safari's own version isn't tied to this project's Chromium build at all.
+export function withCurrentChromeVersion(fp: FingerprintProfile, realVersion: string): FingerprintProfile {
+  if (!fp.userAgent.includes('Chrome/')) return fp;
+  const userAgent = fp.userAgent.replace(/Chrome\/[\d.]+/, `Chrome/${realVersion}`);
+  return { ...fp, userAgent };
+}
+
 // ─── Timing helpers ───────────────────────────────────────────────────────────
 
 /** Random delay between [min, max] ms — makes timing look human. */
@@ -293,7 +314,7 @@ export interface StealthContextOptions {
  * Always call `context.close()` and `browser.close()` in a finally block.
  */
 export async function createStealthContext(options: StealthContextOptions = {}) {
-  const fp = options.profileIndex !== undefined ? FINGERPRINT_PROFILES[options.profileIndex] : randomProfile();
+  const rawFp = options.profileIndex !== undefined ? FINGERPRINT_PROFILES[options.profileIndex] : randomProfile();
   const isHeadless = process.env.AUTO_APPLY_HEADLESS !== 'false';
 
   const browser = await chromium.launch({
@@ -312,6 +333,11 @@ export async function createStealthContext(options: StealthContextOptions = {}) 
     ],
     ...(options.proxy ? { proxy: options.proxy } : {}),
   });
+
+  // See withCurrentChromeVersion — keeps the declared UA's Chrome version
+  // in sync with whatever Chromium build is actually running it.
+  const realVersion = browser.version();
+  const fp = withCurrentChromeVersion(rawFp, realVersion);
 
   const context = await browser.newContext({
     userAgent: fp.userAgent,

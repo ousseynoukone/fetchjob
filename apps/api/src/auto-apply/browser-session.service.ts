@@ -24,6 +24,7 @@ import {
   loadCookies,
   saveCookies,
   FINGERPRINT_PROFILES,
+  withCurrentChromeVersion,
 } from '../scraping/stealth-browser';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -164,7 +165,13 @@ export class BrowserSessionService implements OnModuleDestroy {
 
         // For authenticated sessions or platforms that monitor device consistency (like LinkedIn),
     // always use a standard Windows 10 Chrome desktop profile rather than a random Safari profile.
-    const fp = (sessionStateJson || siteName === 'linkedin') ? FINGERPRINT_PROFILES[0] : randomProfile();
+    const rawFp = (sessionStateJson || siteName === 'linkedin') ? FINGERPRINT_PROFILES[0] : randomProfile();
+    // Confirmed live: these profiles' own Chrome version segment (127/126)
+    // was 26+ major versions behind the actually-installed Chromium build
+    // (153) -- a mismatch bot management systems like Cloudflare check for
+    // directly via `navigator.userAgentData` (Client Hints), separate from
+    // the legacy UA string. See withCurrentChromeVersion.
+    const fp = withCurrentChromeVersion(rawFp, browser.version());
 
     let storageState: any;
     if (sessionStateJson) {
