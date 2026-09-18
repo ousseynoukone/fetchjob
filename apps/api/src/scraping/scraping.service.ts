@@ -15,8 +15,13 @@ import { SettingsService } from '../common/settings.service';
 import { blockHeavyResources } from '../auto-apply/appliers/ats-common';
 import { scrapeLinkedInWithStealth, ProxyRotator } from './linkedin-stealth';
 
+// A plain axios GET, not a real browser -- there's no live Chromium engine
+// here for this UA string to contradict via Client Hints the way the
+// stealth-browser.ts/remote-login.service.ts fixes address, so a stale
+// version here is a weaker signal on its own. Still bumped for general
+// hygiene/consistency with the rest of the codebase's now-current numbers.
 const DETAIL_PAGE_USER_AGENT =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36';
 
 // A search-results card is the whole offer for some sources (LinkedIn,
 // HelloWork) — no real description, just title/company/location stitched

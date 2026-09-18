@@ -1,13 +1,26 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { chromium } from 'playwright';
-import type { Browser, BrowserContext, Page, CDPSession } from 'playwright';
+import type { BrowserContext, Page, CDPSession } from 'playwright';
 import { Subject, Observable } from 'rxjs';
 import { randomUUID } from 'crypto';
+import * as path from 'path';
 import { CryptoService } from '../common/crypto.service';
 import { LocalUserService } from '../common/local-user.service';
 import { PrismaService } from '../common/prisma.service';
 import { SESSION_CHECKS } from '../auto-apply/appliers/ats-common';
+import { buildFingerprintScript, FINGERPRINT_PROFILES } from '../scraping/stealth-browser';
 import { SupportedPlatform } from './dto/upsert-credential.dto';
+
+// Docker-volume-backed (see docker-compose.yml) so a real, accumulating
+// Chrome profile per platform survives container restarts/rebuilds instead
+// of starting from a completely blank, zero-history browser on every single
+// login attempt -- confirmed live that a real person's own repeat login was
+// recognized as a trusted device/location by LinkedIn itself once the other
+// fingerprint gaps were closed, and a persistent profile is the next step
+// toward "looks like the same returning browser" rather than "looks new
+// every time". Not backed by a persistent volume on Render's free tier
+// (no such thing there), so this only actually helps local testing today.
+const PROFILE_BASE_DIR = process.env.REMOTE_LOGIN_PROFILE_DIR || '/root/.findurjob/remote-login-profiles';
 
 export interface RemoteLoginFrame {
   dataUrl: string | null;
@@ -23,7 +36,6 @@ export type RemoteLoginInputEvent =
 
 interface ActiveSession {
   platform: SupportedPlatform;
-  browser: Browser;
   context: BrowserContext;
   page: Page;
   cdpSession: CDPSession;
@@ -73,8 +85,45 @@ export class RemoteLoginService implements OnModuleDestroy {
     const sessionId = randomUUID();
     const frames = new Subject<RemoteLoginFrame>();
 
-    const browser = await chromium.launch({
+    // A throwaway launch purely to read the real installed Chromium's
+    // version -- launchPersistentContext below combines launch+context
+    // into one call, so there's no browser handle to query AFTER the fact
+    // the way the rest of the codebase's withCurrentChromeVersion does.
+    // Confirmed live tonight (a completely separate bug, in a different
+    // service): a hardcoded Chrome version in the UA string that doesn't
+    // match the REAL running engine is a direct, checkable contradiction
+    // bot-management systems look for -- modern Chrome also exposes its
+    // true version via navigator.userAgentData (Client Hints), which reads
+    // the real engine regardless of what UA string was declared.
+    const versionProbe = await chromium.launch({ headless: true, channel: 'chromium' });
+    const realChromeVersion = versionProbe.version();
+    await versionProbe.close();
+    const userAgent = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${realChromeVersion} Safari/537.36`;
+
+    // Confirmed live: this context was otherwise a plain, unmodified
+    // headless Chromium -- no WebGL/canvas spoofing, no header consistency
+    // with a real browser's own defaults, both real, checkable gaps
+    // between this and every other context this project creates. Reusing
+    // the SAME fingerprint profile browser-session.service.ts already uses
+    // for LinkedIn specifically ("always use a standard Windows 10 Chrome
+    // desktop profile rather than a random one -- platforms that monitor
+    // device consistency"), and its JS-only fingerprint script -- NOT the
+    // full puppeteer-extra-plugin-stealth package, which establish-session.js
+    // deliberately avoids because it broke HelloWork's own FriendlyCaptcha
+    // outright; buildFingerprintScript only overrides navigator/WebGL
+    // properties, nothing that should interfere with a real person solving
+    // a real CAPTCHA/2FA prompt themselves through the live view.
+    const fp = FINGERPRINT_PROFILES[0];
+    // launchPersistentContext, not launch()+newContext() -- a real, on-disk
+    // Chrome profile PER PLATFORM (cookies, cache, local storage) that
+    // survives across every future login attempt to that same platform
+    // instead of starting from a completely blank, zero-history browser
+    // every single time, which is itself a signal a real person's browser
+    // never gives off. See PROFILE_BASE_DIR above for the persistence
+    // caveat (local only, not on Render's free tier).
+    const context = await chromium.launchPersistentContext(path.join(PROFILE_BASE_DIR, platform), {
       headless: true,
+      channel: 'chromium',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -82,20 +131,32 @@ export class RemoteLoginService implements OnModuleDestroy {
         '--disable-infobars',
         '--lang=fr-FR',
       ],
-    });
-    const context = await browser.newContext({
-      userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
+      userAgent,
+      // Fixed at 1280x800, NOT fp.viewport (1920x1080) -- the frontend's
+      // click/wheel coordinate mapping is hardcoded to this exact size to
+      // match the CDP screencast's own maxWidth/maxHeight below; using the
+      // fingerprint profile's own viewport here would silently break every
+      // click's position without erroring anywhere.
       viewport: { width: 1280, height: 800 },
-      locale: 'fr-FR',
-      timezoneId: 'Europe/Paris',
+      locale: fp.locale,
+      timezoneId: fp.timezoneId,
+      deviceScaleFactor: fp.deviceScaleFactor,
+      colorScheme: 'light',
+      extraHTTPHeaders: {
+        'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Accept-Encoding': 'gzip, deflate, br',
+        DNT: '1',
+        'Upgrade-Insecure-Requests': '1',
+      },
     });
-    const page = await context.newPage();
+    await context.addInitScript(buildFingerprintScript(fp));
+    // A persistent context starts with one page already open (about:blank)
+    // rather than none -- reuse it instead of opening a second, unused tab.
+    const page = context.pages()[0] || (await context.newPage());
     const cdpSession = await context.newCDPSession(page);
 
     const session: ActiveSession = {
       platform,
-      browser,
       context,
       page,
       cdpSession,
@@ -248,7 +309,9 @@ export class RemoteLoginService implements OnModuleDestroy {
     session.frames.complete();
     this.sessions.delete(sessionId);
     await session.cdpSession.send('Page.stopScreencast').catch(() => {});
-    await session.browser.close().catch(() => {});
+    // Closing the context is enough -- launchPersistentContext has no
+    // separate reusable Browser instance the way launch()+newContext() did.
+    await session.context.close().catch(() => {});
   }
 
   async onModuleDestroy() {

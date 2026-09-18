@@ -80,6 +80,15 @@ services:
       # constraint. Defaults much higher here since local Docker Desktop
       # typically has several GB available.
       - CHROMIUM_RENDERER_HEAP_MB=${CHROMIUM_RENDERER_HEAP_MB:-1024}
+    # Backs remote-login.service.ts's persistent per-platform Chrome
+    # profiles -- without this, the container's own filesystem is wiped on
+    # every rebuild, and a brand-new, zero-history browser profile on every
+    # single login attempt is itself a real signal to a platform's own
+    # fraud detection (a real person's browser accumulates cookies/cache
+    # from years of ordinary use; this at least lets it accumulate across
+    # restarts instead of starting from nothing every time).
+    volumes:
+      - remote_login_profiles:/root/.findurjob/remote-login-profiles
     depends_on:
       postgres:
         condition: service_healthy
@@ -105,6 +114,7 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  remote_login_profiles:
 
 networks:
   default:

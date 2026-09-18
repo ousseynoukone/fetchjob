@@ -178,7 +178,14 @@ async function main() {
       '--lang=fr-FR',
     ],
   });
-  const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36';
+  // A hardcoded Chrome version here doesn't match whatever Chromium build
+  // Playwright actually installed (confirmed live: this project's install
+  // was 26+ majors ahead of a stale hardcoded "127"/"133") -- modern Chrome
+  // also exposes its real version via navigator.userAgentData (Client
+  // Hints), which reads the true engine regardless of what UA string was
+  // declared, so a stale one here is a checkable inconsistency even in a
+  // real, human-driven, headed browser window.
+  const userAgent = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${browser.version()} Safari/537.36`;
   const context = await browser.newContext({
     userAgent,
     viewport: { width: 1280, height: 800 },

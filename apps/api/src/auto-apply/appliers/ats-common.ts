@@ -331,13 +331,26 @@ export interface SessionCheck {
 // header still shows "S'identifier"/"S'inscrire", confirming logged-out).
 // The old URL/#username-only check missed this entirely, so the applier
 // just stalled trying to click a Postuler button the modal was covering.
-const LINKEDIN_LOGGED_OUT_TEXT = /identifiez[- ]vous pour voir qui vous connaissez|sign in to see who you already know/i;
+const LINKEDIN_LOGGED_OUT_TEXT =
+  /identifiez[- ]vous pour voir qui vous connaissez|sign in to see who you already know|identification suspecte|vérifi(ez|cation) (votre identité|d'identité)|suspicious login|verify (it'?s|its) you|quick security check|let'?s do a (quick )?security check/i;
 
 export const SESSION_CHECKS: Record<string, SessionCheck> = {
   linkedin: {
     homeUrl: 'https://www.linkedin.com/feed/',
     isLoginWallVisible: async (page) => {
-      if (page.url().includes('/login') || page.url().includes('/uas/login')) return true;
+      // Confirmed live: a real remote-login attempt landed on LinkedIn's
+      // own "vérification d'identité suspecte" checkpoint (asking for a
+      // one-time code) and this check reported success anyway -- neither
+      // "on /login" nor "#username visible" matches that page (it's
+      // neither the login form nor the authenticated feed), and it
+      // apparently renders enough header chrome to also satisfy the
+      // "hasNav = logged in" check below. A checkpoint/challenge/security
+      // page is genuinely a THIRD state, not proof of either login or
+      // logout, but treating it as "still not logged in" is the only safe
+      // choice -- there is no usable, complete session to save from it.
+      if (page.url().includes('/login') || page.url().includes('/uas/login') || page.url().includes('/checkpoint/')) {
+        return true;
+      }
       if (await page.locator('#username').isVisible().catch(() => false)) return true;
 
       // If top nav or profile avatar is visible, user is authenticated
