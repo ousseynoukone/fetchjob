@@ -116,7 +116,21 @@ export class FranceTravailApplier implements JobApplier {
     // repro without any of that overhead found the link reliably), leaving
     // the applier stuck operating on the original job-listing page instead
     // of the real form.
-    if (await nativeApplyLink.isVisible({ timeout: 5000 }).catch(() => false)) {
+    let nativeLinkVisible = await nativeApplyLink.isVisible({ timeout: 5000 }).catch(() => false);
+    // Confirmed live AGAIN: even the 5s poll above intermittently missed it
+    // under the real orchestrator's load (concurrent AI calls, screencast,
+    // shared browser process) on an offer independently confirmed, moments
+    // apart via an isolated check, to render this exact link reliably --
+    // a one-shot re-click gives the async-loaded panel (see the isDropdownToggle
+    // comment above -- `data-async-trigger="true"`) a second chance to land
+    // rather than falling through to the job-listing page's own unrelated
+    // widgets and misreporting one of THEIR fields as a blocking question.
+    if (!nativeLinkVisible) {
+      await applyButton.click({ force: true }).catch(() => applyButton.click().catch(() => {}));
+      await page.waitForTimeout(2000);
+      nativeLinkVisible = await nativeApplyLink.isVisible({ timeout: 5000 }).catch(() => false);
+    }
+    if (nativeLinkVisible) {
       await ctx.appendLog?.('Ouverture du formulaire natif France Travail (nouvel onglet)...');
       const popupPromise = page.waitForEvent('popup', { timeout: 8000 }).catch(() => null);
       await nativeApplyLink.click().catch(() => {});

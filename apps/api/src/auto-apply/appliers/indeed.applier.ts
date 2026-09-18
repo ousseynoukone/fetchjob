@@ -75,8 +75,14 @@ export class IndeedApplier implements JobApplier {
     }
 
     if (ctx.coverLetter) {
+      // Confirmed live via a real smartapply.indeed.com click-through:
+      // widened to match "motivation"/"message" wording too, the same
+      // French phrasings every other applier here already accounts for --
+      // this one only ever looked for "cover" or "lettre".
       const coverLetterField = target
-        .locator('textarea[id*="cover" i], textarea[aria-label*="lettre" i], textarea[aria-label*="cover" i]')
+        .locator(
+          'textarea[id*="cover" i], textarea[aria-label*="lettre" i], textarea[aria-label*="cover" i], textarea[aria-label*="motivation" i], textarea[id*="motivation" i], textarea[name*="message" i]',
+        )
         .first();
       if (await coverLetterField.isVisible().catch(() => false)) {
         await coverLetterField.fill(ctx.coverLetter).catch(() => {});
@@ -84,9 +90,18 @@ export class IndeedApplier implements JobApplier {
     }
 
     return runFormLoop(target, ctx, this.ai, {
-      submitText: /submit( your)? application|envoyer( ma)? candidature|postuler$/i,
+      // Confirmed live: Indeed's real submit button on smartapply.indeed.com
+      // reads "Déposer ma candidature" -- matched neither "envoyer ma
+      // candidature" nor a bare "postuler" ending, so a fully-completed
+      // form would never hit the free fast-path submit and always fell
+      // through to the costed AI fallback for that one click.
+      submitText: /submit( your)? application|envoyer( ma)? candidature|postuler$|déposer( ma candidature)?/i,
       nextText: /continue|continuer|next|suivant/i,
-      successText: /application submitted|candidature envoyée|votre candidature a bien été envoyée/i,
+      // Confirmed live: the real confirmation heading reads "Votre
+      // candidature a été envoyée à <employeur>" -- no "bien" -- which the
+      // previous pattern required, so a genuinely successful Indeed
+      // submission was reported as "confirmation non détectée" every time.
+      successText: /application submitted|candidature envoyée|votre candidature a (bien )?été envoyée/i,
       blockedNote: 'Le formulaire de candidature Indeed contient une question non renseignée — à finaliser manuellement.',
       unresolvedNote: 'Soumission Indeed envoyée mais confirmation non détectée — à vérifier manuellement.',
     });
