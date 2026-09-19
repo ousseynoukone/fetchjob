@@ -75,7 +75,10 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email.trim()) return;
+    // A pasted session (storageState JSON) authenticates on its own -- email
+    // is only ever a display label, so either it or a session is enough to
+    // save, not both.
+    if (!email.trim() && !sessionState.trim()) return;
     setSaving(true);
     const ok = await saveCredentials(
       platform,
@@ -174,11 +177,10 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <div>
               <label className="label py-0.5">
-                <span className="label-text text-xs">Email / Identifiant</span>
+                <span className="label-text text-xs">Email / Identifiant (optionnel si session collée ci-dessous)</span>
               </label>
               <input
                 type="email"
-                required
                 placeholder="votre.compte@example.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -244,7 +246,7 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
             </button>
             <button
               type="submit"
-              disabled={saving || !email}
+              disabled={saving || (!email.trim() && !sessionState.trim())}
               className="btn btn-primary btn-xs"
             >
               {saving ? 'Enregistrement...' : 'Enregistrer'}

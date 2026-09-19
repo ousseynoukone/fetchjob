@@ -61,9 +61,11 @@ export class PlatformCredentialsService {
     return this.listStatus();
   }
 
-  async upsert(dto: { platform: SupportedPlatform; email: string; password?: string; sessionState?: string }) {
+  async upsert(dto: { platform: SupportedPlatform; email?: string; password?: string; sessionState?: string }) {
     const userId = await this.localUser.getDefaultUserId();
-    const emailEncrypted = this.crypto.encrypt(dto.email);
+    // A cookie-only session has no real email to show -- same placeholder
+    // remote-login.service.ts already uses when nothing was captured.
+    const emailEncrypted = this.crypto.encrypt(dto.email?.trim() || '(session importée)');
     const payload = JSON.stringify({
       password: dto.password ?? null,
       storageState: dto.sessionState ?? null,
