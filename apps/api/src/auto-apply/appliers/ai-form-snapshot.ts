@@ -79,7 +79,33 @@ function buildFormSnapshotOnce(page: Page): Promise<FormSnapshot> {
         return idx;
       };
 
-      const isVisible = (el: any) => !!(el.offsetParent || (el.getClientRects && el.getClientRects().length));
+      // Confirmed live on HelloWork, with an actual captured DOM chain: a
+      // collapsed "Personnaliser mon message au recruteur" accordion panel
+      // (Tailwind's `max-h-0 overflow-hidden` pattern) clips its content to
+      // nothing via the WRAPPING div (clientHeight 0, maxHeight "0px",
+      // overflow "hidden") -- but the textarea INSIDE it still reports its
+      // own full intrinsic size (h:24) via getBoundingClientRect, since CSS
+      // clipping on an ancestor doesn't change a descendant's own measured
+      // box. Neither offsetParent/getClientRects nor the element's own rect
+      // alone can tell this apart from a genuinely visible field; only
+      // walking up and checking whether an ancestor is actually clipping it
+      // to zero can.
+      const isVisible = (el: any) => {
+        if (!el.offsetParent && !(el.getClientRects && el.getClientRects().length)) return false;
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return false;
+        let node = el.parentElement;
+        let depth = 0;
+        while (node && depth < 10) {
+          const style = (globalThis as any).getComputedStyle(node);
+          if ((style.overflow === 'hidden' || style.overflowY === 'hidden') && node.clientHeight === 0) {
+            return false;
+          }
+          node = node.parentElement;
+          depth++;
+        }
+        return true;
+      };
       const truncate = (s: string) => (s || '').trim().replace(/\s+/g, ' ').slice(0, maxLabelLen);
 
       const extractLabel = (el: any): string => {

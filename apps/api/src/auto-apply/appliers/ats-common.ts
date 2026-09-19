@@ -89,7 +89,33 @@ async function scanIdentityFields(page: Page): Promise<{ role: IdentityRole; idx
       Object.entries(patterns).map(([role, p]) => [role, new RegExp(p.source, p.flags)]),
     ) as Record<IdentityRole, RegExp>;
 
-    const isVisible = (el: any) => !!(el.offsetParent || (el.getClientRects && el.getClientRects().length));
+    // Same fix as ai-form-snapshot.ts's own isVisible, applied here for the
+    // same reason: a collapsed accordion panel (Tailwind's `max-h-0
+    // overflow-hidden` pattern, confirmed live on HelloWork) clips its
+    // content to nothing via a WRAPPING element, but a field inside it
+    // still reports its own full intrinsic size via getBoundingClientRect
+    // -- neither offsetParent/getClientRects nor the element's own rect
+    // alone can tell that apart from a genuinely visible field, only
+    // walking up and checking whether an ancestor is actually clipping it
+    // to zero can. Matters here too: a hidden duplicate/template field
+    // inside a collapsed section could otherwise silently receive the
+    // fill instead of (or alongside) the real visible one.
+    const isVisible = (el: any) => {
+      if (!el.offsetParent && !(el.getClientRects && el.getClientRects().length)) return false;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return false;
+      let node = el.parentElement;
+      let depth = 0;
+      while (node && depth < 10) {
+        const style = (globalThis as any).getComputedStyle(node);
+        if ((style.overflow === 'hidden' || style.overflowY === 'hidden') && node.clientHeight === 0) {
+          return false;
+        }
+        node = node.parentElement;
+        depth++;
+      }
+      return true;
+    };
 
     const extractLabel = (el: any): string => {
       const id = el.getAttribute('id');

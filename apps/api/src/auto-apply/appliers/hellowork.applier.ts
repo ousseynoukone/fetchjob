@@ -91,7 +91,13 @@ export class HelloWorkApplier implements JobApplier {
     }
 
     return runFormLoop(page, ctx, this.ai, {
-      submitText: /envoyer( ma)? candidature|valider ma candidature/i,
+      // Confirmed live: a real HelloWork apply form's actual submit button
+      // just reads "Postuler" -- matching neither original alternative --
+      // so the fast, free submit-button path never fired, and the AI
+      // fallback got invoked on a form that was already fully filled
+      // (Prénom/Nom/Email/CV all set) every single time, sometimes stopping
+      // rather than confidently clicking a button it wasn't told is safe.
+      submitText: /envoyer( ma)? candidature|valider ma candidature|^postuler$/i,
       nextText: /suivant|continuer/i,
       // Confirmed live via a captured screenshot: HelloWork's real
       // confirmation toast reads "Félicitations ! Votre candidature au
