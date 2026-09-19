@@ -1,6 +1,6 @@
 import { IsIn, IsOptional, IsString } from 'class-validator';
 
-export const SUPPORTED_PLATFORMS = ['linkedin', 'indeed', 'france_travail', 'hellowork', 'welcome_to_the_jungle'] as const;
+export const SUPPORTED_PLATFORMS = ['linkedin', 'indeed', 'france_travail', 'hellowork', 'welcome_to_the_jungle', 'apec', 'gmail'] as const;
 export type SupportedPlatform = (typeof SUPPORTED_PLATFORMS)[number];
 
 export class UpsertCredentialDto {

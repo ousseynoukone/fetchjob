@@ -48,6 +48,8 @@ const PLATFORM_LABELS: Record<SupportedPlatform, string> = {
   france_travail: 'France Travail',
   hellowork: 'HelloWork',
   welcome_to_the_jungle: 'Welcome to the Jungle',
+  apec: 'APEC',
+  gmail: 'Gmail',
 };
 
 // Only LinkedIn's applier ever attempts an automatic email/password login
@@ -72,7 +74,15 @@ const PLATFORM_NOTES: Partial<Record<SupportedPlatform, string>> = {
   hellowork: "HelloWork fait passer un contrôle anti-robot (FriendlyCaptcha) à la connexion — à valider toi-même dans la fenêtre \"Se connecter\".",
   france_travail: "Identifiant France Travail : ton identifiant numérique, pas une adresse e-mail.",
   welcome_to_the_jungle: "Beaucoup d'annonces renvoient vers l'outil de recrutement de l'employeur : l'envoi automatique ne couvre que celles hébergées directement par Welcome to the Jungle.",
+  gmail: "Sert au robot à relever les codes et liens d'activation que les sites d'employeurs envoient après une inscription. La connexion se fait à la main : Google refuse — et sanctionne — une saisie automatisée.",
 };
+
+// Gmail never stores a password (see remote-login.service.ts's
+// MANUAL_CONFIRM_PLATFORMS) and has no cookie-paste fallback -- the "Se
+// connecter"/"Reconnecter" button (remote-login) is the only path, so the
+// edit form and its "Autre méthode" fallback below are simply pointless
+// for it, not just optional.
+const MANUAL_ONLY_PLATFORMS = new Set<SupportedPlatform>(['gmail']);
 
 function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
   const { items, remove, saveCredentials, fetchStatus } = usePlatformCredentialsStore();
@@ -85,6 +95,7 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
   const [saving, setSaving] = useState(false);
   const [showRemoteLogin, setShowRemoteLogin] = useState(false);
   const supportsAutoLogin = AUTO_LOGIN_PLATFORMS.has(platform);
+  const isManualOnly = MANUAL_ONLY_PLATFORMS.has(platform);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -114,7 +125,7 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
         {item?.configured ? (
           <div className="flex items-center gap-2">
             <span className="badge badge-success badge-sm gap-1 text-xs">
-              <CheckCircle2 className="w-3 h-3" /> {item.email}
+              <CheckCircle2 className="w-3 h-3" /> {isManualOnly ? 'Connecté' : item.email}
             </span>
             <button
               type="button"
@@ -124,13 +135,15 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
             >
               <MonitorPlay className="w-3.5 h-3.5" /> Reconnecter
             </button>
-            <button
-              type="button"
-              className="btn btn-ghost btn-xs text-base-content/60 hover:text-primary"
-              onClick={() => setIsEditing(!isEditing)}
-            >
-              {isEditing ? 'Annuler' : 'Modifier'}
-            </button>
+            {!isManualOnly && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs text-base-content/60 hover:text-primary"
+                onClick={() => setIsEditing(!isEditing)}
+              >
+                {isEditing ? 'Annuler' : 'Modifier'}
+              </button>
+            )}
             <button
               type="button"
               className="btn btn-ghost btn-xs text-error"
@@ -143,16 +156,16 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
         ) : (
           <div className="flex items-center gap-2">
             <span className="badge badge-ghost badge-sm gap-1 text-xs text-base-content/60">
-              <XCircle className="w-3 h-3" /> Non configuré
+              <XCircle className="w-3 h-3" /> {isManualOnly ? 'Pas de session' : 'Non configuré'}
             </span>
             <button
               type="button"
               className="btn btn-primary btn-xs gap-1"
               onClick={() => setShowRemoteLogin(true)}
             >
-              <MonitorPlay className="w-3.5 h-3.5" /> Se connecter
+              <MonitorPlay className="w-3.5 h-3.5" /> {isManualOnly ? 'Se connecter à la main' : 'Se connecter'}
             </button>
-            {!isEditing && (
+            {!isEditing && !isManualOnly && (
               <button
                 type="button"
                 className="btn btn-ghost btn-xs text-base-content/60"
@@ -170,7 +183,7 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
       )}
       {item?.lastLoginError && <p className="text-xs text-error mb-2">{item.lastLoginError}</p>}
 
-      {isEditing ? (
+      {isEditing && !isManualOnly ? (
         <form onSubmit={handleSubmit} className="mt-3 pt-3 border-t border-base-300 space-y-3">
           {!supportsAutoLogin && (
             <p className="text-xs text-base-content/60 bg-base-200 rounded-lg p-2 leading-relaxed">
@@ -264,7 +277,8 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
           </div>
         </form>
       ) : (
-        !item?.configured && (
+        !item?.configured &&
+        !isManualOnly && (
           <p className="text-xs text-base-content/50 mt-1">
             Cliquez sur « Se connecter » pour vous connecter à {PLATFORM_LABELS[platform]} directement
             depuis un navigateur intégré à l'application — vos identifiants ne sont jamais envoyés à
@@ -500,6 +514,8 @@ export default function SettingsPage() {
                 <PlatformCredentialRow platform="france_travail" />
                 <PlatformCredentialRow platform="hellowork" />
                 <PlatformCredentialRow platform="welcome_to_the_jungle" />
+                <PlatformCredentialRow platform="apec" />
+                <PlatformCredentialRow platform="gmail" />
               </div>
             </div>
 

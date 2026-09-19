@@ -517,6 +517,33 @@ export const SESSION_CHECKS: Record<string, SessionCheck> = {
     isLoginWallVisible: async (page) =>
       page.getByRole('link', { name: /se connecter/i }).first().isVisible().catch(() => false),
   },
+  apec: {
+    // Confirmed live via a real recorded session (a user-provided Chrome
+    // DevTools Recorder export, not guessed): an anonymous visit to this
+    // exact URL auto-opens APEC's own login popup (#popin-connexion) with
+    // its #emailid/#password fields, the same popup the recording captured
+    // being triggered from the "Mon espace" header link. That same
+    // #emailid field also appears inline on the apply page itself when not
+    // authenticated (see ApecApplier), so both share this one check.
+    homeUrl: 'https://www.apec.fr/candidat/mon-espace.html',
+    isLoginWallVisible: async (page) => page.locator('#emailid').first().isVisible().catch(() => false),
+  },
+  // Not used for continuous auto-polling the way every other platform's
+  // check is (see remote-login.service.ts's MANUAL_CONFIRM_PLATFORMS) --
+  // Google's own login is a multi-step flow (identifier -> password -> 2FA)
+  // that repeatedly probing the DOM of is exactly the kind of automated
+  // interaction Google actively fingerprints and penalizes accounts for.
+  // Checked exactly once, only after the person themselves clicks "J'ai
+  // terminé".
+  gmail: {
+    // Confirmed live: an anonymous visit here redirects to
+    // accounts.google.com's own sign-in flow and stays there — URL-based,
+    // not a DOM selector, since a real login here can pass through several
+    // different-looking pages (email entry, password, 2FA) all on that
+    // same host before finally redirecting back to mail.google.com.
+    homeUrl: 'https://mail.google.com/mail/u/0/#inbox',
+    isLoginWallVisible: async (page) => page.url().includes('accounts.google.com'),
+  },
 };
 
 // Used by the verification pass (see verification.service.ts) to confirm a

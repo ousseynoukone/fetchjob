@@ -18,7 +18,15 @@ const PLATFORM_LABELS: Record<SupportedPlatform, string> = {
   france_travail: 'France Travail',
   hellowork: 'HelloWork',
   welcome_to_the_jungle: 'Welcome to the Jungle',
+  apec: 'APEC',
+  gmail: 'Gmail',
 };
+
+// Google's own login is a multi-step flow this app never auto-polls for
+// completion (see remote-login.service.ts's MANUAL_CONFIRM_PLATFORMS,
+// same reasoning as its "never auto-fill a Google password" rule) -- the
+// person confirms it themselves once actually done instead.
+const MANUAL_CONFIRM_PLATFORMS = new Set<SupportedPlatform>(['gmail']);
 
 type Status = 'connecting' | 'active' | 'done' | 'error';
 
@@ -34,6 +42,8 @@ export default function RemoteLoginModal({
   const [status, setStatus] = useState<Status>('connecting');
   const [message, setMessage] = useState<string | null>(null);
   const [frame, setFrame] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const isManualConfirm = MANUAL_CONFIRM_PLATFORMS.has(platform);
   const sessionIdRef = useRef<string | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -144,6 +154,28 @@ export default function RemoteLoginModal({
     sendInput({ kind: 'wheel', x, y, deltaX: e.deltaX, deltaY: e.deltaY });
   };
 
+  const handleConfirm = async () => {
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) return;
+    setConfirming(true);
+    try {
+      const res = await apiClient.post(
+        `/api/parametres/identifiants/${platform}/remote-login/${sessionId}/confirm`,
+      );
+      setMessage(res.data.message);
+      if (res.data.success) {
+        intentionalCloseRef.current = true;
+        setStatus('done');
+        onLoggedIn();
+        sourceRef.current?.close();
+      }
+    } catch (error: any) {
+      setMessage(error.response?.data?.message || 'Échec de la confirmation.');
+    } finally {
+      setConfirming(false);
+    }
+  };
+
   // Confirmed live, three times over: an invisible <input>, a focusable
   // container <div>, and even a real, always-visible <input> the person
   // explicitly clicked into ALL failed identically -- server-side logging
@@ -198,7 +230,9 @@ export default function RemoteLoginModal({
           <div>
             <h3 className="font-semibold text-sm">Connexion {PLATFORM_LABELS[platform]}</h3>
             <p className="text-xs text-base-content/50">
-              Connectez-vous comme dans un navigateur normal — cliquez et tapez directement dans l'aperçu.
+              {isManualConfirm
+                ? "Connecte-toi normalement, 2FA ou captcha compris, puis clique sur \"J'ai terminé\" ci-dessous."
+                : "Connectez-vous comme dans un navigateur normal — cliquez et tapez directement dans l'aperçu."}
             </p>
           </div>
           <button className="btn btn-ghost btn-xs btn-circle" onClick={onClose}>
@@ -261,13 +295,21 @@ export default function RemoteLoginModal({
           <div className="flex items-center justify-between">
             <span className="text-xs text-base-content/50">
               {status === 'connecting' && 'Ouverture du navigateur...'}
-              {status === 'active' && 'Session active — cliquez dans la fenêtre, puis tapez dans le champ ci-dessus.'}
+              {status === 'active' && !isManualConfirm && 'Session active — cliquez dans la fenêtre, puis tapez dans le champ ci-dessus.'}
+              {status === 'active' && isManualConfirm && (message || 'Session active — connecte-toi, puis clique sur "J\'ai terminé".')}
               {status === 'done' && 'Terminé.'}
               {status === 'error' && 'Échec.'}
             </span>
-            <button className="btn btn-ghost btn-xs" onClick={onClose}>
-              Fermer
-            </button>
+            <div className="flex items-center gap-2">
+              {isManualConfirm && status === 'active' && (
+                <button className="btn btn-primary btn-xs" onClick={handleConfirm} disabled={confirming}>
+                  {confirming ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "J'ai terminé"}
+                </button>
+              )}
+              <button className="btn btn-ghost btn-xs" onClick={onClose}>
+                Fermer
+              </button>
+            </div>
           </div>
         </div>
       </div>

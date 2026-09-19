@@ -12,6 +12,7 @@ import { IndeedApplier } from './appliers/indeed.applier';
 import { FranceTravailApplier } from './appliers/france-travail.applier';
 import { HelloWorkApplier } from './appliers/hellowork.applier';
 import { WelcomeToTheJungleApplier } from './appliers/wttj.applier';
+import { ApecApplier } from './appliers/apec.applier';
 import { GreenhouseApplier } from './appliers/greenhouse.applier';
 import { LeverApplier } from './appliers/lever.applier';
 import { WorkdayApplier } from './appliers/workday.applier';
@@ -28,6 +29,7 @@ import { GenericApplier } from './appliers/generic.applier';
     FranceTravailApplier,
     HelloWorkApplier,
     WelcomeToTheJungleApplier,
+    ApecApplier,
     GreenhouseApplier,
     LeverApplier,
     WorkdayApplier,

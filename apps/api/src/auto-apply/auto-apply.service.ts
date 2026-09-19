@@ -15,6 +15,7 @@ import { IndeedApplier } from './appliers/indeed.applier';
 import { FranceTravailApplier } from './appliers/france-travail.applier';
 import { HelloWorkApplier } from './appliers/hellowork.applier';
 import { WelcomeToTheJungleApplier } from './appliers/wttj.applier';
+import { ApecApplier } from './appliers/apec.applier';
 import { GreenhouseApplier } from './appliers/greenhouse.applier';
 import { LeverApplier } from './appliers/lever.applier';
 import { WorkdayApplier } from './appliers/workday.applier';
@@ -122,6 +123,7 @@ export class AutoApplyService {
     franceTravail: FranceTravailApplier,
     helloWork: HelloWorkApplier,
     wttj: WelcomeToTheJungleApplier,
+    apec: ApecApplier,
     greenhouse: GreenhouseApplier,
     lever: LeverApplier,
     workday: WorkdayApplier,
@@ -134,6 +136,7 @@ export class AutoApplyService {
       france_travail: franceTravail,
       hellowork: helloWork,
       welcome_to_the_jungle: wttj,
+      apec: apec,
     };
     this.atsAppliers = {
       greenhouse,

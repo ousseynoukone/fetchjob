@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import apiClient from './api-client';
 import { toast } from './toast-store';
 
-export type SupportedPlatform = 'linkedin' | 'indeed' | 'france_travail' | 'hellowork' | 'welcome_to_the_jungle';
+export type SupportedPlatform = 'linkedin' | 'indeed' | 'france_travail' | 'hellowork' | 'welcome_to_the_jungle' | 'apec' | 'gmail';
 
 export interface PlatformCredentialStatus {
   platform: SupportedPlatform;
