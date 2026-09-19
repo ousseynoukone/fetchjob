@@ -3,6 +3,7 @@ import type { AiService } from '../../ai/ai.service';
 import { ApplyContext, ApplyResult } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
 import { buildFormSnapshot, applyFormPlan, formatFieldsForPrompt, formatButtonsForPrompt, buildCandidateBrief } from './ai-form-snapshot';
+import { humanClick } from './ats-common';
 
 export interface FormLoopOptions {
   maxSteps?: number;
@@ -85,7 +86,7 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
     const preSubmitSnapshot = await buildFormSnapshot(page);
     const submitButton = page.getByRole('button', { name: opts.submitText }).first();
     if (!preSubmitSnapshot.fields.length && (await submitButton.isVisible().catch(() => false))) {
-      await submitButton.click().catch(() => {});
+      await humanClick(page, submitButton).catch(() => {});
       await page.waitForTimeout(2500);
       const confirmed = await detectFormSuccess(page, opts.successText, opts.successUrl);
       return confirmed ? { success: true } : await reportBlockedState(page, ctx, opts.unresolvedNote);
@@ -93,7 +94,7 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
 
     const nextButton = page.getByRole('button', { name: opts.nextText }).first();
     if (await nextButton.isVisible().catch(() => false)) {
-      await nextButton.click().catch(() => {});
+      await humanClick(page, nextButton).catch(() => {});
       await page.waitForTimeout(1200);
       // Some "next" buttons (e.g. HelloWork's "Continuer ma candidature")
       // actually validate the current step rather than freely advancing —

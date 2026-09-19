@@ -1,6 +1,7 @@
 import type { Page } from 'playwright';
 import type { ApplyContext } from './applier.interface';
 import { KNOWN_FIELD_LABEL_EXCLUDE } from './form-fields';
+import { humanFill, humanClick } from './ats-common';
 
 // The functions passed to page.evaluate() below run inside the browser, not
 // in Node — this project's tsconfig has no DOM lib, so `document` is
@@ -297,14 +298,14 @@ export async function applyFormPlan(page: Page, plan: FormStepPlan): Promise<voi
         .selectOption({ label: f.value })
         .catch(() => el.selectOption(f.value).catch(() => {}));
     } else {
-      await el.fill(f.value).catch(() => {});
+      await humanFill(el, f.value);
     }
   }
 
   if (plan.action?.idx != null) {
     const btn = page.locator(`[data-ai-idx="${plan.action.idx}"]`).first();
     if ((await btn.count().catch(() => 0)) > 0) {
-      await btn.click().catch(() => btn.evaluate((e: any) => e.click()).catch(() => {}));
+      await humanClick(page, btn).catch(() => btn.evaluate((e: any) => e.click()).catch(() => {}));
     }
   }
 }

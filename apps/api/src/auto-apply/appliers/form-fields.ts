@@ -196,7 +196,17 @@ async function fillIfKnown(handle: ElementHandle<any>, knownAnswers: Map<string,
     // "options" to match against, unlike a radio group.
     await handle.evaluate((el) => { if (!el.checked) el.click(); });
   } else {
-    await handle.fill(answer).catch(() => {});
+    // Same "type it, don't just set the value" reasoning as
+    // ats-common.ts's humanFill (a Locator-only API this ElementHandle-based
+    // function can't call directly) -- .fill() here skips real keystroke
+    // events and mouse movement entirely.
+    try {
+      await handle.hover();
+      await handle.click();
+      await handle.type(answer, { delay: 35 + Math.random() * 70 });
+    } catch {
+      await handle.fill(answer).catch(() => {});
+    }
   }
 }
 
