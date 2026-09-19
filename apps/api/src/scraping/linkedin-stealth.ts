@@ -126,6 +126,14 @@ export async function scrapeLinkedInWithStealth(params: LinkedInSearchParams): P
       searchUrl.searchParams.set('keywords', params.keywords);
       searchUrl.searchParams.set('location', params.location ?? 'France');
       searchUrl.searchParams.set('start', String(start));
+      // Confirmed live (diffed job IDs between a filtered and unfiltered
+      // request, genuinely different result sets): LinkedIn's own `f_AL`
+      // param restricts results to "Candidature simplifiée"/Easy Apply
+      // postings -- ones LinkedIn's own in-platform apply flow can actually
+      // handle, instead of an unpredictable external ATS this applier has
+      // no session for. Prioritizing these directly raises the real
+      // auto-apply success rate rather than just the raw scanned count.
+      searchUrl.searchParams.set('f_AL', 'true');
       if (params.datePosted) searchUrl.searchParams.set('f_TPR', params.datePosted);
       // Confirmed live: this was never sent at all -- every LinkedIn search
       // ran unscoped by contract type, relying entirely on a post-hoc
