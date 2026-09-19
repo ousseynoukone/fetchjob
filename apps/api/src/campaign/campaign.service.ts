@@ -8,24 +8,7 @@ import { MatchingService } from '../matching/matching.service';
 import { ApplicationPrepService } from '../applications/application-prep.service';
 import { AutoApplyService } from '../auto-apply/auto-apply.service';
 import { UpdateCampaignDto } from './dto/update-campaign.dto';
-
-const IDF_LOCATION_TERMS = [
-  'ile de france', 'paris', 'seine et marne', 'yvelines', 'essonne',
-  'hauts de seine', 'seine saint denis', 'val de marne', 'val d oise',
-  '(75)', '(77)', '(78)', '(91)', '(92)', '(93)', '(94)', '(95)',
-];
-
-const DIACRITICS_REGEX = new RegExp('[\\u0300-\\u036f]', 'g');
-
-function normalizeText(text: string): string {
-  return (text || '')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(DIACRITICS_REGEX, '')
-    .replace(/[-']/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
+import { normalizeText, locationWithinRegion } from '../common/location-region';
 
 // JobOffer uniqueness is per (source, externalId), so the same posting
 // cross-listed on e.g. LinkedIn and HelloWork creates two distinct JobOffer
@@ -47,10 +30,7 @@ function isWithinIdf(source: string, offerLocation: string | undefined, campaign
   if (normalizeText(campaignLocation) !== 'ile de france') return true;
   if (!offerLocation) return true;
 
-  const normalized = normalizeText(offerLocation);
-  if (normalized.includes('remote') || normalized.includes('teletravail')) return true;
-
-  return IDF_LOCATION_TERMS.some((term) => normalized.includes(term));
+  return locationWithinRegion(offerLocation, campaignLocation) === 'yes';
 }
 
 const DEFAULT_CAMPAIGN = {
@@ -711,6 +691,7 @@ export class CampaignService implements OnModuleInit {
               },
               targetKeywords,
               (campaign.seniorityKeywords as string[]) || [],
+              campaign.location,
             );
 
             if (result.score < campaign.minMatchScore) {
