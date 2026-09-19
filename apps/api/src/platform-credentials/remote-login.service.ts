@@ -58,6 +58,12 @@ interface ActiveSession {
   pollTimer: NodeJS.Timeout;
   consecutiveLoggedIn: number;
   closed: boolean;
+  // setInterval keeps firing whether or not the previous tick finished --
+  // a tick that outlives the 2s interval (a slow DOM read on a page still
+  // loading) would otherwise stack up concurrent Playwright operations
+  // against the same page, starving the CDP screencast and freezing the
+  // live view exactly when someone is trying to log in.
+  polling?: boolean;
   // Best-effort capture of whatever the user types into the login form
   // during this session -- not read back this session, only saved once
   // login succeeds so the NEXT login to this same platform can be
@@ -515,17 +521,23 @@ export class RemoteLoginService implements OnModuleDestroy {
   // Runs on the existing poll tick, so it costs one extra DOM read every 2s
   // and nothing else.
   private async snapshotLoginFields(session: ActiveSession): Promise<void> {
+    // Explicit short timeouts, NOT Playwright's 30s default: inputValue()
+    // auto-waits for the element, and this runs on the 2s poll tick, so on a
+    // page where the field hasn't rendered yet (France Travail's login SPA
+    // takes ~4s, and shows a spinner meanwhile) the default would stack up
+    // a dozen-plus concurrent hanging operations against the same page --
+    // confirmed live to starve the CDP screencast and stall the live view.
     const email = await session.page
       .locator(LOGIN_EMAIL_SELECTOR)
       .first()
-      .inputValue()
+      .inputValue({ timeout: 1000 })
       .catch(() => '');
     if (email.trim()) session.capturedEmail = email.trim();
 
     const password = await session.page
       .locator(LOGIN_PASSWORD_SELECTOR)
       .first()
-      .inputValue()
+      .inputValue({ timeout: 1000 })
       .catch(() => '');
     if (password) session.capturedPassword = password;
   }
@@ -536,28 +548,33 @@ export class RemoteLoginService implements OnModuleDestroy {
 
   private async pollLoginState(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
-    if (!session || session.closed) return;
+    if (!session || session.closed || session.polling) return;
 
-    const check = SESSION_CHECKS[session.platform];
-    const onLoginWall = await check.isLoginWallVisible(session.page).catch(() => true);
+    session.polling = true;
+    try {
+      const check = SESSION_CHECKS[session.platform];
+      const onLoginWall = await check.isLoginWallVisible(session.page).catch(() => true);
 
-    if (onLoginWall) {
-      session.consecutiveLoggedIn = 0;
-      // Still on the login form — whatever's in its fields right now is the
-      // best candidate for what the person is about to submit with.
-      await this.snapshotLoginFields(session).catch(() => {});
-      return;
+      if (onLoginWall) {
+        session.consecutiveLoggedIn = 0;
+        // Still on the login form — whatever's in its fields right now is
+        // the best candidate for what the person is about to submit with.
+        await this.snapshotLoginFields(session).catch(() => {});
+        return;
+      }
+
+      // Confirmed necessary live (same reasoning as auto-apply's own login
+      // checks): a single "not on the login wall" reading can land mid
+      // client-side navigation, before the real authenticated page has
+      // actually rendered. Two consecutive clean reads, 2s apart, before
+      // treating it as a genuine login.
+      session.consecutiveLoggedIn++;
+      if (session.consecutiveLoggedIn < 2) return;
+
+      await this.persistSuccessfulSession(sessionId, session);
+    } finally {
+      session.polling = false;
     }
-
-    // Confirmed necessary live (same reasoning as auto-apply's own login
-    // checks): a single "not on the login wall" reading can land mid
-    // client-side navigation, before the real authenticated page has
-    // actually rendered. Two consecutive clean reads, 2s apart, before
-    // treating it as a genuine login.
-    session.consecutiveLoggedIn++;
-    if (session.consecutiveLoggedIn < 2) return;
-
-    await this.persistSuccessfulSession(sessionId, session);
   }
 
   // Shared by pollLoginState's auto-detected success (every other platform)
