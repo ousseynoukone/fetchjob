@@ -13,6 +13,7 @@ const SOURCES = [
   { id: 'france_travail', label: 'France Travail' },
   { id: 'welcome_to_the_jungle', label: 'Welcome to the Jungle' },
   { id: 'adzuna', label: 'Adzuna' },
+  { id: 'apec', label: 'APEC' },
   { id: 'remotive', label: 'Remotive (remote)' },
   { id: 'arbeitnow', label: 'Arbeitnow' },
   { id: 'jobicy', label: 'Jobicy (remote)' },

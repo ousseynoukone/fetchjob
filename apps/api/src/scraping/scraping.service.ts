@@ -155,6 +155,45 @@ const WTTJ_REGION_NAMES: Record<string, string> = {
   'provence alpes cote d azur': "Provence-Alpes-Cote d'Azur",
 };
 
+// APEC (Association Pour l'Emploi des Cadres) has no public/documented API,
+// but its own Angular search app calls this JSON endpoint directly and it's
+// confirmed live to work with a bare, unauthenticated POST -- no DataDome
+// challenge on this specific path despite the site running DataDome
+// elsewhere (a guessed detail-page endpoint DID get DataDome-blocked, so
+// this fetcher deliberately never calls anything beyond this one confirmed
+// path). `lieux` takes APEC's own internal numeric "lieuId" for a region,
+// not the INSEE region code -- confirmed live for all 13 regions via APEC's
+// own autocomplete endpoint (not guessed), same normalized keys as
+// FRANCE_TRAVAIL_REGION_CODES/WTTJ_REGION_NAMES above so this is driven by
+// whatever region the campaign actually has configured.
+const APEC_SEARCH_URL = 'https://www.apec.fr/cms/webservices/rechercheOffre';
+const APEC_REGION_LIEU_IDS: Record<string, string> = {
+  'ile de france': '711',
+  'auvergne rhone alpes': '20049',
+  'bourgogne franche comte': '20071',
+  'bretagne': '705',
+  'centre val de loire': '20070',
+  'corse': '20',
+  'grand est': '20074',
+  'hauts de france': '20073',
+  'normandie': '20072',
+  'nouvelle aquitaine': '20075',
+  'occitanie': '20076',
+  'pays de la loire': '717',
+  'provence alpes cote d azur': '720',
+};
+// Confirmed live via APEC's own referentielstatique endpoint (RECHERCHE_OFFRE_TYPE_CONTRAT
+// code list), not guessed. APEC is a cadre (professional/managerial) job
+// board with no clean "Freelance" category in this taxonomy -- left
+// unmapped rather than guessed, same reasoning as France Travail/Adzuna's
+// own contract-type mappings above.
+const APEC_CONTRACT_TYPE_CODES: Record<string, string> = {
+  CDI: '101888',
+  CDD: '101887',
+  Alternance: '20053',
+  Stage: '597171',
+};
+
 // Welcome to the Jungle's own frontend calls Algolia directly from the
 // browser — this app-id/key pair ships in that public JS bundle to every
 // visitor and is scoped to search-only (read) access, restricted to
@@ -254,6 +293,8 @@ export class ScrapingService {
           return await this.fetchWelcomeToTheJungleOffers(params);
         case 'adzuna':
           return await this.fetchAdzunaOffers(params);
+        case 'apec':
+          return await this.fetchApecOffers(params);
         case 'remotive':
           return await this.fetchRemotiveOffers(params);
         case 'arbeitnow':
@@ -891,6 +932,67 @@ export class ScrapingService {
       contractType: offer.contract_type,
       salary: offer.salary_min ? `${Math.round(offer.salary_min)}€ - ${Math.round(offer.salary_max || offer.salary_min)}€` : undefined,
       postedAt: offer.created ? new Date(offer.created) : undefined,
+    }));
+  }
+
+  private async fetchApecOffers(params: SearchParams): Promise<ScrapedOffer[]> {
+    const lieuId = params.location ? APEC_REGION_LIEU_IDS[normalizeLocation(params.location)] : undefined;
+    const typesContrat = (params.contractTypes || []).map((t) => APEC_CONTRACT_TYPE_CODES[t]).filter(Boolean);
+
+    const RANGE = 50;
+    const MAX_PAGES = 4;
+    const allResults: any[] = [];
+    let total: number | undefined;
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const startIndex = page * RANGE;
+      const response = await axios.post(
+        APEC_SEARCH_URL,
+        {
+          lieux: lieuId ? [lieuId] : [],
+          fonctions: [],
+          statutPoste: [],
+          typesContrat,
+          typesConvention: [],
+          niveauxExperience: [],
+          idsEtablissement: [],
+          secteursActivite: [],
+          typesTeletravail: [],
+          idNomZonesDeplacement: [],
+          positionNumbersExcluded: [],
+          typeClient: 'CADRE',
+          sorts: [{ type: 'SCORE', direction: 'DESCENDING' }],
+          pagination: { range: RANGE, startIndex },
+          activeFiltre: true,
+          pointGeolocDeReference: { distance: 0 },
+          motsCles: params.keywords,
+        },
+        { headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, timeout: 10000 },
+      );
+
+      const pageResults = response.data?.resultats || [];
+      allResults.push(...pageResults);
+      total = response.data?.totalCount;
+
+      if (pageResults.length < RANGE) break;
+      if (total !== undefined && allResults.length >= total) break;
+    }
+
+    return allResults.map((offer: any) => ({
+      externalId: String(offer.id),
+      source: 'apec',
+      title: offer.intitule,
+      company: offer.nomCommercial || 'Entreprise non précisée',
+      location: offer.lieuTexte,
+      // The list endpoint's own `texteOffre` is already a truncated snippet,
+      // not the full description -- a full per-offer detail fetch would
+      // need its own confirmed endpoint, and a guessed one during
+      // reconnaissance got DataDome-blocked immediately, so this
+      // deliberately stays snippet-only rather than risk that again.
+      description: offer.texteOffre || offer.intitule,
+      url: `https://www.apec.fr/candidat/recherche-emploi.html/emploi/detail-offre/${offer.numeroOffre}`,
+      salary: offer.salaireTexte || undefined,
+      postedAt: offer.datePublication ? new Date(offer.datePublication) : undefined,
     }));
   }
 
