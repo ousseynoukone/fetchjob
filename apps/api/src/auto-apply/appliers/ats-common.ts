@@ -63,6 +63,13 @@ const IDENTITY_PATTERNS = {
   full: /full ?name|^name$|nom complet|nom et pr[ée]nom/i,
   email: /e-?mail|courriel/i,
   phone: /phone|t[ée]l[ée]phone|mobile|portable/i,
+  // Confirmed live on an external (non-LinkedIn) employer application form
+  // reached via a LinkedIn job posting's "external apply" redirect: a
+  // required "Profil LinkedIn" field sat alongside name/email/phone as a
+  // standard identity field, not a real screening question -- yet nothing
+  // here ever filled it, so it stayed empty/required forever and blocked
+  // submission even once every other field was correctly filled.
+  linkedinUrl: /linkedin/i,
 } as const;
 
 type IdentityRole = keyof typeof IDENTITY_PATTERNS;
@@ -145,6 +152,7 @@ async function scanIdentityFields(page: Page): Promise<{ role: IdentityRole; idx
       let role: IdentityRole | null = null;
       if (type === 'email' || compiled.email.test(haystack)) role = 'email';
       else if (type === 'tel' || compiled.phone.test(haystack)) role = 'phone';
+      else if (compiled.linkedinUrl.test(haystack)) role = 'linkedinUrl';
       else if (compiled.first.test(haystack)) role = 'first';
       else if (compiled.last.test(haystack)) role = 'last';
       else if (compiled.full.test(haystack)) role = 'full';
@@ -175,15 +183,21 @@ async function scanIdentityFields(page: Page): Promise<{ role: IdentityRole; idx
 // each hand-rolling its own narrower, English-only version.
 export async function fillIdentityFields(
   page: Page,
-  cv: { fullName: string; email: string; phone: string },
+  cv: { fullName: string; email: string; phone: string; links?: { type: string; url: string }[] },
 ): Promise<void> {
   const { first, last } = splitName(cv.fullName);
+  // Real data only, same as every other field here -- if the candidate
+  // hasn't added a LinkedIn profile link to their CV, this stays
+  // undefined and the field is left for the AI fallback / Questions page
+  // to handle rather than inventing a URL.
+  const linkedinUrl = cv.links?.find((l) => /linkedin/i.test(l.type) || /linkedin\.com/i.test(l.url))?.url;
   const values: Record<IdentityRole, string | undefined> = {
     first,
     last,
     full: cv.fullName,
     email: cv.email,
     phone: cv.phone,
+    linkedinUrl,
   };
 
   // Always two passes, not "stop at the first success" — some SPA forms
@@ -389,12 +403,33 @@ export const SESSION_CHECKS: Record<string, SessionCheck> = {
     isLoginWallVisible: async (page) => {
       const onLoginForm = await page.locator('#identifiant, input[name="identifiant"]').first().isVisible().catch(() => false);
       if (onLoginForm) return true;
-      return page
+      const hasConnexionButton = await page
         .getByRole('button', { name: /^connexion/i })
         .or(page.getByRole('link', { name: /^connexion/i }))
         .first()
         .isVisible()
         .catch(() => false);
+      if (hasConnexionButton) return true;
+
+      // On the personal-space home page specifically (where the remote-login
+      // flow sits while waiting for login to complete, matching
+      // establish-session.js's own equivalent check), neither of the above
+      // is enough: confirmed live that this exact flow's intermediate 2FA/
+      // verification-code step shows NEITHER the identifiant form NOR a
+      // "Connexion" button, which read as "logged in" the instant the
+      // identifiant form disappeared -- well before the user actually
+      // confirmed the code (a real false "Connexion réussie" before login
+      // had finished). Requires a positive sighting of "Mon espace
+      // personnel" (the dashboard's own heading) there instead. Scoped to
+      // this URL only: that heading is dashboard-specific and would never
+      // appear on an ordinary job-offer page, where this same check also
+      // runs (from the real auto-apply flow, ensureLoggedIn below) while
+      // genuinely logged in.
+      if (page.url().includes('espacepersonnel')) {
+        const onDashboard = await page.getByText(/mon espace personnel/i).first().isVisible().catch(() => false);
+        return !onDashboard;
+      }
+      return false;
     },
   },
 };

@@ -125,7 +125,22 @@ export class FranceTravailApplier implements JobApplier {
     // comment above -- `data-async-trigger="true"`) a second chance to land
     // rather than falling through to the job-listing page's own unrelated
     // widgets and misreporting one of THEIR fields as a blocking question.
-    if (!nativeLinkVisible) {
+    // Confirmed live via a real diagnostic capture: on a Collective.work/
+    // XTRAMILE offer, this retry click was firing WHILE the "Choisissez le
+    // partenaire" panel from the original click was already open --
+    // re-clicking the same toggle button closed it (a normal dropdown
+    // open/close-on-click pattern), and by the time the partner-panel check
+    // further below ran, its own element count was still 1 but no longer
+    // visible. Skipping the retry click whenever that panel is already
+    // open avoids stepping on it -- there's nothing to retry for, this
+    // was never going to be a native form once a partner picker has
+    // already appeared.
+    const partnerAlreadyOpen = await page
+      .getByText(/choisissez le partenaire|postuler sur le site du recruteur/i)
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (!nativeLinkVisible && !partnerAlreadyOpen) {
       await applyButton.click({ force: true }).catch(() => applyButton.click().catch(() => {}));
       await page.waitForTimeout(2000);
       nativeLinkVisible = await nativeApplyLink.isVisible({ timeout: 5000 }).catch(() => false);
@@ -187,14 +202,26 @@ export class FranceTravailApplier implements JobApplier {
     // unrelated "Destinataire" field from a "share by email" widget
     // elsewhere on the page, reporting it as a blocking question that was
     // never actually part of any application form.
-    const partnerModal = activePage
-      .locator('[role="dialog"], .modal, [class*="popin" i], [class*="popup" i], .dropdown-menu')
-      .filter({ hasText: /choisissez le partenaire|postuler sur le site du recruteur/i })
+    // Confirmed live YET AGAIN on a Collective.work/XTRAMILE offer: this
+    // exact panel ("Choisissez le partenaire :" with a single XTRAMILE
+    // card) sat there fully visible for the entire 120s of an attempt that
+    // ended in an orchestrator-level timeout -- the container selector
+    // below (dropdown-menu/modal/popin/popup/role=dialog) matched none of
+    // it, so this whole check never fired and the AI loop was left
+    // grinding on a page with no real form on it every single step. Three
+    // prior "confirmed live" notes above already document this same
+    // guessing game for THREE earlier markup variants. Anchoring on the
+    // heading's own TEXT instead of its wrapping container's class/role
+    // sidesteps needing to guess that container's markup ever again --
+    // `following::a|button` walks forward in DOM order from the heading to
+    // the nearest actual link/button regardless of what wraps either one.
+    const partnerHeading = activePage
+      .getByText(/choisissez le partenaire|postuler sur le site du recruteur/i)
       .first();
-    if (await partnerModal.isVisible().catch(() => false)) {
+    if (await partnerHeading.isVisible().catch(() => false)) {
       await ctx.appendLog?.('Cette offre France Travail redirige vers un partenaire externe...');
-      const partnerLink = partnerModal
-        .locator('a, button')
+      const partnerLink = partnerHeading
+        .locator('xpath=following::a[1] | following::button[1]')
         .filter({ hasNotText: /fermer|close|annuler/i })
         .first();
       if (await partnerLink.isVisible().catch(() => false)) {
