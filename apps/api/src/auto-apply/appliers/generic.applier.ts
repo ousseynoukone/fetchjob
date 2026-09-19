@@ -74,10 +74,26 @@ export class GenericApplier implements JobApplier {
     await fillIdentityFields(page, ctx.cv);
 
     const hasPasswordField = await page.locator('input[type="password"]').first().isVisible().catch(() => false);
-    if (hasPasswordField) {
+    // Confirmed live: a France Travail offer redirected out to Indeed's own
+    // "Créez un compte ou connectez-vous" gate -- an OAuth-style picker
+    // (Google/Facebook/email continue buttons), no password field anywhere
+    // on that first screen, so hasPasswordField alone missed it entirely
+    // and left the AI fallback grinding on a page with no real application
+    // form on it for the rest of the attempt's budget. Any platform's own
+    // "you need an account for this" wording is just as unrecoverable as a
+    // bare password field -- same outcome either way, so it's checked for
+    // directly instead of only inferring it from ONE specific field type.
+    const hasLoginPrompt = await page
+      .getByText(
+        /cr[ée]ez un compte ou connectez[- ]vous|connectez[- ]vous pour postuler|se connecter pour postuler|sign in or create an account|log ?in to apply|sign in to apply/i,
+      )
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (hasPasswordField || hasLoginPrompt) {
       return {
         success: false,
-        note: 'Connexion requise sur la plateforme (compte Welcome to the Jungle ou espace candidat) — candidature à effectuer directement sur le lien de l\'offre.',
+        note: 'Connexion requise sur la plateforme (compte tiers, ex: Indeed, Welcome to the Jungle) — candidature à effectuer directement sur le lien de l\'offre.',
       };
     }
 

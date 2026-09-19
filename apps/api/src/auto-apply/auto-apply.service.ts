@@ -377,9 +377,29 @@ export class AutoApplyService {
     // after the same budget and reports a failure either way, so the run()
     // loop is guaranteed to move on to the next candidature regardless.
     const APPLY_TIMEOUT_MS = 120_000;
+    const TIMEOUT_NOTE = `Tentative interrompue après ${APPLY_TIMEOUT_MS / 1000}s sans réponse — à vérifier manuellement.`;
+    // Set synchronously, before context.close() is even called -- lets the
+    // race below tell "we deliberately killed this" apart from a genuine,
+    // unrelated crash (see the .catch() on `pending`).
+    let timedOut = false;
     const timeoutHandle = setTimeout(() => {
       this.logger.warn(`Auto-apply attempt for ${application.id} exceeded ${APPLY_TIMEOUT_MS / 1000}s — forcing it to stop.`);
-      context.close().catch(() => {});
+      timedOut = true;
+      // Screenshotted BEFORE closing, not after -- confirmed live that a
+      // screenshot attempted after context.close() always fails silently
+      // (the whole context, every tab, is gone), leaving whatever
+      // screenshot happened to be saved from a PREVIOUS, unrelated attempt
+      // still sitting in the DB. That made a genuinely-stuck attempt look
+      // like nothing had even started, with no way to tell what it was
+      // actually stuck on. Bounded to 5s of its own so a truly hung page
+      // can't delay the close this exists to force in the first place.
+      const lastPage = context.pages().at(-1);
+      const timeoutScreenshot = lastPage
+        ? this.captureScreenshot(lastPage, application.id, 5000)
+        : Promise.resolve();
+      timeoutScreenshot.finally(() => {
+        context.close().catch(() => {});
+      });
     }, APPLY_TIMEOUT_MS);
 
     // Set once the race times out — a browser that's unresponsive enough to
@@ -392,12 +412,30 @@ export class AutoApplyService {
 
     const raceForResult = (pending: Promise<ApplyResult>): Promise<ApplyResult> =>
       Promise.race([
-        pending,
+        // The "normal" half of the two-layer timeout above: once
+        // context.close() has fired, whatever Playwright call is still in
+        // flight inside `pending` is EXPECTED to reject with a raw,
+        // confusing error ("Target page, context or browser has been
+        // closed") -- confirmed live this exact raw error was leaking
+        // straight through to the user as the application's failure note,
+        // on every attempt that hit this timeout via its normal, working
+        // path (the second timer below only ever caught the rare
+        // stuck-even-after-close case this was originally added for). A
+        // genuine error unrelated to the timeout still propagates as-is,
+        // since `timedOut` only ever becomes true after this file's own
+        // close() call.
+        pending.catch((err) => {
+          if (timedOut) {
+            unresponsive = true;
+            return { success: false, note: TIMEOUT_NOTE };
+          }
+          throw err;
+        }),
         new Promise<ApplyResult>((resolve) => {
           setTimeout(() => {
             this.logger.warn(`Auto-apply attempt for ${application.id} timed out at the orchestrator level — abandoning it.`);
             unresponsive = true;
-            resolve({ success: false, note: `Tentative interrompue après ${APPLY_TIMEOUT_MS / 1000}s sans réponse — à vérifier manuellement.` });
+            resolve({ success: false, note: TIMEOUT_NOTE });
           }, APPLY_TIMEOUT_MS);
         }),
       ]);
@@ -596,9 +634,20 @@ export class AutoApplyService {
   // only ever looked at to confirm what happened (a success message, a
   // CAPTCHA, a validation error), not inspected pixel-by-pixel, and this
   // keeps each one well under 200KB in Postgres.
-  private async captureScreenshot(page: Page, applicationId: string): Promise<void> {
+  // `timeoutMs` lets the orchestrator-level timeout handler above take one
+  // last screenshot of a possibly-hung page without risking hanging on the
+  // screenshot call itself -- normal (non-timeout) call sites keep the
+  // previous unbounded behavior.
+  private async captureScreenshot(page: Page, applicationId: string, timeoutMs?: number): Promise<void> {
     try {
-      const screenshot = await page.screenshot({ type: 'jpeg', quality: 60, fullPage: false });
+      const screenshotPromise = page.screenshot({ type: 'jpeg', quality: 60, fullPage: false });
+      const screenshot = timeoutMs
+        ? await Promise.race([
+            screenshotPromise,
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+          ])
+        : await screenshotPromise;
+      if (!screenshot) return;
       await this.prisma.application.update({
         where: { id: applicationId },
         data: { screenshot, screenshotTakenAt: new Date() },
