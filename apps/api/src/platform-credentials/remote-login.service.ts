@@ -356,14 +356,19 @@ export class RemoteLoginService implements OnModuleDestroy {
       : { success: false, message: "Échec de l'enregistrement de la session — réessaie." };
   }
 
-  // Best-effort: if a password was saved from a PREVIOUS remote-login to
+  // Best-effort: fill in whatever was saved from a PREVIOUS remote-login to
   // this same platform (see captureTypedCredential / the success branch of
-  // pollLoginState below), fill it in automatically so the user only has to
-  // click "log in" and handle any CAPTCHA/2FA themselves, instead of typing
-  // their email and password again every single time -- the exact
-  // repetition this feature exists to remove. Silently does nothing if
-  // there's no saved password yet (first login to a platform), or if the
-  // login form's fields don't match the generic selectors above.
+  // pollLoginState below) so the user only has to click "log in" and handle
+  // any CAPTCHA/2FA themselves, instead of retyping their identifier and
+  // password every single time -- the exact repetition this feature exists
+  // to remove.
+  //
+  // The identifier and the password are filled INDEPENDENTLY: an earlier
+  // version returned early unless a password had been captured, so a
+  // platform where only the identifier ever got stored (or where the
+  // password came from a password manager, bypassing the keystroke relay)
+  // silently prefilled nothing at all -- confirmed as the reason France
+  // Travail's identifiant had to be retyped by hand every time.
   private async prefillSavedCredential(session: ActiveSession): Promise<void> {
     const userId = await this.localUser.getDefaultUserId();
     const row = await this.prisma.platformCredential.findUnique({
@@ -376,29 +381,35 @@ export class RemoteLoginService implements OnModuleDestroy {
     try {
       parsed = JSON.parse(raw);
     } catch {
-      return;
+      parsed = null;
     }
     // A session-only credential (established via the old establish-session.js
     // script, or a previous remote-login where nothing was captured) stores
-    // the raw storageState with no `password` key -- nothing to prefill.
-    if (!parsed || typeof parsed !== 'object' || !parsed.password) return;
-
+    // the raw storageState with no `password` key -- there may still be a
+    // saved identifier worth filling, so this no longer bails out here.
+    const savedPassword = parsed && typeof parsed === 'object' ? parsed.password : null;
     const email = row.emailEncrypted ? this.crypto.decrypt(row.emailEncrypted) : '';
-    // Login forms on these platforms are all client-rendered SPAs -- a
-    // fixed settle delay here, same reasoning as fillIdentityFields'
-    // own wait between passes, since filling before the field exists is a
-    // silent no-op with no error to catch.
-    await session.page.waitForTimeout(1500);
+    const hasEmail = !!email && email !== NO_CAPTURED_EMAIL_PLACEHOLDER;
+    if (!hasEmail && !savedPassword) return;
 
-    if (email && email !== NO_CAPTURED_EMAIL_PLACEHOLDER) {
-      const emailField = session.page.locator(LOGIN_EMAIL_SELECTOR).first();
-      if (await emailField.isVisible().catch(() => false)) {
-        await emailField.fill(email).catch(() => {});
-      }
+    // Waits for the field to actually exist rather than assuming a fixed
+    // settle delay was enough: confirmed live that France Travail's
+    // homeUrl (candidat.francetravail.fr/espacepersonnel) redirects to a
+    // completely different host's hash-routed SPA
+    // (authentification-candidat.francetravail.fr/connexion/XUI/#login/),
+    // whose form took ~4s to render -- well past the 1500ms this used to
+    // wait, so the fill silently no-op'd on a form that didn't exist yet.
+    const emailField = session.page.locator(LOGIN_EMAIL_SELECTOR).first();
+    await emailField.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+
+    if (hasEmail && (await emailField.isVisible().catch(() => false))) {
+      await emailField.fill(email).catch(() => {});
     }
-    const passwordField = session.page.locator(LOGIN_PASSWORD_SELECTOR).first();
-    if (await passwordField.isVisible().catch(() => false)) {
-      await passwordField.fill(parsed.password).catch(() => {});
+    if (savedPassword) {
+      const passwordField = session.page.locator(LOGIN_PASSWORD_SELECTOR).first();
+      if (await passwordField.isVisible().catch(() => false)) {
+        await passwordField.fill(savedPassword).catch(() => {});
+      }
     }
   }
 
@@ -474,9 +485,9 @@ export class RemoteLoginService implements OnModuleDestroy {
   // email/password field during this session -- not used this session, only
   // saved once login actually succeeds (see pollLoginState), so the NEXT
   // login to this platform can be prefilled automatically instead of
-  // retyped. Keyed off the currently-focused element rather than parsing
-  // the whole page every keystroke; a login page realistically never has
-  // another free-text field to confuse this with.
+  // retyped. Keyed off the currently-focused element, which is cheap but
+  // only fires on a relayed keystroke -- see snapshotLoginFields for the
+  // more reliable counterpart that doesn't depend on focus at all.
   private async captureTypedCredential(session: ActiveSession): Promise<void> {
     const info = await session.page
       .evaluate(() => {
@@ -493,6 +504,32 @@ export class RemoteLoginService implements OnModuleDestroy {
     }
   }
 
+  // Reads the login form's fields directly, by the same selectors
+  // prefillSavedCredential fills, rather than depending on what happened to
+  // be focused when a keystroke was relayed. Confirmed necessary live:
+  // France Travail's stored identifier was the "nothing captured"
+  // placeholder every time (so its identifiant had to be retyped by hand on
+  // every single login) even though its password had been captured fine --
+  // the activeElement path is fragile to focus changes, SPA re-renders,
+  // pasting, and password-manager autofill, none of which this cares about.
+  // Runs on the existing poll tick, so it costs one extra DOM read every 2s
+  // and nothing else.
+  private async snapshotLoginFields(session: ActiveSession): Promise<void> {
+    const email = await session.page
+      .locator(LOGIN_EMAIL_SELECTOR)
+      .first()
+      .inputValue()
+      .catch(() => '');
+    if (email.trim()) session.capturedEmail = email.trim();
+
+    const password = await session.page
+      .locator(LOGIN_PASSWORD_SELECTOR)
+      .first()
+      .inputValue()
+      .catch(() => '');
+    if (password) session.capturedPassword = password;
+  }
+
   async stop(sessionId: string): Promise<void> {
     await this.cleanup(sessionId, { dataUrl: null, status: 'done', message: 'Fermé.' });
   }
@@ -506,6 +543,9 @@ export class RemoteLoginService implements OnModuleDestroy {
 
     if (onLoginWall) {
       session.consecutiveLoggedIn = 0;
+      // Still on the login form — whatever's in its fields right now is the
+      // best candidate for what the person is about to submit with.
+      await this.snapshotLoginFields(session).catch(() => {});
       return;
     }
 
@@ -528,19 +568,28 @@ export class RemoteLoginService implements OnModuleDestroy {
     try {
       const storageState = await session.context.storageState();
       const userId = await this.localUser.getDefaultUserId();
-      // Saves the real typed email/password when captured (see
-      // captureTypedCredential) instead of the old placeholder label, so
-      // prefillSavedCredential has something real to work with on the NEXT
-      // login to this platform. Falls back to the placeholder + raw
-      // storageState-only shape when nothing was captured (e.g. a password
-      // manager/autofill extension typed it, bypassing the keystroke relay
-      // entirely, or MANUAL_CONFIRM_PLATFORMS, which never listens for
-      // typed credentials at all) -- exactly today's existing behavior, not
-      // a regression.
-      const email = session.capturedEmail || NO_CAPTURED_EMAIL_PLACEHOLDER;
+      const existing = await this.prisma.platformCredential.findUnique({
+        where: { userId_platform: { userId, platform: session.platform } },
+      });
+
+      // Saves the real identifier/password when captured (see
+      // snapshotLoginFields / captureTypedCredential). When nothing was
+      // captured this time (MANUAL_CONFIRM_PLATFORMS never listens at all,
+      // and a session resumed from stored cookies never shows a login form
+      // to read), whatever was already stored is KEPT rather than
+      // overwritten with the placeholder -- a later login that happened to
+      // capture nothing used to silently destroy a perfectly good saved
+      // identifier, putting the person right back to retyping it.
+      const previousEmail = existing?.emailEncrypted
+        ? this.crypto.decrypt(existing.emailEncrypted).trim()
+        : '';
+      const previousPassword = this.readStoredPassword(existing?.sessionStateEncrypted ?? null);
+
+      const email = session.capturedEmail || previousEmail || NO_CAPTURED_EMAIL_PLACEHOLDER;
+      const password = session.capturedPassword || previousPassword;
       const emailEncrypted = this.crypto.encrypt(email);
-      const sessionPayload = session.capturedPassword
-        ? JSON.stringify({ password: session.capturedPassword, storageState })
+      const sessionPayload = password
+        ? JSON.stringify({ password, storageState })
         : JSON.stringify(storageState);
       const sessionStateEncrypted = this.crypto.encrypt(sessionPayload);
 
@@ -556,6 +605,16 @@ export class RemoteLoginService implements OnModuleDestroy {
       this.logger.error(`Failed to persist remote-login session: ${error.message}`);
       await this.cleanup(sessionId, { dataUrl: null, status: 'error', message: `Échec de l'enregistrement : ${error.message}` });
       return false;
+    }
+  }
+
+  private readStoredPassword(sessionStateEncrypted: string | null): string | null {
+    if (!sessionStateEncrypted) return null;
+    try {
+      const parsed = JSON.parse(this.crypto.decrypt(sessionStateEncrypted));
+      return parsed && typeof parsed === 'object' && parsed.password ? parsed.password : null;
+    } catch {
+      return null;
     }
   }
 
