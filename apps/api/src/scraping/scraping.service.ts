@@ -134,6 +134,27 @@ const FRANCE_TRAVAIL_REGION_CODES: Record<string, string> = {
   'provence alpes cote d azur': '93',
 };
 
+// Welcome to the Jungle's own Algolia index uses its own English-leaning
+// region spellings for the `office.state` facet, confirmed live by querying
+// the index directly for its real facet values (not guessed) -- same
+// normalized keys as FRANCE_TRAVAIL_REGION_CODES above so both are driven
+// by the exact same campaign.location value, whatever region someone
+// actually configures, not a single hardcoded case.
+const WTTJ_REGION_NAMES: Record<string, string> = {
+  'ile de france': 'Ile-de-France',
+  'auvergne rhone alpes': 'Auvergne-Rhone-Alpes',
+  'bourgogne franche comte': 'Bourgogne-Franche-Comte',
+  'bretagne': 'Brittany',
+  'centre val de loire': 'Centre-Val de Loire',
+  'grand est': 'Grand Est',
+  'hauts de france': 'Hauts-de-France',
+  'normandie': 'Normandy',
+  'nouvelle aquitaine': 'Nouvelle-Aquitaine',
+  'occitanie': 'Occitanie',
+  'pays de la loire': 'Loire Region',
+  'provence alpes cote d azur': "Provence-Alpes-Cote d'Azur",
+};
+
 // Welcome to the Jungle's own frontend calls Algolia directly from the
 // browser — this app-id/key pair ships in that public JS bundle to every
 // visitor and is scoped to search-only (read) access, restricted to
@@ -347,6 +368,7 @@ export class ScrapingService {
       keywords: params.keywords,
       location: params.location,
       datePosted: 'r604800', // Last 7 days
+      contractTypes: params.contractTypes,
       proxy,
     });
 
@@ -377,68 +399,88 @@ export class ScrapingService {
       await jitter(800, 2000);
       await simulateHumanMouse(page);
 
-      const searchUrl = new URL('https://www.hellowork.com/fr-fr/emploi/recherche.html');
-      searchUrl.searchParams.set('k', params.keywords);
-      searchUrl.searchParams.set('l', params.location || 'France');
-      searchUrl.searchParams.set('ray', '20');
-
-      await page.goto(searchUrl.toString(), { waitUntil: 'domcontentloaded', timeout: 20000 });
-      await jitter(600, 1500);
-
-      if (await isBotChallengePage(page)) {
-        this.logger.warn('HelloWork returned a challenge page — aborting');
-        await persistCookies(context, 'hellowork');
-        return [];
-      }
-
-      const html = await page.content();
-      const $ = cheerio.load(html);
       const offers: ScrapedOffer[] = [];
       const seenIds = new Set<string>();
 
-      $('a[data-cy="offerTitle"], a[href*="/emplois/"]').each((_, el) => {
-        const a = $(el);
-        const href = a.attr('href') || '';
-        const idMatch = href.match(/\/emplois\/(\d+)\.html/);
-        if (!idMatch) return;
-        const externalId = idMatch[1];
-        if (seenIds.has(externalId)) return;
-        seenIds.add(externalId);
+      // Confirmed live via direct curl comparison: HelloWork's `p` query
+      // param (1-indexed) returns genuinely distinct job IDs per page --
+      // every search before this only ever loaded page 1, silently capping
+      // results at ~20-30 per query. 3 pages mirrors LinkedIn's own
+      // pagination depth in this same file.
+      const MAX_PAGES = 3;
+      for (let pageNum = 1; pageNum <= MAX_PAGES; pageNum++) {
+        const searchUrl = new URL('https://www.hellowork.com/fr-fr/emploi/recherche.html');
+        searchUrl.searchParams.set('k', params.keywords);
+        searchUrl.searchParams.set('l', params.location || 'France');
+        searchUrl.searchParams.set('ray', '20');
+        searchUrl.searchParams.set('p', String(pageNum));
+        // Confirmed live via HelloWork's own filter form (inspected directly,
+        // not guessed): its contract-type checkboxes are `c=CDI`/`c=CDD`/
+        // `c=Stage`/`c=Alternance`/`c=Freelance` -- an exact match to the
+        // campaign's own labels, repeatable for multiple values. Was never
+        // sent before, so every search ran unscoped by contract type.
+        for (const type of params.contractTypes || []) {
+          searchUrl.searchParams.append('c', type);
+        }
 
-        const title = a.find('p.typo-l').text().trim() || a.attr('title')?.replace(/ - [^-]+$/, '') || a.text().trim();
-        const company = a.find('p.typo-s').text().trim() || 'Entreprise non précisée';
-        const card = a.closest('li, div.flex.flex-col, article');
-        const location = card.find('[data-cy="localisationCard"]').first().text().trim() || undefined;
-        const contractType = card.find('[data-cy="contractCard"]').first().text().trim() || undefined;
-        let salary: string | undefined;
-        card.find('.tag-secondary-s').each((_, sEl) => {
-          const txt = $(sEl).text().trim().replace(/\s+/g, ' ');
-          if (txt.includes('€') && !salary && txt.length < 50) salary = txt;
-        });
-        const workMode = card.find('[data-cy="contractTag"]').first().text().trim() || undefined;
-        const descParts = [
-          `${title} chez ${company}`,
-          location ? `Localisation: ${location}` : '',
-          contractType ? `Contrat: ${contractType}` : '',
-          salary ? `Rémunération: ${salary}` : '',
-          workMode ? `Modalité: ${workMode}` : '',
-        ].filter(Boolean);
+        await page.goto(searchUrl.toString(), { waitUntil: 'domcontentloaded', timeout: 20000 });
+        await jitter(600, 1500);
 
-        offers.push({
-          externalId,
-          source: 'hellowork',
-          title,
-          company,
-          location,
-          contractType,
-          salary,
-          description: descParts.join(' | '),
-          url: `https://www.hellowork.com${href}`,
+        if (await isBotChallengePage(page)) {
+          this.logger.warn('HelloWork returned a challenge page — aborting');
+          break;
+        }
+
+        const html = await page.content();
+        const $ = cheerio.load(html);
+        const beforeCount = offers.length;
+
+        $('a[data-cy="offerTitle"], a[href*="/emplois/"]').each((_, el) => {
+          const a = $(el);
+          const href = a.attr('href') || '';
+          const idMatch = href.match(/\/emplois\/(\d+)\.html/);
+          if (!idMatch) return;
+          const externalId = idMatch[1];
+          if (seenIds.has(externalId)) return;
+          seenIds.add(externalId);
+
+          const title = a.find('p.typo-l').text().trim() || a.attr('title')?.replace(/ - [^-]+$/, '') || a.text().trim();
+          const company = a.find('p.typo-s').text().trim() || 'Entreprise non précisée';
+          const card = a.closest('li, div.flex.flex-col, article');
+          const location = card.find('[data-cy="localisationCard"]').first().text().trim() || undefined;
+          const contractType = card.find('[data-cy="contractCard"]').first().text().trim() || undefined;
+          let salary: string | undefined;
+          card.find('.tag-secondary-s').each((_, sEl) => {
+            const txt = $(sEl).text().trim().replace(/\s+/g, ' ');
+            if (txt.includes('€') && !salary && txt.length < 50) salary = txt;
+          });
+          const workMode = card.find('[data-cy="contractTag"]').first().text().trim() || undefined;
+          const descParts = [
+            `${title} chez ${company}`,
+            location ? `Localisation: ${location}` : '',
+            contractType ? `Contrat: ${contractType}` : '',
+            salary ? `Rémunération: ${salary}` : '',
+            workMode ? `Modalité: ${workMode}` : '',
+          ].filter(Boolean);
+
+          offers.push({
+            externalId,
+            source: 'hellowork',
+            title,
+            company,
+            location,
+            contractType,
+            salary,
+            description: descParts.join(' | '),
+            url: `https://www.hellowork.com${href}`,
+          });
         });
-      });
+
+        if (offers.length === beforeCount) break;
+      }
 
       await persistCookies(context, 'hellowork');
-      return offers.slice(0, 20);
+      return offers;
     } catch (err: any) {
       this.logger.warn(`HelloWork stealth scraper error: ${err.message}`);
       return [];
@@ -461,54 +503,77 @@ export class ScrapingService {
       await jitter(800, 2000);
       await simulateHumanMouse(page);
 
-      const searchUrl = `https://fr.indeed.com/jobs?q=${encodeURIComponent(params.keywords)}&l=${encodeURIComponent(params.location || '')}&sort=date`;
-      await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
-      await jitter(500, 1500);
+      // Indeed's own `jt` param -- same ambiguity as LinkedIn's f_JT (a
+      // French CDD is still usually full-time hours, so Indeed's own
+      // fulltime/contract/internship buckets can't cleanly separate CDI
+      // from CDD either); same mapping approach for the same reason.
+      const jtMap: Record<string, string> = { CDI: 'fulltime', CDD: 'fulltime', Freelance: 'contract', Stage: 'internship' };
+      const jt = Array.from(new Set((params.contractTypes || []).map((t) => jtMap[t]).filter(Boolean))).join(',');
 
-      if (await isBotChallengePage(page)) {
-        this.logger.warn('Indeed returned a challenge page — aborting');
-        await persistCookies(context, 'indeed');
-        return [];
-      }
-
-      const html = await page.content();
-      const $ = cheerio.load(html);
       const offers: ScrapedOffer[] = [];
       const seen = new Set<string>();
 
-      $('.job_seen_beacon, div.cardOutline, td.resultContent').each((_, cardEl) => {
-        const card = $(cardEl);
-        const linkEl = card.find('a[data-jk], a[id^="job_"], a[id^="sj_"]');
-        const jk =
-          linkEl.attr('data-jk') ||
-          linkEl.attr('id')?.replace(/^(job_|sj_)/, '') ||
-          card.closest('[data-jk]').attr('data-jk');
-        if (!jk || seen.has(jk)) return;
-        seen.add(jk);
+      // Indeed paginates via `start` (10 results/page) -- every search
+      // before this only ever loaded start=0, silently capping results at
+      // 20. Kept to 2 pages (vs. 3 elsewhere) since Indeed is already the
+      // most bot-sensitive source in this file (Cloudflare) -- every extra
+      // navigation is extra exposure, and isBotChallengePage below already
+      // aborts the whole fetch the moment a challenge appears rather than
+      // pushing through it.
+      const MAX_PAGES = 2;
+      for (let pageIdx = 0; pageIdx < MAX_PAGES; pageIdx++) {
+        const start = pageIdx * 10;
+        const searchUrl = `https://fr.indeed.com/jobs?q=${encodeURIComponent(params.keywords)}&l=${encodeURIComponent(params.location || '')}&sort=date${jt ? `&jt=${jt}` : ''}${start ? `&start=${start}` : ''}`;
+        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        await jitter(500, 1500);
 
-        const titleEl = card.find('h2.jobTitle span, h3.jobTitle span, .jobTitle span, [data-testid="job-title"]').first();
-        const title = titleEl.text().trim();
-        if (!title) return;
+        if (await isBotChallengePage(page)) {
+          this.logger.warn('Indeed returned a challenge page — aborting');
+          await persistCookies(context, 'indeed');
+          if (pageIdx === 0) return [];
+          break;
+        }
 
-        const company = card.find('[data-testid="company-name"], .companyName').first().text().trim() || 'Entreprise non précisée';
-        const location = card.find('[data-testid="text-location"], .companyLocation').first().text().trim() || undefined;
-        let snippet = card.find('.job-snippet, [data-testid="job-snippet"], ul').first().text().trim();
-        snippet = snippet.replace(/\.mosaic[^{]+{[^}]+}/g, '').trim();
-        const salary = card.find('[data-testid="attribute_snippet_testid"], .salary-snippet-container').first().text().trim() || undefined;
+        const html = await page.content();
+        const $ = cheerio.load(html);
+        const beforeCount = offers.length;
 
-        offers.push({
-          externalId: jk,
-          source: 'indeed',
-          title,
-          company,
-          location,
-          description: snippet || `${title} chez ${company}${location ? ` (${location})` : ''}`,
-          salary,
-          url: `https://fr.indeed.com/viewjob?jk=${jk}`,
+        $('.job_seen_beacon, div.cardOutline, td.resultContent').each((_, cardEl) => {
+          const card = $(cardEl);
+          const linkEl = card.find('a[data-jk], a[id^="job_"], a[id^="sj_"]');
+          const jk =
+            linkEl.attr('data-jk') ||
+            linkEl.attr('id')?.replace(/^(job_|sj_)/, '') ||
+            card.closest('[data-jk]').attr('data-jk');
+          if (!jk || seen.has(jk)) return;
+          seen.add(jk);
+
+          const titleEl = card.find('h2.jobTitle span, h3.jobTitle span, .jobTitle span, [data-testid="job-title"]').first();
+          const title = titleEl.text().trim();
+          if (!title) return;
+
+          const company = card.find('[data-testid="company-name"], .companyName').first().text().trim() || 'Entreprise non précisée';
+          const location = card.find('[data-testid="text-location"], .companyLocation').first().text().trim() || undefined;
+          let snippet = card.find('.job-snippet, [data-testid="job-snippet"], ul').first().text().trim();
+          snippet = snippet.replace(/\.mosaic[^{]+{[^}]+}/g, '').trim();
+          const salary = card.find('[data-testid="attribute_snippet_testid"], .salary-snippet-container').first().text().trim() || undefined;
+
+          offers.push({
+            externalId: jk,
+            source: 'indeed',
+            title,
+            company,
+            location,
+            description: snippet || `${title} chez ${company}${location ? ` (${location})` : ''}`,
+            salary,
+            url: `https://fr.indeed.com/viewjob?jk=${jk}`,
+          });
         });
-      });
 
-      const shortlisted = offers.slice(0, 20);
+        if (offers.length === beforeCount) break;
+      }
+
+      const shortlisted = offers;
       const enriched = await stealthMapWithConcurrency(shortlisted, 3, (offer) =>
         this.fetchIndeedDescription(context, offer),
       );
@@ -585,22 +650,76 @@ export class ScrapingService {
       region = FRANCE_TRAVAIL_REGION_CODES[normalizeLocation(rawLocation)];
     }
 
-    const response = await axios.get(
-      'https://api.francetravail.io/partenaire/offresdemploi/v2/offres/search',
-      {
-        headers: { Authorization: `Bearer ${token}` },
-        params: {
-          motsCles: params.keywords,
-          commune,
-          region,
+    // Confirmed live: campaign.contractTypes was captured from the UI but
+    // never actually sent to a single one of this project's sources --
+    // every search ran completely unscoped by contract type regardless of
+    // what was configured, forcing 100% reliance on a title-text exclude-
+    // keyword match after the fact to catch stage/alternance offers (which
+    // misses any that only mention it in the description, and wastes a
+    // request "slot" on an offer that should never have come back at all).
+    // France Travail's own API documents `typeContrat` with exact codes for
+    // CDI/CDD (comma-separated for multiple) -- mapped only where the
+    // match is exact and unambiguous. "Freelance" has no clean equivalent
+    // here (this API is for employee contracts, not indépendant/portage
+    // arrangements) and is deliberately left unmapped rather than guessed,
+    // same for "Stage"/"Alternance" (France Travail models those via a
+    // separate natureContrat/experienceExige facet, not typeContrat) --
+    // guessing wrong here would risk silently excluding real CDI/CDD
+    // offers, worse than today's behavior of not filtering at all.
+    const typeContratMap: Record<string, string> = { CDI: 'CDI', CDD: 'CDD' };
+    const typeContrat = (params.contractTypes || [])
+      .map((t) => typeContratMap[t])
+      .filter(Boolean)
+      .join(',') || undefined;
+
+    // Confirmed via France Travail's own API docs: `range` paginates as
+    // "start-end" (max 149-wide window per call), and the response carries
+    // a `Content-Range: offres <start>-<end>/<total>` header giving the real
+    // total match count. Every call before this only ever sent the request
+    // with NO range at all, silently defaulting to the API's own first-page
+    // behavior (~20 results) regardless of how many hundreds or thousands
+    // actually matched -- confirmed the single largest volume bottleneck
+    // across all sources, official APIs included. Capped at 4 pages (200
+    // offers) per keyword query as a runtime/budget bound, not a real API
+    // limit -- still a 10x increase over the previous hard ceiling of 20.
+    const PAGE_SIZE = 50;
+    const MAX_PAGES = 4;
+    const allResults: any[] = [];
+    let total: number | undefined;
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const start = page * PAGE_SIZE;
+      const end = start + PAGE_SIZE - 1;
+
+      const response = await axios.get(
+        'https://api.francetravail.io/partenaire/offresdemploi/v2/offres/search',
+        {
+          headers: { Authorization: `Bearer ${token}`, Range: `offres ${start}-${end}` },
+          params: {
+            motsCles: params.keywords,
+            commune,
+            region,
+            typeContrat,
+            range: `${start}-${end}`,
+          },
+          validateStatus: (status) => status === 200 || status === 206 || status === 416,
         },
-        validateStatus: (status) => status === 200 || status === 206,
-      },
-    );
+      );
 
-    const offers = response.data?.resultats || [];
+      if (response.status === 416) break;
 
-    return offers.map((offer: any) => ({
+      const pageResults = response.data?.resultats || [];
+      allResults.push(...pageResults);
+
+      const contentRange = response.headers?.['content-range'] as string | undefined;
+      const totalMatch = contentRange?.match(/\/(\d+)$/);
+      if (totalMatch) total = Number(totalMatch[1]);
+
+      if (pageResults.length < PAGE_SIZE) break;
+      if (total !== undefined && allResults.length >= total) break;
+    }
+
+    return allResults.map((offer: any) => ({
       externalId: offer.id,
       source: 'france_travail',
       title: offer.intitule,
@@ -620,33 +739,80 @@ export class ScrapingService {
   // structured fields on the hit; the full description only exists on the
   // job's own page, fetched later via enrichDescription.
   private async fetchWelcomeToTheJungleOffers(params: SearchParams): Promise<ScrapedOffer[]> {
-    const response = await axios.post(
-      WTTJ_ALGOLIA_URL,
-      {
-        requests: [
-          {
-            indexName: WTTJ_JOBS_INDEX,
-            params: `hitsPerPage=20&page=0&query=${encodeURIComponent(params.keywords)}`,
-          },
-        ],
-      },
-      {
-        headers: {
-          'x-algolia-application-id': WTTJ_ALGOLIA_APP_ID,
-          'x-algolia-api-key': WTTJ_ALGOLIA_SEARCH_KEY,
-          'Content-Type': 'application/json',
-          Referer: 'https://www.welcometothejungle.com/',
-          Origin: 'https://www.welcometothejungle.com',
+    // Confirmed live by querying this exact Algolia index directly for its
+    // real facet values (not guessed): this request never carried a
+    // location or contract-type filter at all before, so every WTTJ search
+    // ran completely nationwide and unscoped by contract type regardless of
+    // what the campaign configured -- both are driven by whatever the
+    // campaign actually has set, same as the mapping above, not a
+    // hardcoded region.
+    const filterClauses: string[] = [];
+    const wttjRegion = params.location ? WTTJ_REGION_NAMES[normalizeLocation(params.location)] : undefined;
+    if (wttjRegion) filterClauses.push(`office.state:"${wttjRegion}"`);
+
+    const contractTypeMap: Record<string, string> = {
+      CDI: 'FULL_TIME',
+      CDD: 'TEMPORARY',
+      Freelance: 'FREELANCE',
+      Stage: 'INTERNSHIP',
+      Alternance: 'APPRENTICESHIP',
+    };
+    const wttjContractTypes = (params.contractTypes || []).map((t) => contractTypeMap[t]).filter(Boolean);
+    if (wttjContractTypes.length) {
+      filterClauses.push(`(${wttjContractTypes.map((t) => `contract_type:${t}`).join(' OR ')})`);
+    }
+
+    // Algolia paginates via `page` (0-indexed), not an offset -- every call
+    // before this hardcoded page 0 with hitsPerPage 20, silently capping
+    // every query at 20 hits regardless of `nbHits` (the real total Algolia
+    // reports). Fetched sequentially, same end-of-results/page-count bound
+    // as the other two official-API sources above.
+    const HITS_PER_PAGE = 20;
+    const MAX_PAGES = 4;
+    const allHits: any[] = [];
+    let nbPages: number | undefined;
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const algoliaParams = new URLSearchParams({
+        hitsPerPage: String(HITS_PER_PAGE),
+        page: String(page),
+        query: params.keywords,
+      });
+      if (filterClauses.length) algoliaParams.set('filters', filterClauses.join(' AND '));
+
+      const response = await axios.post(
+        WTTJ_ALGOLIA_URL,
+        {
+          requests: [
+            {
+              indexName: WTTJ_JOBS_INDEX,
+              params: algoliaParams.toString(),
+            },
+          ],
         },
-        timeout: 10000,
-      },
-    );
+        {
+          headers: {
+            'x-algolia-application-id': WTTJ_ALGOLIA_APP_ID,
+            'x-algolia-api-key': WTTJ_ALGOLIA_SEARCH_KEY,
+            'Content-Type': 'application/json',
+            Referer: 'https://www.welcometothejungle.com/',
+            Origin: 'https://www.welcometothejungle.com',
+          },
+          timeout: 10000,
+        },
+      );
 
-    const hits: any[] = response.data?.results?.[0]?.hits || [];
+      const result = response.data?.results?.[0];
+      const hits: any[] = result?.hits || [];
+      allHits.push(...hits);
+      nbPages = result?.nbPages;
 
-    return hits
+      if (!hits.length) break;
+      if (nbPages !== undefined && page + 1 >= nbPages) break;
+    }
+
+    return allHits
       .filter((hit) => hit.organization?.slug && hit.slug)
-      .slice(0, 20)
       .map((hit) => {
         const city = hit.office?.city;
         const state = hit.office?.state;
@@ -675,19 +841,46 @@ export class ScrapingService {
     const appId = await this.settings.get('adzunaAppId');
     const appKey = await this.settings.get('adzunaApiKey');
 
-    const response = await axios.get('https://api.adzuna.com/v1/api/jobs/fr/search/1', {
-      params: {
-        app_id: appId,
-        app_key: appKey,
-        what: params.keywords,
-        where: params.location,
-        results_per_page: 20,
-      },
-    });
+    // Adzuna's own contract-type facets are boolean flags (permanent/
+    // contract), not a French CDI/CDD/Freelance enum -- CDI maps cleanly to
+    // "permanent", CDD to "contract" (its closest fixed-term equivalent).
+    // "Freelance"/"Stage"/"Alternance" have no reliable equivalent in
+    // Adzuna's own taxonomy and are deliberately left unset rather than
+    // guessed at, same reasoning as France Travail's mapping just above.
+    const types = new Set(params.contractTypes || []);
+    const contractParams: Record<string, number> = {};
+    if (types.has('CDI')) contractParams.permanent = 1;
+    if (types.has('CDD')) contractParams.contract = 1;
 
-    const offers = response.data?.results || [];
+    // Adzuna paginates via the page number baked into the URL path itself
+    // (/search/1, /search/2, ...), not a query param -- every call before
+    // this hardcoded /search/1 and results_per_page:20, silently capping
+    // every query at 20 results regardless of how many actually matched.
+    // Fetched sequentially (Adzuna's docs ask for no concurrent paging) and
+    // stopped as soon as a page comes back short, same end-of-results
+    // signal as France Travail's pagination just above.
+    const RESULTS_PER_PAGE = 50;
+    const MAX_PAGES = 4;
+    const allResults: any[] = [];
 
-    return offers.map((offer: any) => ({
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const response = await axios.get(`https://api.adzuna.com/v1/api/jobs/fr/search/${page}`, {
+        params: {
+          app_id: appId,
+          app_key: appKey,
+          what: params.keywords,
+          where: params.location,
+          results_per_page: RESULTS_PER_PAGE,
+          ...contractParams,
+        },
+      });
+
+      const pageResults = response.data?.results || [];
+      allResults.push(...pageResults);
+      if (pageResults.length < RESULTS_PER_PAGE) break;
+    }
+
+    return allResults.map((offer: any) => ({
       externalId: String(offer.id),
       source: 'adzuna',
       title: offer.title,

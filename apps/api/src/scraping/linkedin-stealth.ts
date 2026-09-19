@@ -36,6 +36,13 @@ export interface LinkedInSearchParams {
   location?: string;
   /** LinkedIn date-posted token: r86400=24h, r604800=7d, r2592000=30d */
   datePosted?: 'r86400' | 'r604800' | 'r2592000';
+  // French contract-type labels (CDI/CDD/Freelance/Stage/Alternance), mapped
+  // to LinkedIn's own f_JT facet below -- same reasoning as the mapping
+  // this file already does the other way (mapEmploymentType, LinkedIn's
+  // employmentType -> French label) confirms LinkedIn's own job-type facet
+  // genuinely distinguishes these (FULL_TIME/TEMPORARY/CONTRACTOR/INTERN),
+  // not just full/part-time.
+  contractTypes?: string[];
   proxy?: ProxyConfig;
   maxPages?: number;
 }
@@ -107,14 +114,37 @@ export async function scrapeLinkedInWithStealth(params: LinkedInSearchParams): P
     const allOffers: LinkedInOffer[] = [];
     const seenIds = new Set<string>();
 
-    // Paginate through start = 0, 10, 25 to collect 25-35 fresh listings
-    const pageOffsets = [0, 10, 25];
+    // Paginate through start = 0, 10, 20... (LinkedIn's own page size is 10
+    // cards/request) to collect up to 60 -- was capped at 25-35, comparatively
+    // the smallest source ceiling once France Travail/Adzuna (up to 200/query)
+    // and WTTJ (up to 80/query) got their own pagination fixed in the same
+    // pass. Still bounded well under those since each extra page here is a
+    // full browser navigation, not a cheap extra HTTP call.
+    const pageOffsets = [0, 10, 20, 30, 40, 50];
     for (const start of pageOffsets) {
       const searchUrl = new URL('https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search');
       searchUrl.searchParams.set('keywords', params.keywords);
       searchUrl.searchParams.set('location', params.location ?? 'France');
       searchUrl.searchParams.set('start', String(start));
       if (params.datePosted) searchUrl.searchParams.set('f_TPR', params.datePosted);
+      // Confirmed live: this was never sent at all -- every LinkedIn search
+      // ran unscoped by contract type, relying entirely on a post-hoc
+      // title-text match to catch internships/apprenticeships (which misses
+      // any that only mention it in the description). F=full-time covers
+      // both CDI and CDD (LinkedIn's own facet can't distinguish those --
+      // French CDDs are still usually posted as full-time hours), so it's
+      // included whenever either is selected; C=contract only when
+      // "Freelance" is selected; I=internship only when "Stage" is
+      // selected. Left unset entirely (LinkedIn's default: everything)
+      // when the campaign's contractTypes is empty, same as before.
+      if (params.contractTypes?.length) {
+        const types = new Set(params.contractTypes);
+        const fJT: string[] = [];
+        if (types.has('CDI') || types.has('CDD')) fJT.push('F');
+        if (types.has('Freelance')) fJT.push('C');
+        if (types.has('Stage')) fJT.push('I');
+        if (fJT.length) searchUrl.searchParams.set('f_JT', fJT.join(','));
+      }
 
       await page.goto(searchUrl.toString(), { waitUntil: 'networkidle', timeout: 25000 }).catch(() => {});
       await jitter(500, 1200);
@@ -136,7 +166,7 @@ export async function scrapeLinkedInWithStealth(params: LinkedInSearchParams): P
         }
       }
 
-      if (allOffers.length >= 25) break;
+      if (allOffers.length >= 60) break;
     }
 
     log.log(`Collected ${allOffers.length} unique LinkedIn job cards, enriching details...`);
