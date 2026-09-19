@@ -197,16 +197,18 @@ export class PlatformCredentialsService {
     });
 
     // Only LinkedIn's applier ever attempts an automatic password login —
-    // re-entering a password in Paramètres does nothing for the other three
+    // re-entering a password in Paramètres does nothing for the other
     // platforms (their own bot-detection blocks a headless login attempt
     // outright), so telling every platform's user to "re-enter your
-    // password" was actively misleading for 3 out of 4 of them.
+    // password" was actively misleading for most of them. The other branch
+    // used to point at the old establish-session.js CLI script -- outdated
+    // now that the in-app remote-login flow (Comptes → "Ouvrir la session")
+    // covers every account-based platform and needs nothing run locally.
     const fixInstructions =
       platform === 'linkedin'
         ? 'Renseignez à nouveau votre mot de passe dans Paramètres pour réactiver la connexion automatique.'
-        : `Cette plateforme bloque la connexion automatique par mot de passe — depuis votre machine, lancez ` +
-          `<code>npm run establish-session -- ${platform} votre@email.com</code>, connectez-vous dans la fenêtre qui ` +
-          `s'ouvre, puis collez le JSON de session obtenu dans Paramètres.`;
+        : `Cette plateforme bloque la connexion automatique par mot de passe — ouvrez Comptes dans FindUrJob et ` +
+          `cliquez sur "Ouvrir la session" pour ${platform} afin de vous reconnecter directement depuis l'application.`;
 
     await this.email.send(
       `Session ${platform} expirée`,
