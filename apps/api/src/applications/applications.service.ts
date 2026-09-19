@@ -258,6 +258,7 @@ export class ApplicationsService {
       },
       (campaign.keywords as string[]) || [],
       (campaign.seniorityKeywords as string[]) || [],
+      campaign.location,
     );
 
     return this.prisma.application.create({

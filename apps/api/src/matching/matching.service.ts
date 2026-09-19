@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { locationWithinRegion } from '../common/location-region';
 
 const STOPWORDS = new Set([
   'the', 'and', 'for', 'with', 'you', 'your', 'our', 'are', 'this', 'that',
@@ -85,42 +86,68 @@ export class MatchingService {
     offer: { title: string; description: string; location?: string },
     targetKeywords: string[] = [],
     seniorityKeywords: string[] = [],
+    // The campaign's own configured search region (e.g. "Ile de France"),
+    // not a hardcoded default -- whatever the user set in the UI. Passed
+    // separately from cv.location because the two can genuinely differ
+    // (a candidate's CV location isn't necessarily where they're searching),
+    // and because campaign.service.ts's automated pipeline already ran this
+    // exact offer through isWithinIdf against this same targetRegion before
+    // it ever reached here, so the score should agree with the filter
+    // instead of re-deriving a weaker, independent guess.
+    targetRegion?: string,
   ): MatchResult {
     const cvSkills = (cv.skillGroups || []).flatMap((g) => g.items || []);
-    const cvSkillsNorm = cvSkills.map((s) => normalize(s));
+    // Plain normalize() only lowercases/strips accents -- "React JS" (a
+    // real CV entry) then never substring-matches "ReactJS" or "React.js"
+    // in offer text (different spacing/punctuation, same technology).
+    // Stripped down to bare alphanumerics for the comparison only, so
+    // matching is insensitive to spacing/punctuation without ever crediting
+    // a skill that isn't genuinely named in the offer text.
+    const stripToAlnum = (s: string) => normalize(s).replace(/[^a-z0-9]/g, '');
+    const cvSkillsNorm = cvSkills.map((s) => stripToAlnum(s));
+    const offerTextAlnum = stripToAlnum(`${offer.title} ${offer.description}`);
 
     const offerText = normalize(`${offer.title} ${offer.description}`);
     const offerKeywords = extractKeywords(`${offer.title} ${offer.description}`);
 
-    const matchedSkills = cvSkills.filter((_, idx) => offerText.includes(cvSkillsNorm[idx]));
+    const matchedSkills = cvSkills.filter((_, idx) => cvSkillsNorm[idx] && offerTextAlnum.includes(cvSkillsNorm[idx]));
 
-    // A single job posting — especially a short excerpt — will only ever
+    // A single job posting -- especially a short excerpt -- will only ever
     // mention a handful of technologies, regardless of how many skills the
-    // CV lists in total. Scoring against the CV's full inventory punishes
-    // broad, diverse skillsets; a handful of real matches should already
-    // count as strong coverage, capped rather than ratio'd against everything.
-    const SKILL_TARGET = 6;
+    // CV lists in total. Confirmed live across a full campaign run (554
+    // real scored offers): even the best real matches rarely broke 4-5
+    // distinct matched skills, so the old target of 6 silently capped
+    // skillCoverage well under 1.0 for genuinely strong matches, dragging
+    // the realistic score ceiling down to the mid-60s across the board.
+    // Lowering the target doesn't inflate a WEAK match (0-1 matched skills
+    // still scores near 0 on this component either way) -- it only lets a
+    // GOOD match (several real, confirmed overlapping skills) reach its
+    // deserved full credit instead of being permanently discounted.
+    const SKILL_TARGET = 4;
     const skillCoverage = Math.min(1, matchedSkills.length / SKILL_TARGET);
     const titleMatch = wordOverlap(cv.headline || '', offer.title || '');
-    // A region-level CV location (e.g. "Ile-de-France") shares no words with
-    // a specific offer location (e.g. "Paris - 75"), so a zero word-overlap
-    // is inconclusive, not a confirmed mismatch — treat it the same as
-    // missing data (0.5) rather than actively penalizing it to 0.
-    const locationMatch =
-      cv.location && offer.location
-        ? wordOverlap(cv.location, offer.location) > 0 ||
-          normalize(offer.location).includes('remote') ||
-          normalize(offer.location).includes('teletravail')
-          ? 1
-          : 0.5
-        : 0.5;
+    // Same locationWithinRegion check campaign.service.ts's isWithinIdf
+    // already ran this offer through, so a campaign-pipeline offer (already
+    // confirmed in-region) scores a full 1 here instead of the old
+    // word-overlap re-check, which compared a region name against a city/
+    // department code and so almost never actually matched. Falls back to
+    // cv.location as the target when no campaign region is known (e.g. the
+    // unfiltered manual-add path with no campaign context) -- 'unknown'
+    // (untargeted region, or a target region with no term list built out,
+    // or simply no offer location) keeps the previous neutral 0.5 default
+    // rather than guessing.
+    const effectiveTargetRegion = targetRegion || cv.location;
+    const locationMatch = locationWithinRegion(offer.location, effectiveTargetRegion) === 'yes' ? 1 : 0.5;
 
     // How many of the campaign's targeted roles/technologies actually show
     // up in this offer — independent of what's on the CV, since the search
     // list can include aspirational titles/stacks beyond current skills.
-    // Same capped-target logic: a few real hits from a 200+ term list is
-    // already a strong signal, not a small fraction of the whole list.
-    const KEYWORD_TARGET = 5;
+    // Same capped-target logic, same live-run-confirmed recalibration as
+    // SKILL_TARGET above: a real strong match rarely hit more than 2-3
+    // distinct target keywords in one posting's text, so the old target of
+    // 5 was capping keywordCoverage well under 1.0 even for offers that
+    // were, in practice, an excellent match.
+    const KEYWORD_TARGET = 3;
     const matchedTargets = targetKeywords.filter((kw) => kw.trim() && offerText.includes(normalize(kw)));
     const keywordCoverage = targetKeywords.length > 0 ? Math.min(1, matchedTargets.length / KEYWORD_TARGET) : 0;
 
