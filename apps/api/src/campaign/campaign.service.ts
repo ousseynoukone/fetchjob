@@ -610,15 +610,36 @@ export class CampaignService implements OnModuleInit {
 
             if (!isWithinIdf(rawOffer.source, rawOffer.location, campaign.location)) {
               offersFiltered++;
+              await this.appendLog(
+                runId,
+                `Filtré (hors Ile-de-France): ${rawOffer.title} chez ${rawOffer.company} (${rawOffer.location || 'lieu non précisé'})`,
+              );
               continue;
             }
 
+            // Confirmed live: matching against the full DESCRIPTION (not just
+            // the title) made common team-structure words in "excludeKeywords"
+            // -- "manager", "senior", "team lead" -- match almost any
+            // professional job posting somewhere in its body text (e.g. "sous
+            // la responsabilité du manager produit"), even when the ROLE
+            // itself isn't senior/managerial at all. A real run with exactly
+            // this exclude list silently filtered 515 of 518 scanned offers,
+            // and this filter step had no logging at all (unlike the other
+            // two filter checks), making it invisible from the run log. Title-
+            // only now: "stage"/"alternance"/".Net" are naturally title-level
+            // signals anyway, and genuine seniority filtering already has its
+            // own, more careful mechanism (seniorityKeywords + minMatchScore
+            // below) that penalizes rather than hard-excludes.
             const excludeKeywords = (campaign.excludeKeywords as string[]) || [];
             if (excludeKeywords.length) {
-              const haystack = `${rawOffer.title} ${rawOffer.description}`.toLowerCase();
-              const excluded = excludeKeywords.some((kw) => kw.trim() && haystack.includes(kw.trim().toLowerCase()));
+              const titleLower = rawOffer.title.toLowerCase();
+              const excluded = excludeKeywords.some((kw) => kw.trim() && titleLower.includes(kw.trim().toLowerCase()));
               if (excluded) {
                 offersFiltered++;
+                await this.appendLog(
+                  runId,
+                  `Filtré (mot-clé à écarter dans le titre): ${rawOffer.title} chez ${rawOffer.company}`,
+                );
                 continue;
               }
             }
@@ -694,12 +715,19 @@ export class CampaignService implements OnModuleInit {
 
             if (result.score < campaign.minMatchScore) {
               offersFiltered++;
-              if (result.seniorityMismatch) {
-                await this.appendLog(
-                  runId,
-                  `Filtré (niveau senior/lead, profil junior): ${jobOffer.title} chez ${jobOffer.company}`,
-                );
-              }
+              // Confirmed live: this only ever logged the seniority-mismatch
+              // case -- a low score for any OTHER reason (or just a strict
+              // minMatchScore relative to genuinely relevant postings' own
+              // real scores) filtered completely silently, on top of the
+              // other two filter steps having the exact same gap. A real run
+              // filtered 570 of 576 scanned offers with not one line
+              // explaining why any single one of them was rejected.
+              await this.appendLog(
+                runId,
+                result.seniorityMismatch
+                  ? `Filtré (niveau senior/lead, profil junior): ${jobOffer.title} chez ${jobOffer.company}`
+                  : `Filtré (score ${result.score} < seuil ${campaign.minMatchScore}): ${jobOffer.title} chez ${jobOffer.company}`,
+              );
               continue;
             }
 
