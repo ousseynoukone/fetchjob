@@ -23,6 +23,20 @@ import { SupportedPlatform } from './dto/upsert-credential.dto';
 // (no such thing there), so this only actually helps local testing today.
 const PROFILE_BASE_DIR = process.env.REMOTE_LOGIN_PROFILE_DIR || '/root/.findurjob/remote-login-profiles';
 
+// Google's own multi-step login (identifier -> password -> 2FA, all on
+// accounts.google.com) makes both of this service's other automatic
+// behaviors actively counterproductive for it specifically:
+//  - prefillSavedCredential auto-typing an email/password into a Google
+//    form is exactly the "saisie automatisée" Google detects and penalizes
+//    accounts for -- skipped entirely, never attempted, even if a password
+//    happened to be stored.
+//  - pollLoginState's every-2s DOM check, repeated across however many
+//    steps a real 2FA/captcha challenge takes, is itself a repeated
+//    automated read of a Google auth page -- skipped in favor of a single,
+//    explicit check the person themselves triggers by clicking "J'ai
+//    terminé" once they're actually done (see confirmManualLogin).
+const MANUAL_CONFIRM_PLATFORMS = new Set<SupportedPlatform>(['gmail']);
+
 export interface RemoteLoginFrame {
   dataUrl: string | null;
   status: 'active' | 'done' | 'error';
@@ -286,11 +300,36 @@ export class RemoteLoginService implements OnModuleDestroy {
     // anything underneath it, with no visible error anywhere to explain why.
     await dismissCookieBanner(page).catch(() => {});
 
+    if (MANUAL_CONFIRM_PLATFORMS.has(session.platform)) return;
+
     await this.prefillSavedCredential(session).catch((error: any) => {
       this.logger.warn(`Remote-login credential prefill failed: ${error.message}`);
     });
 
     session.pollTimer = setInterval(() => this.pollLoginState(sessionId).catch(() => {}), 2000);
+  }
+
+  // The explicit counterpart to pollLoginState's auto-detected success path,
+  // for MANUAL_CONFIRM_PLATFORMS: triggered once by the person clicking
+  // "J'ai terminé", not on a timer. Returns success:false (leaving the
+  // session open) rather than closing it on a still-on-the-login-wall
+  // reading, so a person who clicked too early can just keep going and try
+  // again -- an automatic poll would have silently kept retrying the same
+  // way, but a manual click deserves a real answer either way.
+  async confirmManualLogin(sessionId: string): Promise<{ success: boolean; message: string }> {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.closed) return { success: false, message: 'Session introuvable ou déjà terminée.' };
+
+    const check = SESSION_CHECKS[session.platform];
+    const onLoginWall = await check.isLoginWallVisible(session.page).catch(() => true);
+    if (onLoginWall) {
+      return { success: false, message: "Pas encore connecté — termine la connexion puis clique de nouveau sur \"J'ai terminé\"." };
+    }
+
+    const saved = await this.persistSuccessfulSession(sessionId, session);
+    return saved
+      ? { success: true, message: 'Connexion confirmée — session enregistrée.' }
+      : { success: false, message: "Échec de l'enregistrement de la session — réessaie." };
   }
 
   // Best-effort: if a password was saved from a PREVIOUS remote-login to
@@ -374,7 +413,12 @@ export class RemoteLoginService implements OnModuleDestroy {
           break;
         case 'insertText':
           await cdpSession.send('Input.insertText', { text: event.text });
-          await this.captureTypedCredential(session);
+          // MANUAL_CONFIRM_PLATFORMS' password is never auto-filled next
+          // time (prefillSavedCredential is skipped for them too), so
+          // there's nothing for capturing it here to actually enable --
+          // only a reason to avoid parking a Google password in the DB
+          // unnecessarily.
+          if (!MANUAL_CONFIRM_PLATFORMS.has(session.platform)) await this.captureTypedCredential(session);
           break;
         case 'key': {
           const spec = SPECIAL_KEYS[event.key];
@@ -391,7 +435,9 @@ export class RemoteLoginService implements OnModuleDestroy {
             code: spec.code,
             windowsVirtualKeyCode: spec.keyCode,
           });
-          if (event.key === 'Backspace') await this.captureTypedCredential(session);
+          if (event.key === 'Backspace' && !MANUAL_CONFIRM_PLATFORMS.has(session.platform)) {
+            await this.captureTypedCredential(session);
+          }
           break;
         }
       }
@@ -447,6 +493,14 @@ export class RemoteLoginService implements OnModuleDestroy {
     session.consecutiveLoggedIn++;
     if (session.consecutiveLoggedIn < 2) return;
 
+    await this.persistSuccessfulSession(sessionId, session);
+  }
+
+  // Shared by pollLoginState's auto-detected success (every other platform)
+  // and confirmManualLogin's explicit, person-triggered success
+  // (MANUAL_CONFIRM_PLATFORMS) -- same storageState-saving logic either way,
+  // only how "logged in" gets confirmed differs between the two.
+  private async persistSuccessfulSession(sessionId: string, session: ActiveSession): Promise<boolean> {
     try {
       const storageState = await session.context.storageState();
       const userId = await this.localUser.getDefaultUserId();
@@ -456,7 +510,9 @@ export class RemoteLoginService implements OnModuleDestroy {
       // login to this platform. Falls back to the placeholder + raw
       // storageState-only shape when nothing was captured (e.g. a password
       // manager/autofill extension typed it, bypassing the keystroke relay
-      // entirely) -- exactly today's existing behavior, not a regression.
+      // entirely, or MANUAL_CONFIRM_PLATFORMS, which never listens for
+      // typed credentials at all) -- exactly today's existing behavior, not
+      // a regression.
       const email = session.capturedEmail || NO_CAPTURED_EMAIL_PLACEHOLDER;
       const emailEncrypted = this.crypto.encrypt(email);
       const sessionPayload = session.capturedPassword
@@ -471,9 +527,11 @@ export class RemoteLoginService implements OnModuleDestroy {
       });
 
       await this.cleanup(sessionId, { dataUrl: null, status: 'done', message: 'Connexion réussie — session enregistrée.' });
+      return true;
     } catch (error: any) {
       this.logger.error(`Failed to persist remote-login session: ${error.message}`);
       await this.cleanup(sessionId, { dataUrl: null, status: 'error', message: `Échec de l'enregistrement : ${error.message}` });
+      return false;
     }
   }
 

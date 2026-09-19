@@ -56,4 +56,13 @@ export class PlatformCredentialsController {
     await this.remoteLogin.stop(sessionId);
     return { ok: true };
   }
+
+  // Only meaningful for MANUAL_CONFIRM_PLATFORMS (gmail) — the "J'ai
+  // terminé" button once the person has actually finished logging in
+  // themselves, since that flow never auto-polls for completion the way
+  // every other platform's does.
+  @Post(':platform/remote-login/:sessionId/confirm')
+  async confirmRemoteLogin(@Param('sessionId') sessionId: string) {
+    return this.remoteLogin.confirmManualLogin(sessionId);
+  }
 }
