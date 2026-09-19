@@ -28,9 +28,19 @@ export class SessionHealthService {
   // Before the campaign scheduler's own daily runs (see
   // campaign-scheduler.service.ts) — a dead session is worth knowing about
   // before, not after, today's auto-apply attempts start failing on it.
-  // Runs in the morning window (between 6:30 and 8:00) with randomized jitter
-  // to avoid fixed periodic bot fingerprints on anti-scraping systems.
-  @Cron('30 6 * * *')
+  // Confirmed live: some platforms' own session cookies (France Travail's
+  // candidate portal in particular) genuinely don't last a full day, so a
+  // once-a-day check left a session dead for most of the day -- every
+  // candidature attempt in that gap surfaced as "session expired" until the
+  // next morning. Runs every ~3 hours instead, each with its own randomized
+  // jitter (2-45min) so it still never fires at a robotic fixed minute --
+  // catches a dying session while it's still revivable rather than only
+  // finding out once a day. Won't help a platform with a genuinely hard,
+  // non-sliding session TTL shorter than this interval; nothing scheduled
+  // app-side can extend that, only a real re-login can (the in-app
+  // remote-login flow in Paramètres, not the old establish-session.js CLI
+  // script referenced in some older applier error messages).
+  @Cron('0 */3 * * *')
   async checkAll() {
     try {
       // Add random jitter between 2 and 45 minutes so it never fires at the exact same minute
