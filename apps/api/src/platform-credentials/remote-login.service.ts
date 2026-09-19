@@ -104,6 +104,21 @@ export class RemoteLoginService implements OnModuleDestroy {
     const check = SESSION_CHECKS[platform];
     if (!check) throw new Error(`Unsupported platform: ${platform}`);
 
+    // Confirmed live: reopening the login modal (e.g. after it appeared
+    // stuck) without this launched a SECOND Chrome process against the
+    // exact same persistent profile directory -- Chrome profiles were
+    // never designed for concurrent multi-process access, and three
+    // processes piled up this way on the same LinkedIn profile, corrupting
+    // it badly enough that every session (old and new alike) just spun
+    // forever with no frames and no error anywhere to explain why. Closing
+    // any session already tracked for this platform first guarantees at
+    // most one browser per platform profile at any time.
+    for (const [existingId, existingSession] of this.sessions) {
+      if (existingSession.platform === platform) {
+        await this.cleanup(existingId, { dataUrl: null, status: 'error', message: 'Nouvelle session ouverte pour cette plateforme.' });
+      }
+    }
+
     const sessionId = randomUUID();
     const frames = new Subject<RemoteLoginFrame>();
 
@@ -240,7 +255,29 @@ export class RemoteLoginService implements OnModuleDestroy {
       this.logger.warn(`Failed to start remote-login screencast: ${error.message}`);
     }
 
-    await page.goto(check.homeUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    // Confirmed live: this used to be awaited BEFORE returning sessionId to
+    // the controller -- the frontend can't open its EventSource connection
+    // (it needs the sessionId first) until this whole function returns, so
+    // every frame the initial navigation produced was emitted into `frames`
+    // and lost (a plain Subject never replays past emissions to a late
+    // subscriber) before anyone was listening. By the time the frontend
+    // finally subscribed, the page had already finished loading and gone
+    // static -- CDP only emits screencastFrame events when something
+    // actually repaints, so a static page produces literally nothing more,
+    // and the live view spun forever with no error anywhere to explain why.
+    // Returning the sessionId first (screencast is already wired up above)
+    // lets the frontend subscribe BEFORE navigation starts, catching the
+    // real frames as they happen instead of racing them.
+    this.navigateAndPrefill(sessionId, session, check.homeUrl).catch((error: any) => {
+      this.logger.warn(`Remote-login navigation failed for ${platform}: ${error.message}`);
+    });
+
+    return sessionId;
+  }
+
+  private async navigateAndPrefill(sessionId: string, session: ActiveSession, homeUrl: string): Promise<void> {
+    const { page } = session;
+    await page.goto(homeUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
     // Confirmed live: unlike every auto-apply applier (which all call this
     // right after navigating), this service never dismissed a cookie-
     // consent overlay at all -- on HelloWork specifically, that banner sat
@@ -254,8 +291,6 @@ export class RemoteLoginService implements OnModuleDestroy {
     });
 
     session.pollTimer = setInterval(() => this.pollLoginState(sessionId).catch(() => {}), 2000);
-
-    return sessionId;
   }
 
   // Best-effort: if a password was saved from a PREVIOUS remote-login to
