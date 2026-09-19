@@ -9,7 +9,7 @@
  * .env for extra IP rotation if you ever get blocked.
  *
  * Anti-detection layers:
- *   1. playwright-extra + stealth plugin  → removes all CDP/Playwright artefacts
+ *   1. patchright (patched Playwright)    → removes CDP-protocol-level artefacts
  *   2. Rotating realistic fingerprints    → UA, viewport, platform, GPU vendor
  *   3. WebGL vendor/renderer spoofing     → defeats GPU fingerprinting
  *   4. Canvas pixel noise                 → defeats canvas fingerprinting
@@ -23,10 +23,16 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { chromium } from 'playwright-extra';
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-chromium.use(StealthPlugin());
+// Confirmed live: playwright-extra + puppeteer-extra-plugin-stealth (JS-level
+// overrides only) was NOT enough to get past Indeed's own Cloudflare bot
+// management, even combined with a correct fingerprint (channel: 'chromium'
+// below, real cookies). patchright is a patched Playwright fork that closes
+// CDP-protocol-level leaks (e.g. the Runtime.enable leak) stealth plugins
+// can't reach at all, since those operate one layer up, in page JS -- real,
+// verified fix: the exact same request that returned a Cloudflare challenge
+// through playwright-extra returned a clean 200 with real results through
+// patchright alone, no stealth plugin needed on top of it.
+import { chromium } from 'patchright';
 
 // ─── Fingerprint profiles ─────────────────────────────────────────────────────
 
@@ -319,6 +325,15 @@ export async function createStealthContext(options: StealthContextOptions = {}) 
 
   const browser = await chromium.launch({
     headless: isHeadless,
+    // Confirmed live on Indeed: without this, Playwright launches its own
+    // bundled chrome-headless-shell -- a stripped-down binary missing
+    // `window.chrome` entirely and reporting zero navigator.plugins, both
+    // concrete, checkable automation signals a real Chrome browser (even
+    // headless) never gives off. `channel: 'chromium'` uses the full,
+    // unmodified Chromium binary instead, same fix already applied to
+    // remote-login.service.ts and establish-session.js for the same
+    // reason.
+    channel: 'chromium',
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -375,7 +390,7 @@ export async function createStealthContext(options: StealthContextOptions = {}) 
  * Keeps JS and CSS (needed for page hydration and WAF challenges).
  * Call after creating the context, before opening pages.
  */
-export async function blockUnnecessaryResources(context: import('playwright').BrowserContext): Promise<void> {
+export async function blockUnnecessaryResources(context: import('patchright').BrowserContext): Promise<void> {
   await context.route('**/*', (route) => {
     const type = route.request().resourceType();
     const url = route.request().url();
@@ -390,7 +405,7 @@ export async function blockUnnecessaryResources(context: import('playwright').Br
  * Move the mouse through 3-6 random waypoints.
  * Call before navigating to the target URL — looks like a human scanning the page.
  */
-export async function simulateHumanMouse(page: import('playwright').Page): Promise<void> {
+export async function simulateHumanMouse(page: import('patchright').Page): Promise<void> {
   try {
     const vp = page.viewportSize() ?? { width: 1280, height: 800 };
     const moves = 3 + Math.floor(Math.random() * 4);
@@ -409,7 +424,7 @@ export async function simulateHumanMouse(page: import('playwright').Page): Promi
  * Save the context's cookies to disk for reuse next run.
  */
 export async function persistCookies(
-  context: import('playwright').BrowserContext,
+  context: import('patchright').BrowserContext,
   siteName: string,
 ): Promise<void> {
   try {
@@ -421,12 +436,22 @@ export async function persistCookies(
  * Returns true if the page shows a bot-challenge / login-wall.
  * Call after every navigation to know whether to abort.
  */
-export async function isBotChallengePage(page: import('playwright').Page): Promise<boolean> {
+export async function isBotChallengePage(page: import('patchright').Page): Promise<boolean> {
   try {
     const url = page.url();
     if (/challenge|captcha|authwall|security-check|verify/i.test(url)) return true;
     const text = await page.locator('body').innerText({ timeout: 2000 });
-    return /authwall|sign in to continue|unusual activity|captcha|verify you are human|browser check failed/i.test(text);
+    // Confirmed live on Indeed: a Cloudflare "Request Blocked" page (own
+    // title "Blocked - Indeed.com", body text "You have been blocked... Ray
+    // ID... Your current IP...") matched none of the wording below, so this
+    // returned false and the scraper silently cheerio-parsed a blocked page
+    // for job cards, finding zero and logging nothing to explain why. This
+    // is a real, outright IP-level block (not a stale selector) -- fixing
+    // detection doesn't un-block the IP, but at least surfaces WHY nothing
+    // came back instead of looking like an empty result set.
+    return /authwall|sign in to continue|unusual activity|captcha|verify you are human|browser check failed|you have been blocked|request blocked|ray id|access denied|pardon our interruption|attention required.*cloudflare/i.test(
+      text,
+    );
   } catch {
     return false;
   }

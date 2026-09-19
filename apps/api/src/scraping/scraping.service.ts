@@ -1,7 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-import { type BrowserContext } from 'playwright';
+// patchright, not 'playwright' -- createStealthContext (stealth-browser.ts)
+// now returns a patchright BrowserContext. The two packages' types are
+// structurally near-identical but nominally distinct, so importing the
+// wrong one here fails to typecheck even though the actual objects are
+// fully compatible.
+import { type BrowserContext } from 'patchright';
 import {
   createStealthContext,
   blockUnnecessaryResources,

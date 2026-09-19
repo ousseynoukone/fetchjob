@@ -8,7 +8,7 @@ import { promises as fs } from 'fs';
 import { CryptoService } from '../common/crypto.service';
 import { LocalUserService } from '../common/local-user.service';
 import { PrismaService } from '../common/prisma.service';
-import { SESSION_CHECKS } from '../auto-apply/appliers/ats-common';
+import { SESSION_CHECKS, dismissCookieBanner } from '../auto-apply/appliers/ats-common';
 import { buildFingerprintScript, FINGERPRINT_PROFILES } from '../scraping/stealth-browser';
 import { SupportedPlatform } from './dto/upsert-credential.dto';
 
@@ -132,9 +132,16 @@ export class RemoteLoginService implements OnModuleDestroy {
     // device consistency"), and its JS-only fingerprint script -- NOT the
     // full puppeteer-extra-plugin-stealth package, which establish-session.js
     // deliberately avoids because it broke HelloWork's own FriendlyCaptcha
-    // outright; buildFingerprintScript only overrides navigator/WebGL
-    // properties, nothing that should interfere with a real person solving
-    // a real CAPTCHA/2FA prompt themselves through the live view.
+    // outright.
+    //
+    // That last assumption turned out to be only half right: confirmed live
+    // that buildFingerprintScript's own WebGL/navigator overrides ALSO break
+    // FriendlyCaptcha the exact same way ("Échec de la vérification --
+    // Problème de connexion avec ...friendlycaptcha..."), not just the
+    // heavier stealth plugin establish-session.js already avoids. Skipped
+    // for HelloWork specifically, matching establish-session.js's own
+    // established exception, while staying applied for the other platforms
+    // it was added for (LinkedIn's own bot-detection gaps).
     const fp = FINGERPRINT_PROFILES[0];
     const profileDir = path.join(PROFILE_BASE_DIR, platform);
     // A server restart (a deploy, a crash, or just this container being
@@ -189,7 +196,9 @@ export class RemoteLoginService implements OnModuleDestroy {
         'Upgrade-Insecure-Requests': '1',
       },
     });
-    await context.addInitScript(buildFingerprintScript(fp));
+    if (platform !== 'hellowork') {
+      await context.addInitScript(buildFingerprintScript(fp));
+    }
     // A persistent context starts with one page already open (about:blank)
     // rather than none -- reuse it instead of opening a second, unused tab.
     const page = context.pages()[0] || (await context.newPage());
@@ -232,6 +241,13 @@ export class RemoteLoginService implements OnModuleDestroy {
     }
 
     await page.goto(check.homeUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    // Confirmed live: unlike every auto-apply applier (which all call this
+    // right after navigating), this service never dismissed a cookie-
+    // consent overlay at all -- on HelloWork specifically, that banner sat
+    // on top of the whole page intercepting every click/keystroke, leaving
+    // the person watching the live view completely unable to interact with
+    // anything underneath it, with no visible error anywhere to explain why.
+    await dismissCookieBanner(page).catch(() => {});
 
     await this.prefillSavedCredential(session).catch((error: any) => {
       this.logger.warn(`Remote-login credential prefill failed: ${error.message}`);

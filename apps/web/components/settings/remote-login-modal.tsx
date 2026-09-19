@@ -45,6 +45,10 @@ export default function RemoteLoginModal({
   // event's request only starts once the previous one has actually been
   // sent.
   const inputQueueRef = useRef<Promise<void>>(Promise.resolve());
+  // Distinguishes a close WE triggered (login finished) from the connection
+  // just dying underneath us (e.g. the backend restarted mid-session) --
+  // see the onerror handler below.
+  const intentionalCloseRef = useRef(false);
 
   const sendInput = useCallback((event: Record<string, any>) => {
     const sessionId = sessionIdRef.current;
@@ -83,14 +87,24 @@ export default function RemoteLoginModal({
           setStatus(payload.status);
           if (payload.message) setMessage(payload.message);
           if (payload.status === 'done') {
+            intentionalCloseRef.current = true;
             onLoggedIn();
             source.close();
           }
         };
         source.onerror = () => {
-          // A closed stream (session finished) also fires onerror -- only
-          // surface it as a real problem if we never got past "connecting".
-          setStatus((s) => (s === 'connecting' ? 'error' : s));
+          // Confirmed live: this used to only surface as an error while
+          // still "connecting" -- once a first frame had come through and
+          // status flipped to "active", a LATER drop (the backend
+          // restarting mid-session, a network blip) updated nothing at all,
+          // silently freezing the last frame on screen forever with no
+          // indication anything had gone wrong. Any unexpected drop is a
+          // real problem now, not just the very first connection attempt --
+          // the only close that should stay silent is the one WE triggered
+          // after a successful login.
+          if (intentionalCloseRef.current) return;
+          setStatus('error');
+          setMessage((m) => m || 'Connexion au serveur perdue — fermez et rouvrez cette fenêtre pour réessayer.');
         };
       } catch (error: any) {
         if (!cancelled) {
