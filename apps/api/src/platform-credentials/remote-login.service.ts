@@ -4,6 +4,7 @@ import type { BrowserContext, Page, CDPSession } from 'playwright';
 import { Subject, Observable } from 'rxjs';
 import { randomUUID } from 'crypto';
 import * as path from 'path';
+import { promises as fs } from 'fs';
 import { CryptoService } from '../common/crypto.service';
 import { LocalUserService } from '../common/local-user.service';
 import { PrismaService } from '../common/prisma.service';
@@ -43,7 +44,28 @@ interface ActiveSession {
   pollTimer: NodeJS.Timeout;
   consecutiveLoggedIn: number;
   closed: boolean;
+  // Best-effort capture of whatever the user types into the login form
+  // during this session -- not read back this session, only saved once
+  // login succeeds so the NEXT login to this same platform can be
+  // pre-filled instead of retyped from scratch (see prefillSavedCredential).
+  capturedEmail?: string;
+  capturedPassword?: string;
 }
+
+// Generic enough to match every platform's own login form without needing a
+// per-platform selector map: an email/identifier-like field, and any
+// password field. Used both to auto-fill a previously-saved credential
+// (prefillSavedCredential) and to recognize which field the user is
+// currently typing into (captureTypedCredential).
+const LOGIN_EMAIL_SELECTOR =
+  'input[type="email"], input[autocomplete*="username" i], input[name*="email" i], input[id*="email" i], input[name*="identifiant" i], input[id*="identifiant" i], input[name="__email"]';
+const LOGIN_PASSWORD_SELECTOR = 'input[type="password"]';
+// Written when nothing was captured for the login identifier (see
+// captureTypedCredential) -- checked against by name, not by shape (an `@`
+// test), since not every platform's login identifier is an email address.
+// France Travail in particular logs in with a plain "identifiant" that has
+// no reason to contain one.
+const NO_CAPTURED_EMAIL_PLACEHOLDER = '(connecté via navigateur intégré)';
 
 // Mirrors the CDP `key`/`code`/`keyCode` triples Chromium expects for
 // Input.dispatchKeyEvent -- only the handful of non-printable keys a login
@@ -114,6 +136,24 @@ export class RemoteLoginService implements OnModuleDestroy {
     // properties, nothing that should interfere with a real person solving
     // a real CAPTCHA/2FA prompt themselves through the live view.
     const fp = FINGERPRINT_PROFILES[0];
+    const profileDir = path.join(PROFILE_BASE_DIR, platform);
+    // A server restart (a deploy, a crash, or just this container being
+    // rebuilt) while a persistent-profile Chrome process was still alive
+    // kills it without giving it the chance to remove its own lock files --
+    // this service's in-memory `sessions` map doesn't survive that either,
+    // but the on-disk SingletonLock/SingletonSocket/SingletonCookie files
+    // Chrome itself wrote do. Confirmed live: this permanently blocked
+    // every future remote-login for that platform with "Failed to create a
+    // ProcessSingleton...File exists" until the files were removed by hand.
+    // Safe to clear unconditionally right before launching: by definition,
+    // if this fresh process's own session map has nothing running for this
+    // platform, there is no legitimate in-progress login these files could
+    // still correctly be guarding.
+    await Promise.all(
+      ['SingletonLock', 'SingletonSocket', 'SingletonCookie'].map((name) =>
+        fs.unlink(path.join(profileDir, name)).catch(() => {}),
+      ),
+    );
     // launchPersistentContext, not launch()+newContext() -- a real, on-disk
     // Chrome profile PER PLATFORM (cookies, cache, local storage) that
     // survives across every future login attempt to that same platform
@@ -121,7 +161,7 @@ export class RemoteLoginService implements OnModuleDestroy {
     // every single time, which is itself a signal a real person's browser
     // never gives off. See PROFILE_BASE_DIR above for the persistence
     // caveat (local only, not on Render's free tier).
-    const context = await chromium.launchPersistentContext(path.join(PROFILE_BASE_DIR, platform), {
+    const context = await chromium.launchPersistentContext(profileDir, {
       headless: true,
       channel: 'chromium',
       args: [
@@ -193,9 +233,59 @@ export class RemoteLoginService implements OnModuleDestroy {
 
     await page.goto(check.homeUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
 
+    await this.prefillSavedCredential(session).catch((error: any) => {
+      this.logger.warn(`Remote-login credential prefill failed: ${error.message}`);
+    });
+
     session.pollTimer = setInterval(() => this.pollLoginState(sessionId).catch(() => {}), 2000);
 
     return sessionId;
+  }
+
+  // Best-effort: if a password was saved from a PREVIOUS remote-login to
+  // this same platform (see captureTypedCredential / the success branch of
+  // pollLoginState below), fill it in automatically so the user only has to
+  // click "log in" and handle any CAPTCHA/2FA themselves, instead of typing
+  // their email and password again every single time -- the exact
+  // repetition this feature exists to remove. Silently does nothing if
+  // there's no saved password yet (first login to a platform), or if the
+  // login form's fields don't match the generic selectors above.
+  private async prefillSavedCredential(session: ActiveSession): Promise<void> {
+    const userId = await this.localUser.getDefaultUserId();
+    const row = await this.prisma.platformCredential.findUnique({
+      where: { userId_platform: { userId, platform: session.platform } },
+    });
+    if (!row?.sessionStateEncrypted) return;
+
+    const raw = this.crypto.decrypt(row.sessionStateEncrypted);
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    // A session-only credential (established via the old establish-session.js
+    // script, or a previous remote-login where nothing was captured) stores
+    // the raw storageState with no `password` key -- nothing to prefill.
+    if (!parsed || typeof parsed !== 'object' || !parsed.password) return;
+
+    const email = row.emailEncrypted ? this.crypto.decrypt(row.emailEncrypted) : '';
+    // Login forms on these platforms are all client-rendered SPAs -- a
+    // fixed settle delay here, same reasoning as fillIdentityFields'
+    // own wait between passes, since filling before the field exists is a
+    // silent no-op with no error to catch.
+    await session.page.waitForTimeout(1500);
+
+    if (email && email !== NO_CAPTURED_EMAIL_PLACEHOLDER) {
+      const emailField = session.page.locator(LOGIN_EMAIL_SELECTOR).first();
+      if (await emailField.isVisible().catch(() => false)) {
+        await emailField.fill(email).catch(() => {});
+      }
+    }
+    const passwordField = session.page.locator(LOGIN_PASSWORD_SELECTOR).first();
+    if (await passwordField.isVisible().catch(() => false)) {
+      await passwordField.fill(parsed.password).catch(() => {});
+    }
   }
 
   getFrames(sessionId: string): Observable<RemoteLoginFrame> {
@@ -233,6 +323,7 @@ export class RemoteLoginService implements OnModuleDestroy {
           break;
         case 'insertText':
           await cdpSession.send('Input.insertText', { text: event.text });
+          await this.captureTypedCredential(session);
           break;
         case 'key': {
           const spec = SPECIAL_KEYS[event.key];
@@ -249,11 +340,35 @@ export class RemoteLoginService implements OnModuleDestroy {
             code: spec.code,
             windowsVirtualKeyCode: spec.keyCode,
           });
+          if (event.key === 'Backspace') await this.captureTypedCredential(session);
           break;
         }
       }
     } catch (error: any) {
       this.logger.warn(`Remote-login input relay failed: ${error.message}`);
+    }
+  }
+
+  // Opportunistically remembers whatever's typed into a recognizable
+  // email/password field during this session -- not used this session, only
+  // saved once login actually succeeds (see pollLoginState), so the NEXT
+  // login to this platform can be prefilled automatically instead of
+  // retyped. Keyed off the currently-focused element rather than parsing
+  // the whole page every keystroke; a login page realistically never has
+  // another free-text field to confuse this with.
+  private async captureTypedCredential(session: ActiveSession): Promise<void> {
+    const info = await session.page
+      .evaluate(() => {
+        const el = (globalThis as any).document?.activeElement as any;
+        if (!el || typeof el.value !== 'string') return null;
+        return { type: (el.type || '').toLowerCase(), value: el.value };
+      })
+      .catch(() => null);
+    if (!info) return;
+    if (info.type === 'password') {
+      session.capturedPassword = info.value;
+    } else if (info.type === 'email' || info.type === 'text') {
+      session.capturedEmail = info.value;
     }
   }
 
@@ -284,8 +399,19 @@ export class RemoteLoginService implements OnModuleDestroy {
     try {
       const storageState = await session.context.storageState();
       const userId = await this.localUser.getDefaultUserId();
-      const emailEncrypted = this.crypto.encrypt('(connecté via navigateur intégré)');
-      const sessionStateEncrypted = this.crypto.encrypt(JSON.stringify(storageState));
+      // Saves the real typed email/password when captured (see
+      // captureTypedCredential) instead of the old placeholder label, so
+      // prefillSavedCredential has something real to work with on the NEXT
+      // login to this platform. Falls back to the placeholder + raw
+      // storageState-only shape when nothing was captured (e.g. a password
+      // manager/autofill extension typed it, bypassing the keystroke relay
+      // entirely) -- exactly today's existing behavior, not a regression.
+      const email = session.capturedEmail || NO_CAPTURED_EMAIL_PLACEHOLDER;
+      const emailEncrypted = this.crypto.encrypt(email);
+      const sessionPayload = session.capturedPassword
+        ? JSON.stringify({ password: session.capturedPassword, storageState })
+        : JSON.stringify(storageState);
+      const sessionStateEncrypted = this.crypto.encrypt(sessionPayload);
 
       await this.prisma.platformCredential.upsert({
         where: { userId_platform: { userId, platform: session.platform } },

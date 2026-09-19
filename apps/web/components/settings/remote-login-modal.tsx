@@ -157,6 +157,25 @@ export default function RemoteLoginModal({
     return () => window.removeEventListener('keydown', onKeyDown, true);
   }, [sendInput]);
 
+  // Ctrl+V never reached the browser being driven remotely -- the keydown
+  // handler above deliberately ignores any key combo with a modifier held
+  // (so Ctrl+C/Ctrl+A etc. don't get typed as literal characters), which
+  // also swallowed paste. Listening for the browser's own native `paste`
+  // event instead sidesteps that entirely: it fires with the clipboard
+  // content already resolved, so the whole pasted string (a password from a
+  // password manager, a long answer copied from elsewhere) can be relayed
+  // in one Input.insertText call rather than needing to be typed key by key.
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const text = e.clipboardData?.getData('text');
+      if (!text) return;
+      e.preventDefault();
+      sendInput({ kind: 'insertText', text });
+    };
+    window.addEventListener('paste', onPaste, true);
+    return () => window.removeEventListener('paste', onPaste, true);
+  }, [sendInput]);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
       <div className="bg-base-100 rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden">
