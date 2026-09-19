@@ -760,7 +760,30 @@ export class ScrapingService {
       if (total !== undefined && allResults.length >= total) break;
     }
 
-    return allResults.map((offer: any) => ({
+    // Confirmed live across 100 real offers: `origineOffre.origine` is
+    // NOT a native/external signal (every single offer sampled read "1",
+    // including ones whose actual apply link pointed at Taleez/Jobaffinity)
+    // -- the real signal is contact.urlPostulation (or coordonnees1 when
+    // it's itself a URL): present and pointing off francetravail.fr means
+    // the offer's own applier will end up following an external redirect
+    // (see france-travail.applier.ts's partnerLink handling) rather than
+    // completing natively on France Travail's own candidat portal. Doesn't
+    // filter these out (an external-redirect offer can still land on a
+    // real, auto-appliable ATS) -- sorted after the native ones instead, so
+    // a budget-capped run spends its quota on native offers first.
+    const isNativeApply = (offer: any): boolean => {
+      const applyUrl = offer.contact?.urlPostulation || offer.contact?.coordonnees1 || '';
+      if (!/^https?:\/\//i.test(applyUrl)) return true;
+      try {
+        return /(^|\.)francetravail\.fr$/i.test(new URL(applyUrl).hostname);
+      } catch {
+        return true;
+      }
+    };
+
+    const sorted = [...allResults].sort((a, b) => Number(isNativeApply(b)) - Number(isNativeApply(a)));
+
+    return sorted.map((offer: any) => ({
       externalId: offer.id,
       source: 'france_travail',
       title: offer.intitule,
