@@ -17,6 +17,7 @@ const PLATFORM_LABELS: Record<SupportedPlatform, string> = {
   indeed: 'Indeed',
   france_travail: 'France Travail',
   hellowork: 'HelloWork',
+  welcome_to_the_jungle: 'Welcome to the Jungle',
 };
 
 type Status = 'connecting' | 'active' | 'done' | 'error';

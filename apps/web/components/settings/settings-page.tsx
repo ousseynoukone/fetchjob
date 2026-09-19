@@ -47,6 +47,7 @@ const PLATFORM_LABELS: Record<SupportedPlatform, string> = {
   indeed: 'Indeed',
   france_travail: 'France Travail',
   hellowork: 'HelloWork',
+  welcome_to_the_jungle: 'Welcome to the Jungle',
 };
 
 // Only LinkedIn's applier ever attempts an automatic email/password login
@@ -60,6 +61,18 @@ const PLATFORM_LABELS: Record<SupportedPlatform, string> = {
 // is exactly what led a real user to enter a HelloWork password expecting
 // auto-login, only to keep getting "session expired" regardless.
 const AUTO_LOGIN_PLATFORMS = new Set<SupportedPlatform>(['linkedin']);
+
+// Short, platform-specific context shown under every card regardless of
+// status — not just when something's already broken. Each note reflects a
+// real, confirmed quirk of that platform (see the matching comments in
+// remote-login.service.ts / ats-common.ts / scraping.service.ts), not a
+// generic warning repeated for all four.
+const PLATFORM_NOTES: Partial<Record<SupportedPlatform, string>> = {
+  indeed: "Indeed bloque les connexions venues d'un serveur (protection Cloudflare). La reprise en main via \"Se connecter\" est souvent le seul chemin qui marche.",
+  hellowork: "HelloWork fait passer un contrôle anti-robot (FriendlyCaptcha) à la connexion — à valider toi-même dans la fenêtre \"Se connecter\".",
+  france_travail: "Identifiant France Travail : ton identifiant numérique, pas une adresse e-mail.",
+  welcome_to_the_jungle: "Beaucoup d'annonces renvoient vers l'outil de recrutement de l'employeur : l'envoi automatique ne couvre que celles hébergées directement par Welcome to the Jungle.",
+};
 
 function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
   const { items, remove, saveCredentials, fetchStatus } = usePlatformCredentialsStore();
@@ -152,6 +165,9 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
         )}
       </div>
 
+      {PLATFORM_NOTES[platform] && (
+        <p className="text-xs text-base-content/50 mb-2">{PLATFORM_NOTES[platform]}</p>
+      )}
       {item?.lastLoginError && <p className="text-xs text-error mb-2">{item.lastLoginError}</p>}
 
       {isEditing ? (
@@ -159,18 +175,12 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
           {!supportsAutoLogin && (
             <p className="text-xs text-base-content/60 bg-base-200 rounded-lg p-2 leading-relaxed">
               {PLATFORM_LABELS[platform]} bloque la connexion automatique par mot de passe (protection
-              anti-robot) — le bot ne peut réutiliser qu'une session déjà établie. Deux façons de
-              l'obtenir :
-              <br />
-              1) Depuis votre machine, lancez{' '}
-              <code className="font-mono">npm run establish-session -- {platform} votre@email.com</code>{' '}
-              et connectez-vous dans la fenêtre qui s'ouvre.
-              <br />
-              2) Si la vérification anti-robot bloque même cette fenêtre, connectez-vous à{' '}
-              {PLATFORM_LABELS[platform]} normalement dans votre navigateur habituel, puis utilisez une
-              extension comme <em>Cookie-Editor</em> pour exporter les cookies du site en JSON.
-              <br />
-              Collez le résultat obtenu (par l'une ou l'autre méthode) ci-dessous.
+              anti-robot) — le bot ne peut réutiliser qu'une session déjà établie. Le bouton "Se
+              connecter" ci-dessus (navigateur intégré) est le chemin normal. Si la vérification
+              anti-robot bloque même cette fenêtre, connectez-vous à {PLATFORM_LABELS[platform]}{' '}
+              normalement dans votre navigateur habituel, puis utilisez une extension comme{' '}
+              <em>Cookie-Editor</em> pour exporter les cookies du site en JSON et collez le résultat
+              ci-dessous.
             </p>
           )}
 
@@ -489,6 +499,7 @@ export default function SettingsPage() {
                 <PlatformCredentialRow platform="indeed" />
                 <PlatformCredentialRow platform="france_travail" />
                 <PlatformCredentialRow platform="hellowork" />
+                <PlatformCredentialRow platform="welcome_to_the_jungle" />
               </div>
             </div>
 

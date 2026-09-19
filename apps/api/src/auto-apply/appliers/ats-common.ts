@@ -37,10 +37,62 @@ export function splitName(fullName: string): { first: string; last: string } {
   return { first: parts[0], last: parts.slice(1).join(' ') };
 }
 
+async function jitter(minMs: number, maxMs: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, minMs + Math.random() * (maxMs - minMs)));
+}
+
+// Playwright's own .fill()/.click() are functionally reliable but
+// behaviorally inert: .fill() sets the value directly (one `input` event,
+// no real per-character keydown/keyup sequence or mouse movement first),
+// and .click() jumps the pointer straight to the target's center with no
+// travel at all. Sophisticated behavioral bot-detection (DataDome,
+// PerimeterX, and some ATS platforms' own anti-automation layers --
+// several of which this project's own sources already run into, see APEC/
+// WTTJ's DataDome and Indeed's Cloudflare) profiles exactly this shape.
+// humanFill/humanClick route the highest-traffic fill/click paths (every
+// identity field, on every applier, plus the AI-driven form loop's own
+// dynamic filler and its submit/next clicks) through an approximated mouse
+// path and per-keystroke typing instead. Not applied to every single
+// `.fill()`/`.click()` call site in every individual ATS applier -- these
+// two choke points already cover the large majority of real interactions;
+// a handful of special-cased fields (e.g. LinkedIn's own password auto-
+// login field) still use a plain fill, a smaller, lower-frequency surface.
+export async function humanFill(locator: Locator, value: string): Promise<void> {
+  if (!value) return;
+  try {
+    await locator.hover({ timeout: 3000 });
+    await locator.click({ timeout: 3000 });
+    await locator.pressSequentially(value, { delay: 35 + Math.random() * 70 });
+  } catch {
+    await locator.fill(value).catch(() => {});
+  }
+}
+
+// Throws if the final click itself fails (same contract as Playwright's own
+// .click()) rather than swallowing it -- callers that want a raw-DOM-click
+// fallback for a covered/hidden element can still chain their own .catch()
+// the way they already do around a plain .click().
+export async function humanClick(page: Page, locator: Locator): Promise<void> {
+  const box = await locator.boundingBox().catch(() => null);
+  if (box) {
+    const targetX = box.x + box.width / 2;
+    const targetY = box.y + box.height / 2;
+    const steps = 2 + Math.floor(Math.random() * 2);
+    for (let i = 1; i <= steps; i++) {
+      const t = i / (steps + 1);
+      await page.mouse.move(targetX * t + (Math.random() * 30 - 15), targetY * t + (Math.random() * 30 - 15), { steps: 5 }).catch(() => {});
+      await jitter(30, 90);
+    }
+    await page.mouse.move(targetX, targetY, { steps: 6 + Math.floor(Math.random() * 6) }).catch(() => {});
+    await jitter(60, 180);
+  }
+  await locator.click({ timeout: 5000 });
+}
+
 export async function fillIfVisible(locator: Locator, value?: string | null): Promise<void> {
   if (!value) return;
   if (await locator.isVisible().catch(() => false)) {
-    await locator.fill(value).catch(() => {});
+    await humanFill(locator, value);
   }
 }
 
@@ -238,11 +290,7 @@ export async function fillIdentityFields(
     for (const m of matches) {
       const value = values[m.role];
       if (!value) continue;
-      await page
-        .locator(`[data-identity-idx="${m.idx}"]`)
-        .first()
-        .fill(value)
-        .catch(() => {});
+      await humanFill(page.locator(`[data-identity-idx="${m.idx}"]`).first(), value);
     }
     if (attempt === 0) await page.waitForTimeout(700);
     await page.waitForTimeout(700);
@@ -457,6 +505,17 @@ export const SESSION_CHECKS: Record<string, SessionCheck> = {
       }
       return false;
     },
+  },
+  welcome_to_the_jungle: {
+    // The homepage itself, not a guessed "my account" route -- confirmed
+    // live that WTTJ's own account URLs 404 rather than redirect to signin
+    // (an SPA quirk, not proof of anything), while the public homepage
+    // reliably renders a real "Se connecter" nav link for a logged-out
+    // visitor and doesn't for an authenticated one, confirmed live via its
+    // own header markup.
+    homeUrl: 'https://www.welcometothejungle.com/fr',
+    isLoginWallVisible: async (page) =>
+      page.getByRole('link', { name: /se connecter/i }).first().isVisible().catch(() => false),
   },
 };
 
