@@ -25,22 +25,19 @@ export class SessionHealthService {
     private browserSession: BrowserSessionService,
   ) {}
 
-  // Confirmed live: cookies carry their own real expiry timestamp (the
-  // `expires` field in storageState, Unix seconds) -- rather than guess a
-  // one-size-fits-all recheck interval, read that directly per credential
-  // and only spend a live browser visit on the ones actually close to
-  // expiring. A visit this close still leaves margin to catch it and email
-  // before the candidate portal actually locks the session out.
-  private static readonly REFRESH_MARGIN_MS = 90 * 60 * 1000;
-
-  // Ticks every 30 minutes -- cheap on its own (each tick just reads stored
-  // cookie expiry timestamps; the costly live browser visit only runs for
-  // credentials the expiry check below flags as due). Before this, the
-  // whole batch ran on one fixed interval regardless of how much life any
-  // individual session's cookies actually had left, so a France Travail
-  // session with a short-lived cookie and a LinkedIn session with a
-  // month-long one got the exact same treatment -- either too late for the
-  // first or wastefully often for the second.
+  // Corrected after explicit feedback: an earlier version of this only
+  // spent a live visit on a credential once its cookies were computed to be
+  // close to actually expiring (or, for session-only cookies with no
+  // computable expiry, on a slow ~3h fallback cadence) -- reasoned as
+  // minimizing unnecessary traffic, but that's backwards for what this is
+  // actually for. Visiting a still-valid session is itself what renews a
+  // sliding-window cookie (most login systems use one) -- waiting until
+  // it's ALMOST dead to first touch it defeats that, and for a platform
+  // with a genuinely short/non-sliding TTL, the 3h fallback could still
+  // miss the window entirely. Every credential gets a real visit on every
+  // tick now, unconditionally -- the point is to keep every session
+  // continuously warm, not to compute the minimum traffic that gets away
+  // with not doing that.
   @Cron('*/30 * * * *')
   async checkAll() {
     try {
@@ -56,68 +53,36 @@ export class SessionHealthService {
     }
   }
 
-  private async run() {
+  // Exposed for a manual "check now" trigger (see
+  // PlatformCredentialsController) as well as the cron above -- the same
+  // full refresh pass either way, just fired on demand instead of waiting
+  // for the next tick.
+  async run(): Promise<{ platform: string; status: 'refreshed' | 'expired' | 'error' }[]> {
     const credentials = await this.prisma.platformCredential.findMany({
       where: { sessionStateEncrypted: { not: null } },
     });
 
+    const results: { platform: string; status: 'refreshed' | 'expired' | 'error' }[] = [];
     for (const credential of credentials) {
-      const due = await this.isRefreshDue(credential.userId, credential.platform as SupportedPlatform).catch(
+      const status = await this.checkOne(credential.userId, credential.platform as SupportedPlatform).catch(
         (error: any) => {
-          this.logger.warn(`Session expiry read failed for ${credential.platform}: ${error.message}`);
-          return true; // unknown state -- err toward checking it rather than silently skipping
+          this.logger.warn(`Session health check failed for ${credential.platform}: ${error.message}`);
+          return 'error' as const;
         },
       );
-      if (!due) continue;
-
-      await this.checkOne(credential.userId, credential.platform as SupportedPlatform).catch((error: any) => {
-        this.logger.warn(`Session health check failed for ${credential.platform}: ${error.message}`);
-      });
+      results.push({ platform: credential.platform, status });
       // Pause between platforms to mimic human browsing behavior
       await this.browserSession.randomDelay(15000, 45000);
     }
+    return results;
   }
 
-  // Cookies with no fixed expiry (session-only, `expires: -1`) can't be
-  // predicted ahead of time -- those fall back to the old fixed cadence
-  // (roughly every 3 hours) rather than being checked on every 30-minute
-  // tick, which would be needless extra live-browser traffic to sites that
-  // already have no expiry signal to act on anyway.
-  private async isRefreshDue(userId: string, platform: SupportedPlatform): Promise<boolean> {
-    const { sessionState } = await this.credentials.getDecrypted(userId, platform);
-    if (!sessionState) return false; // already flagged expired earlier — nothing new to check
-
-    const earliestExpiryMs = this.earliestCookieExpiryMs(sessionState);
-    if (earliestExpiryMs === null) return new Date().getHours() % 3 === 0;
-
-    return earliestExpiryMs - Date.now() <= SessionHealthService.REFRESH_MARGIN_MS;
-  }
-
-  private earliestCookieExpiryMs(sessionStateJson: string): number | null {
-    try {
-      let parsed = JSON.parse(sessionStateJson);
-      while (typeof parsed === 'string') parsed = JSON.parse(parsed);
-      const cookies = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.cookies) ? parsed.cookies : [];
-
-      let earliest: number | null = null;
-      for (const cookie of cookies) {
-        const expires = typeof cookie?.expires === 'number' ? cookie.expires : typeof cookie?.expirationDate === 'number' ? cookie.expirationDate : -1;
-        if (expires <= 0) continue; // session-only cookie, no fixed expiry to compare
-        const expiresMs = expires * 1000;
-        if (earliest === null || expiresMs < earliest) earliest = expiresMs;
-      }
-      return earliest;
-    } catch {
-      return null;
-    }
-  }
-
-  private async checkOne(userId: string, platform: SupportedPlatform) {
+  private async checkOne(userId: string, platform: SupportedPlatform): Promise<'refreshed' | 'expired'> {
     const check = SESSION_CHECKS[platform];
-    if (!check) return;
+    if (!check) return 'expired';
 
     const { sessionState } = await this.credentials.getDecrypted(userId, platform);
-    if (!sessionState) return; // already flagged expired earlier — nothing new to check
+    if (!sessionState) return 'expired'; // already flagged expired earlier — nothing new to check
 
     const context = await this.browserSession.createContext(sessionState);
     try {
@@ -138,11 +103,13 @@ export class SessionHealthService {
 
       if (await check.isLoginWallVisible(page)) {
         await this.credentials.recordSessionExpired(userId, platform);
-      } else {
-        const freshState = await context.storageState();
-        await this.credentials.saveSessionState(userId, platform, JSON.stringify(freshState));
-        this.logger.log(`Session successfully refreshed for ${platform}`);
+        return 'expired';
       }
+
+      const freshState = await context.storageState();
+      await this.credentials.saveSessionState(userId, platform, JSON.stringify(freshState));
+      this.logger.log(`Session successfully refreshed for ${platform}`);
+      return 'refreshed';
     } finally {
       await context.close().catch(() => {});
     }
