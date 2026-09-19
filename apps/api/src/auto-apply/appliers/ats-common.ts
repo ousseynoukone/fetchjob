@@ -620,30 +620,27 @@ export async function resolveExternalApplyUrl(page: Page, clickable: Locator, ow
 
 // Welcome to the Jungle hosts the job posting itself, but the real "Postuler"
 // action almost always points out to whatever ATS the employer actually uses
-// (Greenhouse, Lever, Workday, SmartRecruiters, or something else entirely) —
-// confirmed live on a real posting: its apply button links to a Beetween
-// form, nothing to do with WTTJ's own domain. That target only exists as a
-// link's href on the rendered page, so it has to be visited once before the
-// usual ATS-by-URL routing (see auto-apply.service.ts's detectAtsKey) can
-// even see it.
-//
-// Returns null — meaning "nothing better than the job page itself" — in two
-// cases, both confirmed live: no apply link at all (page didn't render in
-// time), or the link stays on welcometothejungle.com (some postings route
-// through a WTTJ account sign-in instead of an external ATS: the href is
-// `/fr/authenticate/signin`, which is no more automatable than the job page
-// itself). Only a genuine off-WTTJ redirect is worth returning.
+// (Greenhouse, Lever, Workday, SmartRecruiters, or something else entirely).
+// Confirmed live via a real recorded session (a user-provided Chrome
+// DevTools Recorder export): the real apply trigger is
+// `[data-testid="job_header-button-apply"]`, not the `a[data-role="job:apply"]`
+// this function used to read -- and it's a click target, not a plain link
+// with a useful href: for an external offer, clicking it opens either a
+// same-tab redirect or a popup (both observed across the two offers in that
+// same recording), never just a static href to read cold. This is exactly
+// what resolveExternalApplyUrl (used by every other account-based applier
+// in this file for the identical "click it, see if it leaves the platform"
+// problem) already handles -- reused here instead of a bespoke href check
+// that would have missed a popup-based redirect entirely, called anonymously
+// (this always runs in a disposable, logged-out context -- see
+// auto-apply.service.ts's resolveEffectiveSourceUrl) so a native offer's
+// same button instead redirects same-tab to `/fr/authenticate/signin`,
+// still on welcometothejungle.com and correctly resolved to null.
 export async function resolveWelcomeToTheJungleApplyUrl(page: Page, jobPageUrl: string): Promise<string | null> {
   await page.goto(jobPageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await dismissCookieBanner(page);
   await page.waitForTimeout(2000); // same WAF-challenge/SPA-hydration delay as the scraper's enrichment step
-  const href = await page.locator('a[data-role="job:apply"]').first().getAttribute('href').catch(() => null);
-  if (!href) return null;
-
-  try {
-    const resolved = new URL(href, jobPageUrl);
-    return resolved.hostname.endsWith('welcometothejungle.com') ? null : resolved.toString();
-  } catch {
-    return null;
-  }
+  const applyButton = page.locator('[data-testid="job_header-button-apply"]').first();
+  if (!(await applyButton.isVisible().catch(() => false))) return null;
+  return resolveExternalApplyUrl(page, applyButton, /welcometothejungle\.com/i);
 }
