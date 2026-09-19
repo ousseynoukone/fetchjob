@@ -11,6 +11,9 @@ export class SessionHealthController {
 
   @Post('check-now')
   async checkNow() {
-    return this.sessionHealth.run();
+    // force: a person explicitly asking right now overrides the scheduler's
+    // "is this one actually due" gate — otherwise this would mostly report
+    // "skipped" and answer nothing.
+    return this.sessionHealth.run(true);
   }
 }
