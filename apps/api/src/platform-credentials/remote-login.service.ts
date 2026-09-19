@@ -81,6 +81,18 @@ const LOGIN_PASSWORD_SELECTOR = 'input[type="password"]';
 // no reason to contain one.
 const NO_CAPTURED_EMAIL_PLACEHOLDER = '(connecté via navigateur intégré)';
 
+// Confirmed live via a real recorded WTTJ login (a user-provided Chrome
+// DevTools Recorder export): its own "Me garder connecté" toggle is a
+// custom-styled div, not a native <input type="checkbox"> -- no selector
+// generic enough to find that across platforms, but its visible TEXT is a
+// reliable, common pattern across login forms generally. Checked
+// proactively during prefill (same reasoning as prefillSavedCredential:
+// remove the easy-to-forget, non-sensitive parts of login so the person
+// only has to handle the CAPTCHA/2FA that actually needs them) so the
+// resulting session is the long-lived variant by default rather than
+// depending on the person remembering to click it themselves.
+const REMEMBER_ME_TEXT = /me garder connect[ée]|rester connect[ée]|se souvenir de moi|keep me signed in|remember me|stay signed in/i;
+
 // Mirrors the CDP `key`/`code`/`keyCode` triples Chromium expects for
 // Input.dispatchKeyEvent -- only the handful of non-printable keys a login
 // form ever needs (typed text itself goes through Input.insertText, which
@@ -305,8 +317,20 @@ export class RemoteLoginService implements OnModuleDestroy {
     await this.prefillSavedCredential(session).catch((error: any) => {
       this.logger.warn(`Remote-login credential prefill failed: ${error.message}`);
     });
+    await this.checkRememberMe(page).catch(() => {});
 
     session.pollTimer = setInterval(() => this.pollLoginState(sessionId).catch(() => {}), 2000);
+  }
+
+  // Best-effort, not platform-specific -- see REMEMBER_ME_TEXT. Silently
+  // does nothing if the login form has no such toggle, or hasn't rendered
+  // it yet (checked once here; a person who reaches a later step where it
+  // only then appears would still need to check it themselves).
+  private async checkRememberMe(page: Page): Promise<void> {
+    const toggle = page.getByText(REMEMBER_ME_TEXT).first();
+    if (await toggle.isVisible().catch(() => false)) {
+      await toggle.click().catch(() => {});
+    }
   }
 
   // The explicit counterpart to pollLoginState's auto-detected success path,
