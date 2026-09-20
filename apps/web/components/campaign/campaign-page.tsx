@@ -303,35 +303,77 @@ export default function CampaignPage() {
               </p>
 
               {form.sources.length > 0 && (
-                <div className="mt-3 space-y-1.5">
-                  <p className="text-xs text-base-content/40">
-                    Limite quotidienne par plateforme (indépendante d'une plateforme à l'autre — sans valeur, la limite par défaut ci-dessous s'applique) :
+                <div className="mt-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-base-content/50 font-medium">
+                      Limites quotidiennes par plateforme :
+                    </p>
+                    {Object.keys(form.sourceDailyLimits).length > 0 && (
+                      <button
+                        type="button"
+                        className="text-xs text-primary hover:underline font-medium"
+                        onClick={() => setForm((f) => ({ ...f, sourceDailyLimits: {} }))}
+                      >
+                        Tout aligner sur la limite par défaut ({form.maxApplicationsPerDay})
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-base-content/40">
+                    Laissez le champ vide pour qu'une plateforme utilise automatiquement la limite par défaut globale ci-dessous.
                   </p>
-                  {form.sources.map((sourceId) => {
-                    const label = SOURCES.find((s) => s.id === sourceId)?.label || sourceId;
-                    return (
-                      <div key={sourceId} className="flex items-center justify-between gap-3 text-sm">
-                        <span className="text-base-content/70">{label}</span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={100}
-                          placeholder={String(form.maxApplicationsPerDay)}
-                          className="input input-bordered input-xs w-20 text-right"
-                          value={form.sourceDailyLimits[sourceId] ?? ''}
-                          onChange={(e) => {
-                            const value = e.target.value ? Number(e.target.value) : undefined;
-                            setForm((f) => {
-                              const next = { ...f.sourceDailyLimits };
-                              if (value) next[sourceId] = value;
-                              else delete next[sourceId];
-                              return { ...f, sourceDailyLimits: next };
-                            });
-                          }}
-                        />
-                      </div>
-                    );
-                  })}
+                  <div className="space-y-1.5 pt-1">
+                    {form.sources.map((sourceId) => {
+                      const label = SOURCES.find((s) => s.id === sourceId)?.label || sourceId;
+                      const hasOverride = form.sourceDailyLimits[sourceId] !== undefined;
+                      return (
+                        <div key={sourceId} className="flex items-center justify-between gap-3 text-sm py-0.5">
+                          <div className="flex items-center gap-2">
+                            <span className="text-base-content/70">{label}</span>
+                            {hasOverride && (
+                              <span className="badge badge-xs badge-primary/20 text-primary border-none">
+                                Personnalisée
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              min={1}
+                              max={100}
+                              placeholder={`${form.maxApplicationsPerDay} (défaut)`}
+                              className={`input input-bordered input-xs w-28 text-right ${hasOverride ? 'border-primary/50 font-medium' : 'text-base-content/50'}`}
+                              value={form.sourceDailyLimits[sourceId] ?? ''}
+                              onChange={(e) => {
+                                const value = e.target.value ? Number(e.target.value) : undefined;
+                                setForm((f) => {
+                                  const next = { ...f.sourceDailyLimits };
+                                  if (value) next[sourceId] = value;
+                                  else delete next[sourceId];
+                                  return { ...f, sourceDailyLimits: next };
+                                });
+                              }}
+                            />
+                            {hasOverride && (
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-xs text-base-content/40 hover:text-error px-1"
+                                title="Réinitialiser sur la limite par défaut"
+                                onClick={() => {
+                                  setForm((f) => {
+                                    const next = { ...f.sourceDailyLimits };
+                                    delete next[sourceId];
+                                    return { ...f, sourceDailyLimits: next };
+                                  });
+                                }}
+                              >
+                                ✕
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
             </Field>

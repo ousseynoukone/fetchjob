@@ -353,17 +353,18 @@ export function buildCandidateBrief(ctx: ApplyContext): string {
   const cv = ctx.cv as any;
   const skills = (cv.skillGroups || [])
     .flatMap((g: any) => g.items || [])
-    .slice(0, 12)
+    .slice(0, 16)
     .join(', ');
-  const summary = (cv.summary || '').slice(0, 200);
+  const summary = (cv.summary || '').slice(0, 250);
   const experiences = (cv.experiences || [])
-    .slice(0, 4)
+    .slice(0, 5)
     .map((e: any) => {
       const bullets = (e.bullets || []).slice(0, 2).join('; ');
       return `${e.role || ''} @ ${e.company || ''} (${e.period || ''})${bullets ? ` — ${bullets}` : ''}`;
     })
     .join(' | ')
-    .slice(0, 500);
-  const brief = `${cv.fullName || ''} — ${cv.headline || ''}. Localisation: ${cv.location || ''}. Compétences: ${skills}. Résumé: ${summary}. Parcours: ${experiences}`;
-  return brief.slice(0, 1100);
+    .slice(0, 600);
+  const links = (cv.links || []).map((l: any) => `${l.type || 'lien'}: ${l.url}`).join(', ');
+  const brief = `Nom: ${cv.fullName || ''}, Civilité: Monsieur, Email: ${cv.email || ''}, Téléphone: ${cv.phone || ''}, Ville: ${cv.location || 'Ile-de-France, France'}. Titre: ${cv.headline || ''}. Droit de travailler en France: Oui. RQTH: Non. Disponibilité: Immédiate. Liens: ${links}. Compétences: ${skills}. Résumé: ${summary}. Parcours: ${experiences}`;
+  return brief.slice(0, 1500);
 }

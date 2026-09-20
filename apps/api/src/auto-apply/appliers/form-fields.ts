@@ -13,7 +13,7 @@ declare const CSS: any;
 // answer (a learned "years of experience" answer must never land in the
 // email field just because of a labeling quirk).
 export const KNOWN_FIELD_LABEL_EXCLUDE =
-  /first name|last name|full name|^name$|^e-?mail|courriel|adresse e-?mail|phone|t[ée]l[ée]phone|mobile|resume|^cv$|cover letter|lettre de motivation|pr[ée]nom|^nom$|mot de passe|password|code de validation|captcha|se connecter|connexion|identifiant/i;
+  /first name|last name|full name|^name$|votre nom|votre pr[ée]nom|nom d'usage|nom de famille|nom de naissance|^e-?mail|courriel|adresse e-?mail|phone|t[ée]l[ée]phone|mobile|portable|num[ée]ro de (portable|t[ée]l[ée]phone|mobile)|resume|^cv$|cover letter|lettre de motivation|pr[ée]nom|^nom$|mot de passe|password|code de validation|captcha|se connecter|connexion|identifiant|civilit[ée]|gender|genre|salutation|titre de civilit[ée]|^country$|^pays$|votre pays|^currency$|^devise$|monnaie|rqth|handicap|travailleur handicap[ée]|disability|droit de travailler|autorisation de travail|work authori[sz]ation|eligible to work|l[ée]galement autoris[ée]|disponibilit[ée]|availability|d[ée]lai de pr[ée]avis|notice period/i;
 
 export interface DetectedField {
   questionText: string;

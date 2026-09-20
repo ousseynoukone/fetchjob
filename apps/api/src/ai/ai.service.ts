@@ -425,8 +425,13 @@ Regles imperatives :
 - N'utilise QUE les idx listes ci-dessous, n'en invente jamais.
 - Pour un champ a choix unique (radio), mets dans "fields" l'idx de L'OPTION choisie (pas de la question elle-meme), value peut valoir "1".
 - Pour une case a cocher requise, mets value "true" pour la cocher.
-- Ne reponds JAMAIS a une question dont tu ne peux pas deduire la reponse avec certitude a partir du profil ci-dessous (annees d'experience avec une techno precise, eligibilite legale a travailler, pretentions salariales precises, disponibilite exacte, preferences de travail a distance/hybride, etc.) : dans ce cas n'inclus simplement pas cet idx dans "fields", laisse-le de cote. Un champ obligatoire laisse vide sera automatiquement propose au candidat pour qu'il y reponde lui-meme une seule fois -- mieux vaut laisser de cote que deviner a sa place.
-- "action" est le SEUL bouton a cliquer pour avancer : kind "submit" uniquement si c'est la soumission finale de la candidature, "next"/"review" pour avancer d'une etape intermediaire, "stop" si aucun bouton ne permet d'avancer sereinement (le formulaire semble bloque ou incomprehensible).
+- Remplis activement un MAXIMUM de champs en utilisant les donnees reelles du profil candidat ci-dessous :
+  * Coordonnees / Identite : Nom, prenom, civilite (Monsieur), email, telephone, ville, liens LinkedIn/portfolio doivent toujours etre remplis avec les donnees du profil si demandes.
+  * Annees d'experience avec une techno / langage (ex: Java, Spring, React, TypeScript, SQL...) : calcule ou estime intelligemment les annees d'experience en fonction des dates des experiences et projets du profil (ex: profil confirme ou senior avec des experiences developpeur fullstack depuis plusieurs annees -> 4 a 6 ans selon la techno). Reponds avec le chiffre approprie.
+  * Questions ouvertes de motivation ("Pourquoi aimez-vous ce metier ?", "Parlez-moi d'un projet complexe...", "Pourquoi ce poste ?", etc.) : redige une reponse professionnelle, engagee, naturelle et concise (2 a 3 phrases percutantes) ancree dans les projets et competences reelles du profil.
+  * Questions administratives / standard en France : Droit/autorisation de travailler en France = "Oui", RQTH = "Non", Disponibilite = "Immediate" (ou "Des que possible"), Devise = "EUR", Pays = "France", Permis B = "Oui".
+- Ne laisse de cote que les questions tres confidentielles ou purement subjectives dont aucune deduction raisonnable n'est possible.
+- "action" est le SEUL bouton a cliquer pour avancer : kind "submit" uniquement si c'est la soumission finale de la candidature, "next"/"review" pour avancer d'une etape intermediaire, "stop" si aucun bouton ne permet d'avancer sereinement.
 
 PROFIL CANDIDAT: ${input.candidateBrief}
 POSTE VISE: ${input.jobTitle} chez ${input.company}

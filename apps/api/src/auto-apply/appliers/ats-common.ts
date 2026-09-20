@@ -128,43 +128,34 @@ const IDENTITY_PATTERNS = {
   full: /full ?name|^name$|nom complet|nom et pr[ée]nom/i,
   email: /e-?mail|courriel/i,
   phone: /phone|t[ée]l[ée]phone|mobile|portable/i,
-  // Confirmed live on an external (non-LinkedIn) employer application form
-  // reached via a LinkedIn job posting's "external apply" redirect: a
-  // required "Profil LinkedIn" field sat alongside name/email/phone as a
-  // standard identity field, not a real screening question -- yet nothing
-  // here ever filled it, so it stayed empty/required forever and blocked
-  // submission even once every other field was correctly filled.
   linkedinUrl: /linkedin/i,
+  githubUrl: /github/i,
+  websiteUrl: /site|portfolio|site web|website|homepage/i,
+  civility: /civilit[ée]|title|salutation|genre|gender|titre de civilit[ée]/i,
+  country: /pays|country/i,
+  currency: /devise|currency|monnaie/i,
+  rqth: /rqth|handicap|travailleur handicap[ée]|disability/i,
+  workAuth: /autorisation de travail|droit de travailler|work authori[sz]ation|eligible to work|l[ée]galement autoris[ée]/i,
+  availability: /disponibilit[ée]|availability|notice period|d[ée]lai de pr[ée]avis/i,
 } as const;
 
 type IdentityRole = keyof typeof IDENTITY_PATTERNS;
 
 // Runs inside the browser (via page.evaluate): finds every empty, visible
-// text-like field, resolves its real label the same robust way the AI
+// text-like or select field, resolves its real label the same robust way the AI
 // snapshot does (id/for, wrapping <label>, aria-label, fieldset/legend,
 // previous-sibling text — NOT just a plain getByLabel, which misses custom
 // form widgets that skip a formal <label> association entirely), and
 // classifies it by matching label+placeholder+input-type against bilingual
 // patterns. Tags each match with a temporary attribute so Node-side code
 // can address the exact element without needing to reconstruct a selector.
-async function scanIdentityFields(page: Page): Promise<{ role: IdentityRole; idx: number }[]> {
+async function scanIdentityFields(page: Page): Promise<{ role: IdentityRole; idx: number; tag: string }[]> {
   return page.evaluate((patterns: Record<IdentityRole, { source: string; flags: string }>) => {
     const doc: any = document;
     const compiled = Object.fromEntries(
       Object.entries(patterns).map(([role, p]) => [role, new RegExp(p.source, p.flags)]),
     ) as Record<IdentityRole, RegExp>;
 
-    // Same fix as ai-form-snapshot.ts's own isVisible, applied here for the
-    // same reason: a collapsed accordion panel (Tailwind's `max-h-0
-    // overflow-hidden` pattern, confirmed live on HelloWork) clips its
-    // content to nothing via a WRAPPING element, but a field inside it
-    // still reports its own full intrinsic size via getBoundingClientRect
-    // -- neither offsetParent/getClientRects nor the element's own rect
-    // alone can tell that apart from a genuinely visible field, only
-    // walking up and checking whether an ancestor is actually clipping it
-    // to zero can. Matters here too: a hidden duplicate/template field
-    // inside a collapsed section could otherwise silently receive the
-    // fill instead of (or alongside) the real visible one.
     const isVisible = (el: any) => {
       if (!el.offsetParent && !(el.getClientRects && el.getClientRects().length)) return false;
       const rect = el.getBoundingClientRect();
@@ -205,45 +196,52 @@ async function scanIdentityFields(page: Page): Promise<{ role: IdentityRole; idx
       return '';
     };
 
-    const matches: { role: IdentityRole; idx: number }[] = [];
-    // Seeded from any tags already on the page (not reset to 1 each call) —
-    // a stale tag left on an element from a previous, now-filled pass would
-    // otherwise collide with a fresh idx assigned on this pass, and
-    // `[data-identity-idx="1"]` would then match two different elements.
+    const matches: { role: IdentityRole; idx: number; tag: string }[] = [];
     const existingIdxs = Array.from(doc.querySelectorAll('[data-identity-idx]')).map(
       (e: any) => Number(e.getAttribute('data-identity-idx')) || 0,
     );
     let idx = existingIdxs.length ? Math.max(...existingIdxs) + 1 : 1;
     const candidates = Array.from(
       doc.querySelectorAll(
-        'input:not([type=file]):not([type=hidden]):not([type=submit]):not([type=button]):not([type=password]):not([type=radio]):not([type=checkbox]), textarea',
+        'input:not([type=file]):not([type=hidden]):not([type=submit]):not([type=button]):not([type=password]):not([type=radio]):not([type=checkbox]), textarea, select',
       ),
     ) as any[];
 
     for (const el of candidates) {
       if (!isVisible(el) || el.disabled) continue;
-      const value = (el.value || '').trim();
-      if (value) continue; // already filled — don't overwrite
+      const tag = el.tagName.toLowerCase();
+      if (tag === 'select') {
+        const selIdx = el.selectedIndex;
+        const selectedOpt = selIdx >= 0 ? el.options[selIdx] : null;
+        const optVal = (selectedOpt?.value || '').trim();
+        const optText = (selectedOpt?.text || '').trim();
+        if (optVal && !/^(0|\?|-1)?$/.test(optVal) && !/choisir|select|s[ée]lectionnez|--/i.test(optText)) {
+          continue; // already chosen
+        }
+      } else {
+        const value = (el.value || '').trim();
+        if (value) continue; // already filled — don't overwrite
+      }
 
       const type = (el.type || '').toLowerCase();
       const label = extractLabel(el);
       const placeholder = el.getAttribute('placeholder') || '';
-      // Confirmed live on an external partner site's own apply form: with no
-      // structural label found, this used to be `" Nom"` (a leading space
-      // from the empty label) — `last`'s own `^nom\b` anchor (there
-      // specifically so "Nom" doesn't also match inside "Prénom", since JS's
-      // ASCII-only \b treats the accented "é" as a non-word character and
-      // would otherwise let it) then requires the match to start at
-      // position 0, which is now a space, not "N". The field was silently
-      // never classified or filled at all — trimming keeps the anchor
-      // meaningful regardless of whether label or placeholder is the one
-      // that's empty.
-      const haystack = `${label} ${placeholder}`.trim();
+      const name = el.getAttribute('name') || '';
+      const id = el.getAttribute('id') || '';
+      const haystack = `${label} ${placeholder} ${name} ${id}`.trim();
 
       let role: IdentityRole | null = null;
       if (type === 'email' || compiled.email.test(haystack)) role = 'email';
       else if (type === 'tel' || compiled.phone.test(haystack)) role = 'phone';
       else if (compiled.linkedinUrl.test(haystack)) role = 'linkedinUrl';
+      else if (compiled.githubUrl.test(haystack)) role = 'githubUrl';
+      else if (compiled.websiteUrl.test(haystack)) role = 'websiteUrl';
+      else if (compiled.civility.test(haystack)) role = 'civility';
+      else if (compiled.country.test(haystack)) role = 'country';
+      else if (compiled.currency.test(haystack)) role = 'currency';
+      else if (compiled.rqth.test(haystack)) role = 'rqth';
+      else if (compiled.workAuth.test(haystack)) role = 'workAuth';
+      else if (compiled.availability.test(haystack)) role = 'availability';
       else if (compiled.first.test(haystack)) role = 'first';
       else if (compiled.last.test(haystack)) role = 'last';
       else if (compiled.full.test(haystack)) role = 'full';
@@ -251,37 +249,60 @@ async function scanIdentityFields(page: Page): Promise<{ role: IdentityRole; idx
 
       const tagIdx = idx++;
       el.setAttribute('data-identity-idx', String(tagIdx));
-      matches.push({ role, idx: tagIdx });
+      matches.push({ role, idx: tagIdx, tag });
     }
 
     return matches;
   }, Object.fromEntries(Object.entries(IDENTITY_PATTERNS).map(([role, re]) => [role, { source: re.source, flags: re.flags }])) as any);
 }
 
-// Fills first/last (or full) name, email and phone on whatever application
-// form is currently visible — in both French and English phrasing.
-//
-// Confirmed live: HelloWork's, Indeed's and France Travail's own appliers
-// never filled these at all, on the (wrong) assumption that the platform's
-// own logged-in session would pre-fill them on the application form itself.
-// It doesn't — the form renders with genuinely blank Nom/Prénom/Email
-// inputs, which then fail validation on every single attempt with no way
-// for the user to "answer" a question that isn't really a custom question
-// at all (these labels are deliberately excluded from both the learned-
-// answers system and the AI fallback — see KNOWN_FIELD_LABEL_EXCLUDE in
-// form-fields.ts — precisely because they're supposed to be handled here,
-// not treated as a screening question). Shared by every applier instead of
-// each hand-rolling its own narrower, English-only version.
+async function selectOptionRobustly(locator: Locator, role: IdentityRole, targetValue: string): Promise<void> {
+  const direct = await locator.selectOption({ label: targetValue }).catch(() => null);
+  if (direct && direct.length) return;
+  const directVal = await locator.selectOption({ value: targetValue }).catch(() => null);
+  if (directVal && directVal.length) return;
+
+  await locator
+    .evaluate(
+      (el: any, { role, targetValue }: { role: string; targetValue: string }) => {
+        if (!el || !el.options) return;
+        const regexMap: Record<string, RegExp> = {
+          civility: /^(m\.|monsieur|mr|homme|male)$/i,
+          country: /^(france|fr|fra)$/i,
+          currency: /^(eur|euro|€)$/i,
+          rqth: /^(non|no|aucun|false|0)$/i,
+          workAuth: /^(oui|yes|true|1|autoris[ée])$/i,
+          availability: /^(imm[ée]diate|imm[ée]diat|d[èe]s que possible|immediate|now)$/i,
+        };
+        const re = regexMap[role] || new RegExp(targetValue, 'i');
+        for (let i = 0; i < el.options.length; i++) {
+          const opt = el.options[i];
+          const text = (opt.textContent || '').trim();
+          const val = (opt.value || '').trim();
+          if (re.test(text) || re.test(val)) {
+            el.selectedIndex = i;
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            return;
+          }
+        }
+      },
+      { role, targetValue },
+    )
+    .catch(() => {});
+}
+
+// Fills first/last (or full) name, email, phone, links, and standard candidate
+// defaults (civilité, pays, devise, rqth, droit de travail, disponibilité) on
+// whatever application form is currently visible.
 export async function fillIdentityFields(
   page: Page,
   cv: { fullName: string; email: string; phone: string; links?: { type: string; url: string }[] },
 ): Promise<void> {
   const { first, last } = splitName(cv.fullName);
-  // Real data only, same as every other field here -- if the candidate
-  // hasn't added a LinkedIn profile link to their CV, this stays
-  // undefined and the field is left for the AI fallback / Questions page
-  // to handle rather than inventing a URL.
   const linkedinUrl = cv.links?.find((l) => /linkedin/i.test(l.type) || /linkedin\.com/i.test(l.url))?.url;
+  const githubUrl = cv.links?.find((l) => /github/i.test(l.type) || /github\.com/i.test(l.url))?.url;
+  const websiteUrl = cv.links?.find((l) => /portfolio|site|website|perso/i.test(l.type))?.url || cv.links?.[0]?.url;
   const values: Record<IdentityRole, string | undefined> = {
     first,
     last,
@@ -289,22 +310,49 @@ export async function fillIdentityFields(
     email: cv.email,
     phone: cv.phone,
     linkedinUrl,
+    githubUrl,
+    websiteUrl,
+    civility: 'Monsieur',
+    country: 'France',
+    currency: 'EUR',
+    rqth: 'Non',
+    workAuth: 'Oui',
+    availability: 'Immédiate',
   };
 
-  // Always two passes, not "stop at the first success" — some SPA forms
-  // mount their identity fields a tick apart from one another (confirmed
-  // live: HelloWork filled "Prénom" immediately on pass one, but "Nom" and
-  // "Email" were still unfilled at that exact moment and only became
-  // fillable a moment later). Stopping as soon as *any* field got filled —
-  // the previous version of this loop — meant a single early success masked
-  // every other field that genuinely needed the second pass.
   for (let attempt = 0; attempt < 2; attempt++) {
     const matches = await scanIdentityFields(page).catch(() => []);
     for (const m of matches) {
       const value = values[m.role];
       if (!value) continue;
-      await humanFill(page.locator(`[data-identity-idx="${m.idx}"]`).first(), value);
+      const locator = page.locator(`[data-identity-idx="${m.idx}"]`).first();
+      if (m.tag === 'select') {
+        await selectOptionRobustly(locator, m.role, value);
+      } else {
+        await humanFill(locator, value);
+      }
     }
+
+    // Auto-select Monsieur for any Civilité radio buttons if unselected
+    await page
+      .evaluate(() => {
+        const doc: any = document;
+        const radios = Array.from(doc.querySelectorAll('input[type="radio"]')) as any[];
+        for (const r of radios) {
+          if (r.checked) continue;
+          const wrappingLabel = (r.closest('label')?.textContent || '').trim();
+          const nextText = (r.nextElementSibling?.textContent || '').trim();
+          const val = (r.value || '').trim();
+          const text = `${wrappingLabel} ${nextText} ${val}`;
+          if (/^monsieur$|^m\.$|^homme$/i.test(text.trim())) {
+            r.click();
+            r.dispatchEvent(new Event('change', { bubbles: true }));
+            break;
+          }
+        }
+      })
+      .catch(() => {});
+
     if (attempt === 0) await page.waitForTimeout(700);
     await page.waitForTimeout(700);
   }

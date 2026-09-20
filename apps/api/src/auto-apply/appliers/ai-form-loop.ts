@@ -68,6 +68,7 @@ async function reportBlockedState(page: Page, ctx: ApplyContext, fallbackNote: s
 export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, opts: FormLoopOptions): Promise<ApplyResult> {
   const maxSteps = opts.maxSteps ?? 6;
   let aiCallsUsed = 0;
+  let lastSnapshotSignature = '';
 
   for (let step = 0; step < maxSteps; step++) {
     await fillKnownFields(page, ctx.knownAnswers);
@@ -137,6 +138,13 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
 
     const snapshot = await buildFormSnapshot(page);
     if (!snapshot.fields.length && !snapshot.buttons.length) break; // genuinely nothing left to act on
+
+    const currentSignature = `${snapshot.fields.map((f) => `${f.idx}:${f.label}`).join('|')}::${snapshot.buttons.map((b) => `${b.idx}:${b.text}`).join('|')}`;
+    if (currentSignature === lastSnapshotSignature && aiCallsUsed > 0) {
+      await ctx.appendLog?.('Formulaire figé : la page ne progresse pas après la dernière action. Arrêt du cycle pour éviter la surconsommation inutile de tokens.');
+      return await reportBlockedState(page, ctx, opts.blockedNote);
+    }
+    lastSnapshotSignature = currentSignature;
 
     aiCallsUsed++;
     const plan = await ai
