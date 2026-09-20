@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { dismissCookieBanner, hasSecurityCheck, fillIdentityFields, uploadCv } from './ats-common';
+import { dismissCookieBanner, hasSecurityCheck, fillIdentityFields, uploadCv, humanClick, humanFill } from './ats-common';
 import { fillKnownFields } from './form-fields';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
@@ -67,7 +67,7 @@ export class GenericApplier implements JobApplier {
       .or(page.getByRole('button', { name: REVEAL_BUTTON_TEXT }))
       .first();
     if (await revealButton.isVisible().catch(() => false)) {
-      await revealButton.click().catch(() => {});
+      await humanClick(page, revealButton).catch(() => revealButton.click().catch(() => {}));
       await page.waitForTimeout(1000);
     }
 
@@ -151,7 +151,7 @@ export class GenericApplier implements JobApplier {
     for (const pattern of patterns) {
       const locator = page.getByLabel(pattern).or(page.getByPlaceholder(pattern)).first();
       if (await locator.isVisible().catch(() => false)) {
-        await locator.fill(value).catch(() => {});
+        await humanFill(locator, value).catch(() => {});
         return true;
       }
     }

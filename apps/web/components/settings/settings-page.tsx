@@ -62,27 +62,26 @@ const PLATFORM_LABELS: Record<SupportedPlatform, string> = {
 // for all four platforms — which was simply false for three of them, and
 // is exactly what led a real user to enter a HelloWork password expecting
 // auto-login, only to keep getting "session expired" regardless.
-const AUTO_LOGIN_PLATFORMS = new Set<SupportedPlatform>(['linkedin']);
+const AUTO_LOGIN_PLATFORMS = new Set<SupportedPlatform>([
+  'linkedin',
+  'france_travail',
+  'hellowork',
+  'welcome_to_the_jungle',
+  'apec',
+  'gmail',
+]);
 
-// Short, platform-specific context shown under every card regardless of
-// status — not just when something's already broken. Each note reflects a
-// real, confirmed quirk of that platform (see the matching comments in
-// remote-login.service.ts / ats-common.ts / scraping.service.ts), not a
-// generic warning repeated for all four.
 const PLATFORM_NOTES: Partial<Record<SupportedPlatform, string>> = {
   indeed: "Indeed bloque les connexions venues d'un serveur (protection Cloudflare). La reprise en main via \"Se connecter\" est souvent le seul chemin qui marche.",
   hellowork: "HelloWork fait passer un contrôle anti-robot (FriendlyCaptcha) à la connexion — à valider toi-même dans la fenêtre \"Se connecter\".",
-  france_travail: "Identifiant France Travail : ton identifiant numérique, pas une adresse e-mail.",
+  france_travail: "Identifiant France Travail : votre identifiant numérique. Reconnexion automatique avec récupération directe du code de validation depuis Gmail.",
   welcome_to_the_jungle: "Beaucoup d'annonces renvoient vers l'outil de recrutement de l'employeur : l'envoi automatique ne couvre que celles hébergées directement par Welcome to the Jungle.",
-  gmail: "Sert au robot à relever les codes et liens d'activation que les sites d'employeurs envoient après une inscription. La connexion se fait à la main : Google refuse — et sanctionne — une saisie automatisée.",
+  apec: "Connexion et reconnexion 100% automatiques avec votre adresse email et mot de passe.",
+  gmail: "Permet de relever automatiquement les codes de sécurité (ex: code à 8 chiffres de France Travail). Vous pouvez vous connecter via le navigateur intégré, ou renseigner un mot de passe d'application Google (généré sur myaccount.google.com/apppasswords).",
 };
 
-// Gmail never stores a password (see remote-login.service.ts's
-// MANUAL_CONFIRM_PLATFORMS) and has no cookie-paste fallback -- the "Se
-// connecter"/"Reconnecter" button (remote-login) is the only path, so the
-// edit form and its "Autre méthode" fallback below are simply pointless
-// for it, not just optional.
-const MANUAL_ONLY_PLATFORMS = new Set<SupportedPlatform>(['gmail']);
+// Gmail supports both remote login browser and entering a Google App Password directly
+const MANUAL_ONLY_PLATFORMS = new Set<SupportedPlatform>([]);
 
 function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
   const { items, remove, saveCredentials, fetchStatus } = usePlatformCredentialsStore();
@@ -97,11 +96,10 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
   const supportsAutoLogin = AUTO_LOGIN_PLATFORMS.has(platform);
   const isManualOnly = MANUAL_ONLY_PLATFORMS.has(platform);
 
+  const isGmail = platform === 'gmail';
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    // A pasted session (storageState JSON) authenticates on its own -- email
-    // is only ever a display label, so either it or a session is enough to
-    // save, not both.
     if (!email.trim() && !sessionState.trim()) return;
     setSaving(true);
     const ok = await saveCredentials(
@@ -117,6 +115,137 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
       setSessionState('');
     }
   };
+
+  if (isGmail) {
+    return (
+      <div className="border border-base-300 rounded-xl p-4 bg-base-100/50">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-sm">Gmail (Passerelle 2FA & Codes de sécurité)</span>
+          </div>
+          {item?.configured ? (
+            <div className="flex items-center gap-2">
+              <span className="badge badge-success badge-sm gap-1 text-xs">
+                <CheckCircle2 className="w-3 h-3" /> Connecté ({item.email})
+              </span>
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs text-base-content/60 hover:text-primary"
+                onClick={() => setIsEditing(!isEditing)}
+              >
+                {isEditing ? 'Fermer' : 'Modifier'}
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs text-base-content/60 hover:text-primary gap-1"
+                onClick={() => setShowRemoteLogin(true)}
+                title="Se connecter via navigateur"
+              >
+                <MonitorPlay className="w-3.5 h-3.5" /> Navigateur
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs text-error"
+                onClick={() => remove(platform)}
+                title="Supprimer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <span className="badge badge-ghost badge-sm gap-1 text-xs text-base-content/60">
+                <XCircle className="w-3 h-3" /> Non configuré
+              </span>
+              <button
+                type="button"
+                className="btn btn-primary btn-xs gap-1"
+                onClick={() => setIsEditing(true)}
+              >
+                Configurer App Password
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs gap-1"
+                onClick={() => setShowRemoteLogin(true)}
+              >
+                <MonitorPlay className="w-3.5 h-3.5" /> Navigateur
+              </button>
+            </div>
+          )}
+        </div>
+
+        <p className="text-xs text-base-content/60 mb-2">
+          Permet au robot de relever automatiquement et instantanément les codes de sécurité à 8 chiffres (France Travail, Indeed, APEC, LinkedIn...) sans intervention humaine.
+        </p>
+
+        {isEditing && (
+          <form onSubmit={handleSubmit} className="mt-3 pt-3 border-t border-base-300 space-y-3">
+            <div className="text-xs text-base-content/70 bg-base-200 rounded-lg p-3 leading-relaxed space-y-1">
+              <div className="font-medium text-base-content">Comment obtenir votre mot de passe d'application Google :</div>
+              <div>1. Rendez-vous sur <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer" className="text-primary hover:underline">myaccount.google.com/apppasswords</a></div>
+              <div>2. Connectez-vous à votre compte Google et sélectionnez <strong>Autre (nom personnalisé)</strong>, tapez <em>Findurjob</em>.</div>
+              <div>3. Google vous affiche un mot de passe de 16 lettres (ex : <code>ecxb nshk jckn xted</code>) : collez-le ci-dessous.</div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div>
+                <label className="label py-0.5">
+                  <span className="label-text text-xs">Adresse Gmail</span>
+                </label>
+                <input
+                  type="email"
+                  required
+                  placeholder="votre.adresse@gmail.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="input input-sm input-bordered w-full"
+                />
+              </div>
+              <div>
+                <label className="label py-0.5">
+                  <span className="label-text text-xs">Mot de passe d'application (16 lettres)</span>
+                </label>
+                <input
+                  type="password"
+                  required={!item?.configured}
+                  placeholder="••••••••••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="input input-sm input-bordered w-full font-mono"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs"
+                onClick={() => setIsEditing(false)}
+              >
+                Annuler
+              </button>
+              <button
+                type="submit"
+                disabled={saving || !email.trim()}
+                className="btn btn-primary btn-xs"
+              >
+                {saving ? 'Enregistrement...' : 'Enregistrer le mot de passe'}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {showRemoteLogin && (
+          <RemoteLoginModal
+            platform={platform}
+            onClose={() => setShowRemoteLogin(false)}
+            onLoggedIn={() => fetchStatus()}
+          />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="border border-base-300 rounded-xl p-4 bg-base-100/50">

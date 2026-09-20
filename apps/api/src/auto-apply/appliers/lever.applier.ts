@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { fillIfVisible, dismissCookieBanner, uploadCv } from './ats-common';
+import { fillIfVisible, dismissCookieBanner, uploadCv, humanClick, humanFill } from './ats-common';
 import { fillKnownFields } from './form-fields';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
@@ -21,7 +21,7 @@ export class LeverApplier implements JobApplier {
 
     const revealFormLink = page.getByRole('link', { name: /apply for this job/i }).first();
     if (await revealFormLink.isVisible().catch(() => false)) {
-      await revealFormLink.click();
+      await humanClick(page, revealFormLink).catch(() => revealFormLink.click().catch(() => {}));
       await page.waitForTimeout(1000);
     }
 
@@ -40,7 +40,7 @@ export class LeverApplier implements JobApplier {
       // Lever hides the file input behind an "Attach Resume/CV" button.
       const attachButton = page.getByText(/attach resume|attach cv/i).first();
       if (await attachButton.isVisible().catch(() => false)) {
-        await attachButton.click().catch(() => {});
+        await humanClick(page, attachButton).catch(() => attachButton.click().catch(() => {}));
         await page.waitForTimeout(500);
         await uploadCv(page.locator('input[type="file"]').first(), ctx).catch(() => {});
       }
@@ -49,7 +49,7 @@ export class LeverApplier implements JobApplier {
     if (ctx.coverLetter) {
       const additionalInfoField = page.locator('textarea[name="comments"], textarea[name*="additional" i]').first();
       if (await additionalInfoField.isVisible().catch(() => false)) {
-        await additionalInfoField.fill(ctx.coverLetter).catch(() => {});
+        await humanFill(additionalInfoField, ctx.coverLetter).catch(() => {});
       }
     }
 

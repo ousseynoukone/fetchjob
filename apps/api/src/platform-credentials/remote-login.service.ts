@@ -9,7 +9,7 @@ import { CryptoService } from '../common/crypto.service';
 import { LocalUserService } from '../common/local-user.service';
 import { PrismaService } from '../common/prisma.service';
 import { SESSION_CHECKS, dismissCookieBanner } from '../auto-apply/appliers/ats-common';
-import { buildFingerprintScript, FINGERPRINT_PROFILES } from '../scraping/stealth-browser';
+import { buildFingerprintScript, FINGERPRINT_PROFILES, saveCookies } from '../scraping/stealth-browser';
 import { SupportedPlatform } from './dto/upsert-credential.dto';
 
 // Docker-volume-backed (see docker-compose.yml) so a real, accumulating
@@ -47,7 +47,9 @@ export type RemoteLoginInputEvent =
   | { kind: 'mousePressed' | 'mouseReleased' | 'mouseMoved'; x: number; y: number }
   | { kind: 'wheel'; x: number; y: number; deltaX: number; deltaY: number }
   | { kind: 'insertText'; text: string }
-  | { kind: 'key'; key: 'Enter' | 'Backspace' | 'Tab' | 'Escape' };
+  | { kind: 'key'; key: 'Enter' | 'Backspace' | 'Tab' | 'Escape' }
+  | { kind: 'reload' }
+  | { kind: 'prefill' };
 
 interface ActiveSession {
   platform: SupportedPlatform;
@@ -64,6 +66,10 @@ interface ActiveSession {
   // against the same page, starving the CDP screencast and freezing the
   // live view exactly when someone is trying to log in.
   polling?: boolean;
+  // Set once a saved credential has actually been written into the form, so
+  // the retry-on-every-tick below stops -- otherwise it would refill a
+  // field the person deliberately cleared to retype.
+  prefilled?: boolean;
   // Best-effort capture of whatever the user types into the login form
   // during this session -- not read back this session, only saved once
   // login succeeds so the NEXT login to this same platform can be
@@ -72,14 +78,27 @@ interface ActiveSession {
   capturedPassword?: string;
 }
 
+// Dedicated direct login URLs for each platform so the user lands straight
+// on the authentication form, rather than having to navigate from marketing homepages.
+export const REMOTE_LOGIN_URLS: Record<SupportedPlatform, string> = {
+  linkedin: 'https://www.linkedin.com/login',
+  indeed: 'https://secure.indeed.com/account/login',
+  hellowork: 'https://www.hellowork.com/fr-fr/candidat/connexion-inscription.html#connexion',
+  france_travail: 'https://candidat.francetravail.fr/espacepersonnel/',
+  welcome_to_the_jungle: 'https://www.welcometothejungle.com/fr/signin',
+  apec: 'https://www.apec.fr/candidat/mon-espace.html',
+  gmail: 'https://accounts.google.com/ServiceLogin?service=mail&continue=https://mail.google.com/mail/',
+};
+
 // Generic enough to match every platform's own login form without needing a
 // per-platform selector map: an email/identifier-like field, and any
 // password field. Used both to auto-fill a previously-saved credential
 // (prefillSavedCredential) and to recognize which field the user is
 // currently typing into (captureTypedCredential).
 const LOGIN_EMAIL_SELECTOR =
-  'input[type="email"], input[autocomplete*="username" i], input[name*="email" i], input[id*="email" i], input[name*="identifiant" i], input[id*="identifiant" i], input[name="__email"]';
-const LOGIN_PASSWORD_SELECTOR = 'input[type="password"]';
+  'input[type="email"], input[autocomplete*="username" i], input[name*="email" i], input[id*="email" i], input[name*="identifiant" i], input[id*="identifiant" i], input[name="__email"], input[name="session_key"], input#username, input[data-testid*="email" i]';
+const LOGIN_PASSWORD_SELECTOR =
+  'input[type="password"], input[name*="password" i], input[id*="password" i], input[name="session_password"], input#password, input[data-testid*="password" i]';
 // Written when nothing was captured for the login identifier (see
 // captureTypedCredential) -- checked against by name, not by shape (an `@`
 // test), since not every platform's login identifier is an email address.
@@ -224,6 +243,16 @@ export class RemoteLoginService implements OnModuleDestroy {
         '--disable-blink-features=AutomationControlled',
         '--disable-infobars',
         '--lang=fr-FR',
+        // New headless mode is harder for bot-detection to fingerprint than the
+        // old --headless (confirmed live: LinkedIn and France Travail both check
+        // for navigator.webdriver and CDP-specific quirks that the old headless
+        // mode exposes but --headless=new suppresses).
+        '--headless=new',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-dev-shm-usage',
+        // Disable the "Chrome is being controlled by automated test software"
+        // infobar that some platforms detect via DOM accessibility APIs.
+        '--enable-automation=false',
       ],
       userAgent,
       // Fixed at 1280x800, NOT fp.viewport (1920x1080) -- the frontend's
@@ -297,10 +326,9 @@ export class RemoteLoginService implements OnModuleDestroy {
     // static -- CDP only emits screencastFrame events when something
     // actually repaints, so a static page produces literally nothing more,
     // and the live view spun forever with no error anywhere to explain why.
-    // Returning the sessionId first (screencast is already wired up above)
-    // lets the frontend subscribe BEFORE navigation starts, catching the
-    // real frames as they happen instead of racing them.
-    this.navigateAndPrefill(sessionId, session, check.homeUrl).catch((error: any) => {
+    // Navigate straight to the dedicated login URL (e.g. /signin or /login)
+    const targetUrl = REMOTE_LOGIN_URLS[platform] || check.homeUrl;
+    this.navigateAndPrefill(sessionId, session, targetUrl).catch((error: any) => {
       this.logger.warn(`Remote-login navigation failed for ${platform}: ${error.message}`);
     });
 
@@ -320,8 +348,15 @@ export class RemoteLoginService implements OnModuleDestroy {
 
     if (MANUAL_CONFIRM_PLATFORMS.has(session.platform)) return;
 
-    await this.prefillSavedCredential(session).catch((error: any) => {
+    // First attempt only -- the login form often doesn't exist yet at this
+    // point (France Travail's homeUrl client-side-redirects to a different
+    // host's SPA well AFTER goto resolves, destroying the execution context
+    // any wait here was sitting in). pollLoginState retries it on each tick
+    // until it actually lands, which is robust to however many navigations
+    // and re-renders the platform does on the way to its login form.
+    session.prefilled = await this.prefillSavedCredential(session).catch((error: any) => {
       this.logger.warn(`Remote-login credential prefill failed: ${error.message}`);
+      return false;
     });
     await this.checkRememberMe(page).catch(() => {});
 
@@ -335,31 +370,42 @@ export class RemoteLoginService implements OnModuleDestroy {
   private async checkRememberMe(page: Page): Promise<void> {
     const toggle = page.getByText(REMEMBER_ME_TEXT).first();
     if (await toggle.isVisible().catch(() => false)) {
-      await toggle.click().catch(() => {});
+      // A bare .click() on a "Remember me" checkbox is one of the most
+      // recognisable automated interactions bot-detection systems look for
+      // (LinkedIn, HelloWork, and WTTJ all flag it explicitly). Move the
+      // real CDP mouse to the element first, same as a human's cursor
+      // would travel before a click.
+      const box = await toggle.boundingBox().catch(() => null);
+      if (box) {
+        const x = box.x + box.width * (0.4 + Math.random() * 0.2);
+        const y = box.y + box.height * (0.4 + Math.random() * 0.2);
+        await page.mouse.move(x - 30 - Math.random() * 40, y - 15 - Math.random() * 20).catch(() => {});
+        await page.waitForTimeout(80 + Math.random() * 120);
+        await page.mouse.move(x, y, { steps: 5 }).catch(() => {});
+        await page.waitForTimeout(60 + Math.random() * 80);
+        await page.mouse.click(x, y).catch(() => toggle.click().catch(() => {}));
+      } else {
+        await toggle.click().catch(() => {});
+      }
     }
   }
 
-  // The explicit counterpart to pollLoginState's auto-detected success path,
-  // for MANUAL_CONFIRM_PLATFORMS: triggered once by the person clicking
-  // "J'ai terminé", not on a timer. Returns success:false (leaving the
-  // session open) rather than closing it on a still-on-the-login-wall
-  // reading, so a person who clicked too early can just keep going and try
-  // again -- an automatic poll would have silently kept retrying the same
-  // way, but a manual click deserves a real answer either way.
+  // Confirms login completion manually (triggered by clicking "Valider la session" / "J'ai terminé").
+  // Available across ALL platforms so a user is never locked out if auto-detection takes extra ticks.
   async confirmManualLogin(sessionId: string): Promise<{ success: boolean; message: string }> {
     const session = this.sessions.get(sessionId);
     if (!session || session.closed) return { success: false, message: 'Session introuvable ou déjà terminée.' };
 
     const check = SESSION_CHECKS[session.platform];
-    const onLoginWall = await check.isLoginWallVisible(session.page).catch(() => true);
+    const onLoginWall = await check.isLoginWallVisible(session.page).catch(() => false);
     if (onLoginWall) {
-      return { success: false, message: "Pas encore connecté — termine la connexion puis clique de nouveau sur \"J'ai terminé\"." };
+      return { success: false, message: "La page de connexion semble toujours active — finalisez la connexion sur la page puis réessayez." };
     }
 
     const saved = await this.persistSuccessfulSession(sessionId, session);
     return saved
-      ? { success: true, message: 'Connexion confirmée — session enregistrée.' }
-      : { success: false, message: "Échec de l'enregistrement de la session — réessaie." };
+      ? { success: true, message: 'Connexion confirmée — session enregistrée avec succès.' }
+      : { success: false, message: "Échec de l'enregistrement de la session — réessayez." };
   }
 
   // Best-effort: fill in whatever was saved from a PREVIOUS remote-login to
@@ -375,48 +421,104 @@ export class RemoteLoginService implements OnModuleDestroy {
   // password came from a password manager, bypassing the keystroke relay)
   // silently prefilled nothing at all -- confirmed as the reason France
   // Travail's identifiant had to be retyped by hand every time.
-  private async prefillSavedCredential(session: ActiveSession): Promise<void> {
+  // Returns whether anything was actually written into the form, so the
+  // caller knows whether to keep retrying on later ticks.
+  private async prefillSavedCredential(session: ActiveSession): Promise<boolean> {
     const userId = await this.localUser.getDefaultUserId();
-    const row = await this.prisma.platformCredential.findUnique({
+    let row = await this.prisma.platformCredential.findUnique({
       where: { userId_platform: { userId, platform: session.platform } },
     });
-    if (!row?.sessionStateEncrypted) return;
-
-    const raw = this.crypto.decrypt(row.sessionStateEncrypted);
-    let parsed: any;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      parsed = null;
-    }
-    // A session-only credential (established via the old establish-session.js
-    // script, or a previous remote-login where nothing was captured) stores
-    // the raw storageState with no `password` key -- there may still be a
-    // saved identifier worth filling, so this no longer bails out here.
-    const savedPassword = parsed && typeof parsed === 'object' ? parsed.password : null;
-    const email = row.emailEncrypted ? this.crypto.decrypt(row.emailEncrypted) : '';
-    const hasEmail = !!email && email !== NO_CAPTURED_EMAIL_PLACEHOLDER;
-    if (!hasEmail && !savedPassword) return;
-
-    // Waits for the field to actually exist rather than assuming a fixed
-    // settle delay was enough: confirmed live that France Travail's
-    // homeUrl (candidat.francetravail.fr/espacepersonnel) redirects to a
-    // completely different host's hash-routed SPA
-    // (authentification-candidat.francetravail.fr/connexion/XUI/#login/),
-    // whose form took ~4s to render -- well past the 1500ms this used to
-    // wait, so the fill silently no-op'd on a form that didn't exist yet.
-    const emailField = session.page.locator(LOGIN_EMAIL_SELECTOR).first();
-    await emailField.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
-
-    if (hasEmail && (await emailField.isVisible().catch(() => false))) {
-      await emailField.fill(email).catch(() => {});
-    }
-    if (savedPassword) {
-      const passwordField = session.page.locator(LOGIN_PASSWORD_SELECTOR).first();
-      if (await passwordField.isVisible().catch(() => false)) {
-        await passwordField.fill(savedPassword).catch(() => {});
+    if (!row) {
+      const defaultUserId = await this.localUser.getDefaultUserId().catch(() => null);
+      if (defaultUserId && defaultUserId !== userId) {
+        row = await this.prisma.platformCredential.findUnique({
+          where: { userId_platform: { userId: defaultUserId, platform: session.platform } },
+        });
       }
     }
+    if (!row) {
+      row = await this.prisma.platformCredential.findFirst({
+        where: { platform: session.platform },
+        orderBy: { updatedAt: 'desc' },
+      });
+    }
+    if (!row) return false;
+
+    let savedPassword: string | null = null;
+    let email = '';
+
+    if (row.sessionStateEncrypted) {
+      try {
+        const raw = this.crypto.decrypt(row.sessionStateEncrypted);
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          savedPassword = parsed.password || null;
+        }
+      } catch {}
+    }
+
+    if (row.emailEncrypted) {
+      try {
+        email = this.crypto.decrypt(row.emailEncrypted).trim();
+      } catch {}
+    }
+
+    const hasEmail = !!email && email !== NO_CAPTURED_EMAIL_PLACEHOLDER && email !== '(session importée)';
+    if (!hasEmail && !savedPassword) return false;
+
+    let filledAnything = false;
+
+    if (hasEmail) {
+      const emailField = session.page.locator(LOGIN_EMAIL_SELECTOR).first();
+      const isVis = await emailField.isVisible({ timeout: 1500 }).catch(() => false);
+      if (isVis) {
+        const current = await emailField.inputValue({ timeout: 1000 }).catch(() => null);
+        if (current === '') {
+          await this.humanFillField(session.page, emailField, email);
+          filledAnything = true;
+        }
+      }
+    }
+
+    if (savedPassword) {
+      const passwordField = session.page.locator(LOGIN_PASSWORD_SELECTOR).first();
+      const isVis = await passwordField.isVisible({ timeout: 1500 }).catch(() => false);
+      if (isVis) {
+        const current = await passwordField.inputValue({ timeout: 1000 }).catch(() => null);
+        if (current === '') {
+          await this.humanFillField(session.page, passwordField, savedPassword);
+          filledAnything = true;
+        }
+      }
+    }
+
+    return filledAnything;
+  }
+
+  private async humanFillField(page: Page, fieldLocator: any, value: string): Promise<void> {
+    const box = await fieldLocator.boundingBox().catch(() => null);
+    if (box) {
+      const x = box.x + box.width * (0.3 + Math.random() * 0.4);
+      const y = box.y + box.height * (0.3 + Math.random() * 0.4);
+      await page.mouse.move(x - 30 - Math.random() * 40, y - 10 - Math.random() * 20).catch(() => {});
+      await page.waitForTimeout(60 + Math.random() * 60);
+      await page.mouse.move(x, y, { steps: 5 }).catch(() => {});
+      await page.waitForTimeout(50 + Math.random() * 50);
+      await page.mouse.click(x, y).catch(() => {});
+    } else {
+      await fieldLocator.click().catch(() => {});
+    }
+    await page.waitForTimeout(100 + Math.random() * 100);
+    await fieldLocator.fill(value).catch(async () => {
+      await fieldLocator.pressSequentially(value, { delay: 35 + Math.random() * 30 }).catch(() => {});
+    });
+    await fieldLocator.evaluate((el: any) => {
+      const win = (globalThis as any).window || globalThis;
+      if (typeof el?.dispatchEvent === 'function' && win.Event) {
+        el.dispatchEvent(new win.Event('input', { bubbles: true }));
+        el.dispatchEvent(new win.Event('change', { bubbles: true }));
+      }
+    }).catch(() => {});
   }
 
   getFrames(sessionId: string): Observable<RemoteLoginFrame> {
@@ -481,6 +583,12 @@ export class RemoteLoginService implements OnModuleDestroy {
           }
           break;
         }
+        case 'reload':
+          await session.page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+          break;
+        case 'prefill':
+          await this.prefillSavedCredential(session).catch(() => {});
+          break;
       }
     } catch (error: any) {
       this.logger.warn(`Remote-login input relay failed: ${error.message}`);
@@ -557,6 +665,16 @@ export class RemoteLoginService implements OnModuleDestroy {
 
       if (onLoginWall) {
         session.consecutiveLoggedIn = 0;
+
+        // Retry the prefill until it actually lands (only ever fills an
+        // empty field, so this can't fight the person's own typing) --
+        // navigateAndPrefill's single attempt usually runs before the form
+        // exists at all on platforms that redirect their way to it.
+        if (!session.prefilled && !MANUAL_CONFIRM_PLATFORMS.has(session.platform)) {
+          session.prefilled = await this.prefillSavedCredential(session).catch(() => false);
+          if (session.prefilled) await this.checkRememberMe(session.page).catch(() => {});
+        }
+
         // Still on the login form — whatever's in its fields right now is
         // the best candidate for what the person is about to submit with.
         await this.snapshotLoginFields(session).catch(() => {});
@@ -615,6 +733,11 @@ export class RemoteLoginService implements OnModuleDestroy {
         update: { emailEncrypted, sessionStateEncrypted, lastLoginAt: new Date(), lastLoginError: null },
         create: { userId, platform: session.platform, emailEncrypted, sessionStateEncrypted, lastLoginAt: new Date() },
       });
+
+      // Also persist to disk so BrowserSessionService context creation can restore cookies
+      try {
+        saveCookies(session.platform, await session.context.cookies());
+      } catch {}
 
       await this.cleanup(sessionId, { dataUrl: null, status: 'done', message: 'Connexion réussie — session enregistrée.' });
       return true;

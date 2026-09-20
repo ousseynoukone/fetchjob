@@ -3,6 +3,7 @@ import type { CVData } from '../../pdf/templates/cv-document';
 import type { DetectedField } from './form-fields';
 
 export interface ApplyContext {
+  userId?: string;
   application: {
     id: string;
     jobTitle: string;

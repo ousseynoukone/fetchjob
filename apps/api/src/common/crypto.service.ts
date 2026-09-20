@@ -14,7 +14,8 @@ export class CryptoService implements OnModuleInit {
   private readonly logger = new Logger(CryptoService.name);
   private key!: Buffer;
 
-  onModuleInit() {
+  private ensureKey(): Buffer {
+    if (this.key) return this.key;
     const raw = process.env.CREDENTIALS_ENCRYPTION_KEY;
     if (!raw) {
       throw new Error(
@@ -30,12 +31,18 @@ export class CryptoService implements OnModuleInit {
     }
 
     this.key = key;
+    return this.key;
+  }
+
+  onModuleInit() {
+    this.ensureKey();
   }
 
   // Output format: base64(iv) + '.' + base64(authTag) + '.' + base64(ciphertext)
   encrypt(plainText: string): string {
+    const key = this.ensureKey();
     const iv = randomBytes(IV_LENGTH);
-    const cipher = createCipheriv(ALGORITHM, this.key, iv);
+    const cipher = createCipheriv(ALGORITHM, key, iv);
     const ciphertext = Buffer.concat([cipher.update(plainText, 'utf8'), cipher.final()]);
     const authTag = cipher.getAuthTag();
 
@@ -43,12 +50,13 @@ export class CryptoService implements OnModuleInit {
   }
 
   decrypt(payload: string): string {
+    const key = this.ensureKey();
     const [ivB64, authTagB64, ciphertextB64] = payload.split('.');
     if (!ivB64 || !authTagB64 || !ciphertextB64) {
       throw new Error('Malformed encrypted payload');
     }
 
-    const decipher = createDecipheriv(ALGORITHM, this.key, Buffer.from(ivB64, 'base64'));
+    const decipher = createDecipheriv(ALGORITHM, key, Buffer.from(ivB64, 'base64'));
     decipher.setAuthTag(Buffer.from(authTagB64, 'base64'));
 
     const plaintext = Buffer.concat([

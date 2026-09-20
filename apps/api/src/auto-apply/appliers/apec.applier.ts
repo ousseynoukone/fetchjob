@@ -1,9 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { dismissCookieBanner, SESSION_CHECKS, humanClick, humanFill, uploadCv } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS, humanClick, humanFill, uploadCv, handleUniversalEmailOtp } from './ats-common';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
+import { GmailOtpService } from '../../common/gmail-otp.service';
 
 // scraping.service.ts's fetchApecOffers builds the stored sourceUrl as
 // .../emploi/detail-offre/{numeroOffre} -- the apply page needs that same
@@ -22,7 +23,10 @@ export class ApecApplier implements JobApplier {
   readonly credentialPlatform = 'apec';
   private readonly logger = new Logger(ApecApplier.name);
 
-  constructor(private ai: AiService) {}
+  constructor(
+    private ai: AiService,
+    private gmailOtp: GmailOtpService,
+  ) {}
 
   async apply(page: Page, ctx: ApplyContext): Promise<ApplyResult> {
     const numeroOffre = extractNumeroOffre(ctx.application.sourceUrl);
@@ -48,12 +52,51 @@ export class ApecApplier implements JobApplier {
     // every other account-based applier in this file, only reuses a
     // session established through the in-app remote-login flow.
     if (await SESSION_CHECKS.apec.isLoginWallVisible(page)) {
-      await ctx.appendLog?.('APEC a affiché le formulaire de connexion — la session ne semble plus valide.');
-      return {
-        success: false,
-        sessionExpired: true,
-        note: 'Session APEC absente ou expirée — ouvrez la session depuis Comptes pour la rétablir.',
-      };
+      if (
+        ctx.credential?.email &&
+        ctx.credential?.password &&
+        ctx.credential.email !== '(session importée)' &&
+        ctx.credential.email !== '(connecté via navigateur intégré)'
+      ) {
+        await ctx.appendLog?.(`Session expirée — reconnexion automatique APEC avec ${ctx.credential.email}...`);
+        const emailField = page.locator('#emailid, input[name="emailid"], input[type="email"]').first();
+        await emailField.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+        const passField = page.locator('#password, input[name="password"], input[type="password"]').first();
+        if ((await emailField.isVisible().catch(() => false)) && (await passField.isVisible().catch(() => false))) {
+          await emailField.fill(ctx.credential.email);
+          await passField.fill(ctx.credential.password);
+          const submitBtn = page.locator('button.popin-btn-primary, button:has-text("Se connecter"), button[type="submit"], .btn-connexion').first();
+          if (await submitBtn.isVisible().catch(() => false)) {
+            await submitBtn.click();
+          } else {
+            await passField.press('Enter');
+          }
+          await page.waitForTimeout(4000);
+
+          // Check if APEC triggered email 2FA / OTP verification
+          await handleUniversalEmailOtp(page, 'apec', ctx.userId, this.gmailOtp, {
+            log: (m) => ctx.appendLog?.(m),
+            warn: (m) => ctx.appendLog?.(`⚠️ ${m}`),
+          });
+
+          if (!await SESSION_CHECKS.apec.isLoginWallVisible(page)) {
+            await ctx.appendLog?.('Reconnexion automatique APEC réussie !');
+            const state = await page.context().storageState().catch(() => null);
+            if (state) {
+              await ctx.onSessionUpdated?.(JSON.stringify(state));
+            }
+          }
+        }
+      }
+
+      if (await SESSION_CHECKS.apec.isLoginWallVisible(page)) {
+        await ctx.appendLog?.('APEC a affiché le formulaire de connexion — la session ne semble plus valide.');
+        return {
+          success: false,
+          sessionExpired: true,
+          note: 'Session APEC absente ou expirée — ouvrez la session depuis Comptes pour la rétablir.',
+        };
+      }
     }
 
     // "Je préfère joindre [mon CV]" vs "Je candidate [avec le CV du site]" --
@@ -98,10 +141,8 @@ export class ApecApplier implements JobApplier {
       // exactly "Envoyer ma candidature".
       submitText: /envoyer ma candidature/i,
       nextText: /suivant|continuer/i,
-      // Confirmed live via the recording's own confirmation page
-      // (promotion-de-service.html): its <h1> reads exactly "Votre
-      // candidature a été envoyée".
       successText: /votre candidature a [ée]t[ée] envoy[ée]e/i,
+      successUrl: /promotion-de-service|confirmation/i,
       blockedNote: 'Le formulaire de candidature APEC contient un champ non renseigné — à finaliser manuellement.',
       unresolvedNote: 'Soumission APEC envoyée mais confirmation non détectée — à vérifier manuellement.',
     });

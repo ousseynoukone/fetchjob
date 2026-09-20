@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { dismissCookieBanner, fillIdentityFields, uploadCv } from './ats-common';
+import { dismissCookieBanner, fillIdentityFields, uploadCv, humanClick, humanFill } from './ats-common';
 import { fillKnownFields } from './form-fields';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
@@ -25,7 +25,7 @@ export class GreenhouseApplier implements JobApplier {
       .or(page.getByRole('button', { name: /apply for this job|apply now/i }))
       .first();
     if (await revealFormLink.isVisible().catch(() => false)) {
-      await revealFormLink.click();
+      await humanClick(page, revealFormLink).catch(() => revealFormLink.click().catch(() => {}));
       await page.waitForTimeout(1000);
     }
 
@@ -43,7 +43,7 @@ export class GreenhouseApplier implements JobApplier {
     if (ctx.coverLetter) {
       const coverLetterField = page.locator('textarea[id*="cover" i], textarea[aria-label*="cover" i]').first();
       if (await coverLetterField.isVisible().catch(() => false)) {
-        await coverLetterField.fill(ctx.coverLetter).catch(() => {});
+        await humanFill(coverLetterField, ctx.coverLetter).catch(() => {});
       }
     }
 

@@ -29,6 +29,9 @@ export async function detectFormSuccess(page: Page, successText: RegExp, success
     const visible = await frame.getByText(successText).first().isVisible().catch(() => false);
     if (visible) return true;
   }
+  // Checked across page body text to catch split spans, toasts, and dynamic headers
+  const bodyText = await page.locator('body').innerText({ timeout: 1500 }).catch(() => '');
+  if (successText.test(bodyText)) return true;
   return false;
 }
 

@@ -3,7 +3,20 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import apiClient from '@/lib/api-client';
 import { SupportedPlatform } from '@/lib/platform-credentials-store';
-import { X, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
+import {
+  X,
+  Loader2,
+  CheckCircle2,
+  AlertTriangle,
+  Send,
+  RotateCw,
+  CornerDownLeft,
+  ArrowRight,
+  Delete,
+  Sparkles,
+  Eye,
+  EyeOff,
+} from 'lucide-react';
 
 // Native resolution the backend's CDP screencast renders at (see
 // remote-login.service.ts) — every click/wheel coordinate sent back has to
@@ -22,12 +35,6 @@ const PLATFORM_LABELS: Record<SupportedPlatform, string> = {
   gmail: 'Gmail',
 };
 
-// Google's own login is a multi-step flow this app never auto-polls for
-// completion (see remote-login.service.ts's MANUAL_CONFIRM_PLATFORMS,
-// same reasoning as its "never auto-fill a Google password" rule) -- the
-// person confirms it themselves once actually done instead.
-const MANUAL_CONFIRM_PLATFORMS = new Set<SupportedPlatform>(['gmail']);
-
 type Status = 'connecting' | 'active' | 'done' | 'error';
 
 export default function RemoteLoginModal({
@@ -43,34 +50,31 @@ export default function RemoteLoginModal({
   const [message, setMessage] = useState<string | null>(null);
   const [frame, setFrame] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
-  const isManualConfirm = MANUAL_CONFIRM_PLATFORMS.has(platform);
+  const [textInput, setTextInput] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const sessionIdRef = useRef<string | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const typeBoxRef = useRef<HTMLInputElement>(null);
-  // Every event here matters in the exact order it happened (a mouse release
-  // has to land after its own press; keystrokes have to land in the order
-  // typed) -- firing each as its own unawaited POST let the browser send
-  // them out of order under any real typing speed, which is exactly what
-  // made typing "not work". Chained onto this promise instead, so each
-  // event's request only starts once the previous one has actually been
-  // sent.
+  const lastMouseMoveRef = useRef(0);
+
+  // Serialized queue for CDP events ensuring ordering
   const inputQueueRef = useRef<Promise<void>>(Promise.resolve());
-  // Distinguishes a close WE triggered (login finished) from the connection
-  // just dying underneath us (e.g. the backend restarted mid-session) --
-  // see the onerror handler below.
   const intentionalCloseRef = useRef(false);
 
-  const sendInput = useCallback((event: Record<string, any>) => {
-    const sessionId = sessionIdRef.current;
-    if (!sessionId) return;
-    inputQueueRef.current = inputQueueRef.current.then(() =>
-      apiClient
-        .post(`/api/parametres/identifiants/${platform}/remote-login/${sessionId}/input`, event)
-        .then(() => {})
-        .catch(() => {}),
-    );
-  }, [platform]);
+  const sendInput = useCallback(
+    (event: Record<string, any>) => {
+      const sessionId = sessionIdRef.current;
+      if (!sessionId) return;
+      inputQueueRef.current = inputQueueRef.current.then(() =>
+        apiClient
+          .post(`/api/parametres/identifiants/${platform}/remote-login/${sessionId}/input`, event)
+          .then(() => {})
+          .catch(() => {}),
+      );
+    },
+    [platform],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -104,15 +108,6 @@ export default function RemoteLoginModal({
           }
         };
         source.onerror = () => {
-          // Confirmed live: this used to only surface as an error while
-          // still "connecting" -- once a first frame had come through and
-          // status flipped to "active", a LATER drop (the backend
-          // restarting mid-session, a network blip) updated nothing at all,
-          // silently freezing the last frame on screen forever with no
-          // indication anything had gone wrong. Any unexpected drop is a
-          // real problem now, not just the very first connection attempt --
-          // the only close that should stay silent is the one WE triggered
-          // after a successful login.
           if (intentionalCloseRef.current) return;
           setStatus('error');
           setMessage((m) => m || 'Connexion au serveur perdue — fermez et rouvrez cette fenêtre pour réessayer.');
@@ -143,10 +138,23 @@ export default function RemoteLoginModal({
     return { x, y };
   };
 
+  const handleMouseMove = (e: React.MouseEvent<HTMLImageElement>) => {
+    const now = Date.now();
+    if (now - lastMouseMoveRef.current < 50) return;
+    lastMouseMoveRef.current = now;
+    const { x, y } = toNativeCoords(e);
+    sendInput({ kind: 'mouseMoved', x, y });
+  };
+
   const handleMouseDown = (e: React.MouseEvent<HTMLImageElement>) => {
     const { x, y } = toNativeCoords(e);
+    // Send natural mouse movement right before press
+    sendInput({ kind: 'mouseMoved', x, y });
     sendInput({ kind: 'mousePressed', x, y });
-    sendInput({ kind: 'mouseReleased', x, y });
+    // Realistic human press duration before release
+    setTimeout(() => {
+      sendInput({ kind: 'mouseReleased', x, y });
+    }, 70 + Math.random() * 40);
   };
 
   const handleWheel = (e: React.WheelEvent<HTMLImageElement>) => {
@@ -176,44 +184,50 @@ export default function RemoteLoginModal({
     }
   };
 
-  // Confirmed live, three times over: an invisible <input>, a focusable
-  // container <div>, and even a real, always-visible <input> the person
-  // explicitly clicked into ALL failed identically -- server-side logging
-  // proved mouse events relayed every time while ZERO keydown-derived
-  // events ever arrived, no matter which element supposedly had focus.
-  // That points at something intercepting keydown before it ever reaches
-  // React's own synthetic event system (a browser extension, or some
-  // other capture-phase listener elsewhere on the page) rather than a
-  // focus-management bug in this component. A native, capture-phase
-  // `window.addEventListener` attached directly (bypassing React's event
-  // delegation entirely) is the most robust remaining way to intercept
-  // keystrokes EARLY, before anything else downstream gets a chance to.
+  const handleSendText = useCallback(
+    (e?: React.FormEvent) => {
+      if (e) e.preventDefault();
+      if (!textInput) return;
+      sendInput({ kind: 'insertText', text: textInput });
+      setTextInput('');
+    },
+    [sendInput, textInput],
+  );
+
+  // Global key listener with AltGr fix for Windows French AZERTY keyboards
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      // Don't intercept if currently typing inside the helper text box
+      if (document.activeElement === typeBoxRef.current) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          handleSendText();
+        }
+        return;
+      }
+
       if (['Enter', 'Backspace', 'Tab', 'Escape'].includes(e.key)) {
         e.preventDefault();
         sendInput({ kind: 'key', key: e.key as any });
         return;
       }
-      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+
+      // Fix AltGr on Windows (which sends both ctrlKey and altKey) so @, #, etc. work properly
+      const isAltGr = (e.ctrlKey && e.altKey) || e.getModifierState?.('AltGraph');
+      const isPlainChar = !e.ctrlKey && !e.metaKey && !e.altKey;
+      if (e.key.length === 1 && (isPlainChar || isAltGr)) {
         e.preventDefault();
         sendInput({ kind: 'insertText', text: e.key });
       }
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [sendInput]);
+  }, [sendInput, textInput]);
 
-  // Ctrl+V never reached the browser being driven remotely -- the keydown
-  // handler above deliberately ignores any key combo with a modifier held
-  // (so Ctrl+C/Ctrl+A etc. don't get typed as literal characters), which
-  // also swallowed paste. Listening for the browser's own native `paste`
-  // event instead sidesteps that entirely: it fires with the clipboard
-  // content already resolved, so the whole pasted string (a password from a
-  // password manager, a long answer copied from elsewhere) can be relayed
-  // in one Input.insertText call rather than needing to be typed key by key.
+  // Handle paste directly into the remote browser
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
+      if (document.activeElement === typeBoxRef.current) return;
       const text = e.clipboardData?.getData('text');
       if (!text) return;
       e.preventDefault();
@@ -224,89 +238,163 @@ export default function RemoteLoginModal({
   }, [sendInput]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="bg-base-100 rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden">
-        <div className="flex items-center justify-between px-5 py-3 border-b border-base-300">
-          <div>
-            <h3 className="font-semibold text-sm">Connexion {PLATFORM_LABELS[platform]}</h3>
-            <p className="text-xs text-base-content/50">
-              {isManualConfirm
-                ? "Connecte-toi normalement, 2FA ou captcha compris, puis clique sur \"J'ai terminé\" ci-dessous."
-                : "Connectez-vous comme dans un navigateur normal — cliquez et tapez directement dans l'aperçu."}
-            </p>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-3 sm:p-4 backdrop-blur-sm">
+      <div className="bg-base-100 rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden border border-base-300 flex flex-col max-h-[95vh]">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-base-300 bg-base-200/50">
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-primary animate-pulse" />
+            <h3 className="font-semibold text-sm">Navigateur Intégré — Connexion {PLATFORM_LABELS[platform]}</h3>
           </div>
-          <button className="btn btn-ghost btn-xs btn-circle" onClick={onClose}>
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              className="btn btn-ghost btn-xs gap-1 text-base-content/70 hover:text-base-content"
+              onClick={() => sendInput({ kind: 'reload' })}
+              title="Recharger la page"
+            >
+              <RotateCw className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Actualiser</span>
+            </button>
+            <button className="btn btn-ghost btn-xs btn-circle" onClick={onClose}>
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
-        <div className="relative bg-black" style={{ aspectRatio: `${NATIVE_WIDTH} / ${NATIVE_HEIGHT}` }}>
+        {/* Live Screencast Viewport */}
+        <div className="relative bg-black flex-1 min-h-0 flex items-center justify-center overflow-hidden" style={{ aspectRatio: `${NATIVE_WIDTH} / ${NATIVE_HEIGHT}` }}>
           {frame ? (
             <img
               ref={imgRef}
               src={frame}
-              alt="Navigateur en direct"
-              className="w-full h-full cursor-pointer select-none"
+              alt="Navigateur distant"
+              className="w-full h-full cursor-crosshair select-none object-contain"
+              onMouseMove={handleMouseMove}
               onMouseDown={handleMouseDown}
               onWheel={handleWheel}
               draggable={false}
             />
           ) : (
-            <div className="w-full h-full flex items-center justify-center text-base-content/40">
-              <Loader2 className="w-6 h-6 animate-spin" />
+            <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-base-content/50 py-16">
+              <Loader2 className="w-8 h-8 animate-spin text-primary" />
+              <span className="text-xs">Chargement du navigateur distant et initialisation de la session...</span>
             </div>
           )}
 
           {status === 'done' && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/70">
-              <div className="flex items-center gap-2 text-success bg-base-100 rounded-xl px-4 py-3">
-                <CheckCircle2 className="w-5 h-5" />
-                <span className="text-sm font-medium">{message || 'Connecté !'}</span>
+            <div className="absolute inset-0 flex items-center justify-center bg-black/75 backdrop-blur-xs">
+              <div className="flex items-center gap-3 text-success bg-base-100 rounded-2xl px-6 py-4 shadow-2xl border border-success/30">
+                <CheckCircle2 className="w-6 h-6" />
+                <div>
+                  <h4 className="text-sm font-semibold text-base-content">Session enregistrée !</h4>
+                  <p className="text-xs text-base-content/70">{message || 'Connexion réussie.'}</p>
+                </div>
               </div>
             </div>
           )}
+
           {status === 'error' && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/70">
-              <div className="flex items-center gap-2 text-error bg-base-100 rounded-xl px-4 py-3 max-w-md text-center">
-                <AlertTriangle className="w-5 h-5 shrink-0" />
-                <span className="text-sm font-medium">{message || 'Une erreur est survenue.'}</span>
+            <div className="absolute inset-0 flex items-center justify-center bg-black/75 backdrop-blur-xs">
+              <div className="flex items-center gap-3 text-error bg-base-100 rounded-2xl px-6 py-4 shadow-2xl border border-error/30 max-w-md">
+                <AlertTriangle className="w-6 h-6 shrink-0" />
+                <div>
+                  <h4 className="text-sm font-semibold text-base-content">Erreur</h4>
+                  <p className="text-xs text-base-content/70">{message || 'Une erreur est survenue.'}</p>
+                </div>
               </div>
             </div>
           )}
         </div>
 
-        <div className="px-5 py-3 border-t border-base-300 space-y-2">
-          <div>
-            <label className="label py-0.5">
-              <span className="label-text text-xs">
-                Cliquez ici puis tapez — le texte est relayé dans le champ actif de la fenêtre ci-dessus
-              </span>
-            </label>
-            <input
-              ref={typeBoxRef}
-              type="text"
-              value=""
-              onChange={() => {}}
-              placeholder="Tapez n'importe où pendant que cette fenêtre est ouverte..."
-              className="input input-sm input-bordered w-full font-mono"
-              autoComplete="off"
-            />
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-base-content/50">
-              {status === 'connecting' && 'Ouverture du navigateur...'}
-              {status === 'active' && !isManualConfirm && 'Session active — cliquez dans la fenêtre, puis tapez dans le champ ci-dessus.'}
-              {status === 'active' && isManualConfirm && (message || 'Session active — connecte-toi, puis clique sur "J\'ai terminé".')}
-              {status === 'done' && 'Terminé.'}
-              {status === 'error' && 'Échec.'}
-            </span>
-            <div className="flex items-center gap-2">
-              {isManualConfirm && status === 'active' && (
-                <button className="btn btn-primary btn-xs" onClick={handleConfirm} disabled={confirming}>
-                  {confirming ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "J'ai terminé"}
+        {/* Control & Assistant Toolbar */}
+        <div className="px-5 py-3 border-t border-base-300 bg-base-100 space-y-2.5">
+          {/* Direct typing and text-insertion helper bar */}
+          <form onSubmit={handleSendText} className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <input
+                ref={typeBoxRef}
+                type={showPassword ? 'text' : 'text'}
+                value={textInput}
+                onChange={(e) => setTextInput(e.target.value)}
+                placeholder="Tapez ou collez un texte (identifiant, mot de passe, code 2FA)..."
+                className="input input-sm input-bordered w-full pr-16 font-mono text-xs"
+                autoComplete="off"
+              />
+              <button
+                type="button"
+                className="absolute right-2 top-1/2 -translate-y-1/2 btn btn-ghost btn-xs p-1"
+                onClick={() => setShowPassword(!showPassword)}
+                title={showPassword ? 'Masquer' : 'Afficher'}
+              >
+                {showPassword ? <EyeOff className="w-3.5 h-3.5 text-base-content/60" /> : <Eye className="w-3.5 h-3.5 text-base-content/60" />}
+              </button>
+            </div>
+            <button
+              type="submit"
+              disabled={!textInput}
+              className="btn btn-primary btn-sm gap-1.5 shrink-0"
+              title="Insère le texte dans le champ actif de la fenêtre ci-dessus"
+            >
+              <Send className="w-3.5 h-3.5" />
+              <span className="text-xs">Insérer</span>
+            </button>
+          </form>
+
+          {/* Quick Action Navigation & Helper Buttons */}
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-base-200">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                className="btn btn-outline btn-xs gap-1"
+                onClick={() => sendInput({ kind: 'prefill' })}
+                title="Pré-remplir automatiquement l'identifiant et mot de passe enregistrés"
+              >
+                <Sparkles className="w-3 h-3 text-warning" />
+                <span>Pré-remplir</span>
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs gap-1"
+                onClick={() => sendInput({ kind: 'key', key: 'Tab' })}
+                title="Champ suivant (Touche Tab)"
+              >
+                <ArrowRight className="w-3 h-3" />
+                <span>Tab</span>
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs gap-1"
+                onClick={() => sendInput({ kind: 'key', key: 'Enter' })}
+                title="Valider le formulaire (Touche Entrée)"
+              >
+                <CornerDownLeft className="w-3 h-3" />
+                <span>Entrée</span>
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs gap-1"
+                onClick={() => sendInput({ kind: 'key', key: 'Backspace' })}
+                title="Effacer le dernier caractère"
+              >
+                <Delete className="w-3 h-3" />
+                <span>Effacer</span>
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2 ml-auto">
+              {status === 'active' && (
+                <button
+                  type="button"
+                  className="btn btn-success btn-xs gap-1.5 text-white shadow-xs"
+                  onClick={handleConfirm}
+                  disabled={confirming}
+                  title="Enregistre la session active dès que vous êtes connecté"
+                >
+                  {confirming ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                  <span>Valider la connexion (J'ai terminé)</span>
                 </button>
               )}
-              <button className="btn btn-ghost btn-xs" onClick={onClose}>
+              <button type="button" className="btn btn-ghost btn-xs" onClick={onClose}>
                 Fermer
               </button>
             </div>

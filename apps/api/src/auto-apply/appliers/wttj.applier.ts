@@ -1,9 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, humanFill, humanClick, uploadCv, splitName } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, humanFill, humanClick, uploadCv, splitName, findWttjApplyButton } from './ats-common';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
+import { REMOTE_LOGIN_URLS } from '../../platform-credentials/remote-login.service';
 
 const OWN_DOMAIN = /welcometothejungle\.com/i;
 
@@ -24,16 +25,15 @@ export class WelcomeToTheJungleApplier implements JobApplier {
   constructor(private ai: AiService) {}
 
   async apply(page: Page, ctx: ApplyContext): Promise<ApplyResult> {
-    const loginResult = await this.ensureLoggedIn(page);
+    const loginResult = await this.ensureLoggedIn(page, ctx);
     if (loginResult) return loginResult;
 
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await dismissCookieBanner(page);
     await page.waitForTimeout(2000); // same WAF-challenge/SPA-hydration delay as resolveWelcomeToTheJungleApplyUrl
 
-    const applyButton = page.locator('[data-testid="job_header-button-apply"]').first();
-    const hasApplyButton = await applyButton.isVisible().catch(() => false);
-    if (!hasApplyButton) {
+    const applyButton = await findWttjApplyButton(page);
+    if (!applyButton) {
       return {
         success: false,
         note: "Bouton de candidature Welcome to the Jungle introuvable sur cette offre — à traiter manuellement.",
@@ -114,17 +114,52 @@ export class WelcomeToTheJungleApplier implements JobApplier {
     });
   }
 
-  private async ensureLoggedIn(page: Page): Promise<ApplyResult | null> {
+  private async ensureLoggedIn(page: Page, ctx: ApplyContext): Promise<ApplyResult | null> {
     await page.goto(SESSION_CHECKS.welcome_to_the_jungle.homeUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
     await dismissCookieBanner(page);
 
     const onLoginWall = await SESSION_CHECKS.welcome_to_the_jungle.isLoginWallVisible(page);
     if (!onLoginWall) return null;
 
+    if (
+      ctx.credential?.email &&
+      ctx.credential?.password &&
+      ctx.credential.email !== '(session importée)' &&
+      ctx.credential.email !== '(connecté via navigateur intégré)'
+    ) {
+      await ctx.appendLog?.(`Session expirée — reconnexion automatique Welcome to the Jungle avec ${ctx.credential.email}...`);
+      try {
+        await page.goto(REMOTE_LOGIN_URLS.welcome_to_the_jungle, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await dismissCookieBanner(page).catch(() => {});
+        await page.waitForTimeout(2000);
+
+        const emailField = page.locator('input[name="email"], input[type="email"]').first();
+        const passField = page.locator('input[name="password"], input[type="password"]').first();
+        if ((await emailField.isVisible().catch(() => false)) && (await passField.isVisible().catch(() => false))) {
+          await emailField.fill(ctx.credential.email);
+          await passField.fill(ctx.credential.password);
+          await page.keyboard.press('Enter');
+          await page.waitForTimeout(4000);
+
+          const stillOnWall = await SESSION_CHECKS.welcome_to_the_jungle.isLoginWallVisible(page);
+          if (!stillOnWall) {
+            await ctx.appendLog?.('Reconnexion automatique Welcome to the Jungle réussie !');
+            const state = await page.context().storageState().catch(() => null);
+            if (state) {
+              await ctx.onSessionUpdated?.(JSON.stringify(state));
+            }
+            return null;
+          }
+        }
+      } catch (err: any) {
+        this.logger.warn(`Auto-relogin WTTJ error: ${err.message}`);
+      }
+    }
+
     return {
       success: false,
       sessionExpired: true,
-      note: 'Session Welcome to the Jungle absente ou expirée — ouvrez la session depuis Comptes pour la rétablir.',
+      note: 'Session Welcome to the Jungle absente ou expirée — ouvrez Comptes dans Paramètres pour vous connecter via le navigateur intégré.',
     };
   }
 }

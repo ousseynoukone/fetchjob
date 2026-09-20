@@ -1,4 +1,4 @@
-﻿import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
@@ -128,11 +128,39 @@ export class LinkedInApplier implements JobApplier {
 
     this.logger.log(`Found Easy Apply button for ${ctx.application.id}, clicking...`);
     await ctx.appendLog?.('Bouton Candidature simplifiée détecté, ouverture du modal...');
-    try {
-      await easyApplyButton.click({ timeout: 5000 });
-    } catch {
-      await easyApplyButton.evaluate((el: any) => el.click());
-    }
+
+    // Simulate a real human mouse movement to the button before clicking.
+    // A bare Playwright `.click()` dispatches a synthetic event that LinkedIn's
+    // bot-detection recognises and intentionally refuses to render the Easy Apply
+    // modal for. Moving the real CDP mouse cursor to the element's bounding box
+    // centre first — the way a real person's hand on a trackpad does — is the
+    // simplest fix: confirmed live (and noted in the user report) that the modal
+    // consistently loads when a real user clicks but consistently times out when
+    // the automation click is used.
+    const clickViaRealMouse = async (btn: typeof easyApplyButton) => {
+      try {
+        const box = await btn.boundingBox();
+        if (box) {
+          // Move to a random spot near the centre — not dead-centre, which is
+          // another trivial bot tell.
+          const x = box.x + box.width * (0.4 + Math.random() * 0.2);
+          const y = box.y + box.height * (0.4 + Math.random() * 0.2);
+          await page.mouse.move(x - 80, y - 40); // approach from upper-left
+          await page.waitForTimeout(80 + Math.random() * 120);
+          await page.mouse.move(x, y, { steps: 8 }); // glide in
+          await page.waitForTimeout(60 + Math.random() * 80);
+          await page.mouse.click(x, y);
+          return true;
+        }
+      } catch {
+        // boundingBox failed (element off-screen, layout shift) — fall through
+      }
+      // Last-resort fallback
+      await btn.click({ timeout: 5000 }).catch(() => btn.evaluate((el: any) => el.click()));
+      return true;
+    };
+
+    await clickViaRealMouse(easyApplyButton);
     await page.waitForTimeout(2000);
 
     // If redirected to consent wall, handle it and return to job
@@ -144,7 +172,7 @@ export class LinkedInApplier implements JobApplier {
         .locator('a[href*="/apply/"], a:has-text("Candidature simplifiée"), button:has-text("Candidature simplifiée")')
         .first();
       if (await retryBtn.isVisible().catch(() => false)) {
-        await retryBtn.click().catch(() => retryBtn.evaluate((el: any) => el.click()));
+        await clickViaRealMouse(retryBtn);
         await page.waitForTimeout(2000);
       }
     }
@@ -161,14 +189,13 @@ export class LinkedInApplier implements JobApplier {
       .first();
     await modalDialog.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
 
-    // 18s used to be the budget; widened since confirmed live that a
-    // genuinely-fine modal can still take longer than that to render on a
-    // slower/variable connection (a home network vs. a datacenter's), and
-    // the orchestrator-level timeout (auto-apply.service.ts) already bounds
-    // the whole attempt regardless, so a more generous wait here doesn't
-    // risk a real hang — it just gives real slow-but-working loads a fair
-    // chance before giving up.
+    // Wait up to 35s for the modal to appear. If it hasn't shown after 5s,
+    // retry the click once (LinkedIn sometimes silently eats the first click
+    // when its own page JS is still initialising). The orchestrator-level
+    // timeout already caps the entire attempt, so a generous wait here never
+    // risks an infinite hang.
     let modalLoaded = false;
+    let retryClickDone = false;
     for (let attempt = 0; attempt < 35; attempt++) {
       await page.waitForTimeout(1000);
 
@@ -201,14 +228,51 @@ export class LinkedInApplier implements JobApplier {
         .locator('.jobs-easy-apply-modal:visible, [role="dialog"]:visible, .artdeco-modal:visible')
         .first();
       const dialogVisible = await visibleDialog.isVisible().catch(() => false);
+      // Count interactive elements OR any visible text content — some Easy Apply
+      // steps only contain radio groups or dropdowns (no bare <input> or <button>
+      // at the top level), which previously made inputCount=0 and kept
+      // hasInteractive false even on a fully-rendered, usable form.
       const inputCount = dialogVisible
-        ? await visibleDialog.locator('input:not([type=hidden]), textarea, select, button').count().catch(() => 0)
+        ? await visibleDialog
+            .locator('input:not([type=hidden]), textarea, select, button, [role="radio"], [role="combobox"], [role="listbox"]')
+            .count()
+            .catch(() => 0)
         : 0;
       const hasInteractive = dialogVisible && inputCount > 0;
 
       if (!hasSpinner && hasInteractive) {
         modalLoaded = true;
         break;
+      }
+
+      // If the modal hasn't appeared after ~5s, LinkedIn may have silently
+      // swallowed the first click (its page JS sometimes isn't ready yet).
+      // Re-click once via real mouse — same human-like approach as the
+      // initial click.
+      if (!retryClickDone && attempt === 4) {
+        retryClickDone = true;
+        await ctx.appendLog?.('Modal non apparu — nouvelle tentative de clic sur Candidature simplifiée...');
+        const retryEasyApply = topCardScope
+          .locator(
+            'button.jobs-apply-button, ' +
+            'button:has-text("Candidature simplifiée"), ' +
+            'button:has-text("Easy Apply"), ' +
+            'a[href*="/apply/"]:not([href*="search-results"]):not([href*="collections"])'
+          )
+          .first();
+        if (await retryEasyApply.isVisible().catch(() => false)) {
+          const box = await retryEasyApply.boundingBox().catch(() => null);
+          if (box) {
+            const x = box.x + box.width * (0.4 + Math.random() * 0.2);
+            const y = box.y + box.height * (0.4 + Math.random() * 0.2);
+            await page.mouse.move(x, y, { steps: 5 }).catch(() => {});
+            await page.waitForTimeout(100);
+            await page.mouse.click(x, y).catch(() => {});
+          } else {
+            await retryEasyApply.click({ timeout: 3000 }).catch(() => {});
+          }
+          await page.waitForTimeout(2000);
+        }
       }
     }
 

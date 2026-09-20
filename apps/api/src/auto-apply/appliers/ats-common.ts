@@ -1,5 +1,6 @@
 import type { BrowserContext, Locator, Page } from 'playwright';
 import { readFile } from 'fs/promises';
+import type { GmailOtpService } from '../../common/gmail-otp.service';
 
 // The functions passed to page.evaluate() below run inside the browser, not
 // in Node — this project's tsconfig has no DOM lib, so `document` is
@@ -75,16 +76,28 @@ export async function humanFill(locator: Locator, value: string): Promise<void> 
 export async function humanClick(page: Page, locator: Locator): Promise<void> {
   const box = await locator.boundingBox().catch(() => null);
   if (box) {
-    const targetX = box.x + box.width / 2;
-    const targetY = box.y + box.height / 2;
-    const steps = 2 + Math.floor(Math.random() * 2);
+    const targetX = box.x + box.width * (0.4 + Math.random() * 0.2);
+    const targetY = box.y + box.height * (0.4 + Math.random() * 0.2);
+    // Approach from a random offset in the upper-left quadrant — dead-centre
+    // approaches are a trivial bot tell that DataDome/PerimeterX specifically
+    // check for.
+    await page.mouse.move(
+      targetX - 40 - Math.random() * 60,
+      targetY - 20 - Math.random() * 40,
+    ).catch(() => {});
+    await jitter(50, 120);
+    const steps = 3 + Math.floor(Math.random() * 3);
     for (let i = 1; i <= steps; i++) {
       const t = i / (steps + 1);
-      await page.mouse.move(targetX * t + (Math.random() * 30 - 15), targetY * t + (Math.random() * 30 - 15), { steps: 5 }).catch(() => {});
-      await jitter(30, 90);
+      await page.mouse.move(
+        targetX * t + (Math.random() * 20 - 10),
+        targetY * t + (Math.random() * 20 - 10),
+        { steps: 4 },
+      ).catch(() => {});
+      await jitter(25, 70);
     }
-    await page.mouse.move(targetX, targetY, { steps: 6 + Math.floor(Math.random() * 6) }).catch(() => {});
-    await jitter(60, 180);
+    await page.mouse.move(targetX, targetY, { steps: 5 + Math.floor(Math.random() * 5) }).catch(() => {});
+    await jitter(60, 160);
   }
   await locator.click({ timeout: 5000 });
 }
@@ -322,6 +335,16 @@ export async function dismissCookieBanner(page: Page): Promise<void> {
   // function gave up without ever discovering the real, visible modal
   // elsewhere on the page, leaving it blocking everything for the rest of
   // the attempt. Checks every match instead of stopping at the first.
+  // Check common CMP consent buttons (Didomi, OneTrust, Axeptio, France Travail)
+  const explicitCmp = page
+    .locator('#didomi-notice-agree-button, #onetrust-accept-btn-handler, #pe-cookies-accept, #pe-cookies-refuse, #axeptio_btn_acceptAll')
+    .first();
+  if (await explicitCmp.isVisible().catch(() => false)) {
+    await explicitCmp.click().catch(() => {});
+    await page.waitForTimeout(500);
+    return;
+  }
+
   const acceptButtons = await page.getByRole('button', { name: COOKIE_ACCEPT_TEXT }).all().catch(() => []);
   let acceptButton: typeof acceptButtons[number] | null = null;
   for (const candidate of acceptButtons) {
@@ -344,7 +367,10 @@ export async function dismissCookieBanner(page: Page): Promise<void> {
   }
 
   if (acceptButton) {
-    await acceptButton.click().catch(() => {});
+    // Use the same human-like mouse movement every other interaction uses —
+    // a bare .click() on the cookie accept button is a detectable bot signal
+    // on sites that profile mouse trajectories (DataDome, PerimeterX).
+    await humanClick(page, acceptButton).catch(() => acceptButton.click().catch(() => {}));
     // Confirmed live on a Cegedim career-site retry: this button triggers a
     // real page reload rather than just fading out an overlay in place — a
     // plain fixed wait raced it, and the very next page.evaluate() call
@@ -376,7 +402,7 @@ export async function dismissCookieBanner(page: Page): Promise<void> {
     .evaluate(() => {
       const doc: any = (globalThis as any).document;
       const host = doc.querySelector('pe-cookies');
-      const btn = host?.shadowRoot?.querySelector('#pecookies-accept-all') as any;
+      const btn = host?.shadowRoot?.querySelector('#pecookies-accept-all, #pecookies-continue-btn') as any;
       btn?.click();
     })
     .catch(() => {});
@@ -475,6 +501,8 @@ export const SESSION_CHECKS: Record<string, SessionCheck> = {
     // was never actually authenticated -- the identifiant-only check missed
     // this because that page never renders a login form at all).
     isLoginWallVisible: async (page) => {
+      const currentUrl = page.url();
+      if (currentUrl.includes('authentification-candidat.francetravail.fr')) return true;
       const onLoginForm = await page.locator('#identifiant, input[name="identifiant"]').first().isVisible().catch(() => false);
       if (onLoginForm) return true;
       const hasConnexionButton = await page
@@ -507,15 +535,19 @@ export const SESSION_CHECKS: Record<string, SessionCheck> = {
     },
   },
   welcome_to_the_jungle: {
-    // The homepage itself, not a guessed "my account" route -- confirmed
-    // live that WTTJ's own account URLs 404 rather than redirect to signin
-    // (an SPA quirk, not proof of anything), while the public homepage
-    // reliably renders a real "Se connecter" nav link for a logged-out
-    // visitor and doesn't for an authenticated one, confirmed live via its
-    // own header markup.
+    // The homepage itself for health-check navigation.
     homeUrl: 'https://www.welcometothejungle.com/fr',
-    isLoginWallVisible: async (page) =>
-      page.getByRole('link', { name: /se connecter/i }).first().isVisible().catch(() => false),
+    isLoginWallVisible: async (page) => {
+      const url = page.url().toLowerCase();
+      if (url.includes('/signin') || url.includes('/login') || url.includes('/authenticate')) {
+        return true;
+      }
+      const hasSignInLink = await page.getByRole('link', { name: /se connecter/i }).first().isVisible().catch(() => false);
+      if (hasSignInLink) return true;
+      const hasSignInButton = await page.getByRole('button', { name: /se connecter/i }).first().isVisible().catch(() => false);
+      if (hasSignInButton && !url.includes('/candidat/')) return true;
+      return false;
+    },
   },
   apec: {
     // Confirmed live via a real recorded session (a user-provided Chrome
@@ -603,7 +635,22 @@ export async function resolveExternalApplyUrl(page: Page, clickable: Locator, ow
   }
 
   const popupPromise = page.waitForEvent('popup', { timeout: 5000 }).catch(() => null);
-  await clickable.click().catch(() => {});
+  // Humanized click: a bare .click() here is a bot tell on platforms that
+  // profile mouse trajectories (confirmed live: DataDome on WTTJ/APEC and
+  // Cloudflare on Indeed both track this). Falls back to a plain click if
+  // the element's bounding box can't be read (off-screen or not yet laid out).
+  const box = await clickable.boundingBox().catch(() => null);
+  if (box) {
+    const x = box.x + box.width * (0.4 + Math.random() * 0.2);
+    const y = box.y + box.height * (0.4 + Math.random() * 0.2);
+    await page.mouse.move(x - 30 - Math.random() * 50, y - 15 - Math.random() * 30).catch(() => {});
+    await page.waitForTimeout(80 + Math.random() * 100);
+    await page.mouse.move(x, y, { steps: 6 }).catch(() => {});
+    await page.waitForTimeout(60 + Math.random() * 80);
+    await page.mouse.click(x, y).catch(() => clickable.click().catch(() => {}));
+  } else {
+    await clickable.click().catch(() => {});
+  }
   const popup = await popupPromise;
 
   if (popup) {
@@ -636,11 +683,291 @@ export async function resolveExternalApplyUrl(page: Page, clickable: Locator, ow
 // auto-apply.service.ts's resolveEffectiveSourceUrl) so a native offer's
 // same button instead redirects same-tab to `/fr/authenticate/signin`,
 // still on welcometothejungle.com and correctly resolved to null.
+export const WTTJ_APPLY_SELECTOR =
+  '[data-testid="job_header-button-apply"], [data-testid="job_bottom-button-apply"], [data-testid*="button-apply"], [data-role="job:apply"], a:has-text("Postuler"), button:has-text("Postuler")';
+
+export async function findWttjApplyButton(page: Page): Promise<Locator | null> {
+  const loc = page.locator(WTTJ_APPLY_SELECTOR);
+  const count = await loc.count().catch(() => 0);
+  for (let i = 0; i < count; i++) {
+    const el = loc.nth(i);
+    if (await el.isVisible().catch(() => false)) {
+      return el;
+    }
+  }
+  return null;
+}
+
 export async function resolveWelcomeToTheJungleApplyUrl(page: Page, jobPageUrl: string): Promise<string | null> {
   await page.goto(jobPageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await dismissCookieBanner(page);
   await page.waitForTimeout(2000); // same WAF-challenge/SPA-hydration delay as the scraper's enrichment step
-  const applyButton = page.locator('[data-testid="job_header-button-apply"]').first();
-  if (!(await applyButton.isVisible().catch(() => false))) return null;
+  const applyButton = await findWttjApplyButton(page);
+  if (!applyButton) return null;
   return resolveExternalApplyUrl(page, applyButton, /welcometothejungle\.com/i);
 }
+
+/**
+ * Universal 2FA / OTP handler for any provider (France Travail, LinkedIn, Indeed,
+ * HelloWork, APEC, Welcome to the Jungle, or external ATS).
+ *
+ * 1. If presented with a choice of verification channels (App, SMS, Email), ALWAYS
+ *    selects Email ("Recevoir un code par e-mail", "Email", etc.).
+ * 2. Automatically queries the user's Gmail to fetch the security/verification OTP code.
+ * 3. Enters the code into the verification input fields (segmented or single).
+ * 4. Submits the verification form and awaits confirmation.
+ */
+export async function handleUniversalEmailOtp(
+  page: Page,
+  platform: string,
+  userId: string,
+  gmailOtp: GmailOtpService,
+  logger?: { log: (msg: string) => void; warn: (msg: string) => void },
+): Promise<boolean> {
+  const log = (msg: string) => (logger ? logger.log(msg) : console.log(`[OTP] ${msg}`));
+  const warn = (msg: string) => (logger ? logger.warn(msg) : console.warn(`[OTP] ${msg}`));
+
+  try {
+    // 1. Detect if page presents 2FA channel selection (App vs SMS vs Email)
+    // Priority: ALWAYS choose Email
+    const emailChannelSelectors = [
+      '#canal-1', // France Travail direct email channel
+      'a:has-text("Recevoir un code par e-mail")',
+      'label:has-text("Recevoir un code par e-mail")',
+      'input[type="radio"][value*="email" i]',
+      'label:has-text("par e-mail")',
+      'label:has-text("by email")',
+      'button:has-text("par e-mail")',
+      'button:has-text("by email")',
+      'a:has-text("par e-mail")',
+      'a:has-text("by email")',
+      '[data-testid*="email" i]',
+    ];
+
+    for (const sel of emailChannelSelectors) {
+      const el = page.locator(sel).first();
+      if (await el.isVisible({ timeout: 1500 }).catch(() => false)) {
+        log(`Found 2FA channel option [${sel}] — selecting email verification...`);
+        await humanClick(page, el).catch(() => el.click().catch(() => {}));
+        await page.waitForTimeout(2000);
+
+        // Check if there is a button to trigger dispatching the email code
+        const sendBtn = page
+          .locator(
+            '#submit, button[type="submit"], button:has-text("Poursuivre"), button:has-text("Continuer"), button:has-text("Envoyer"), button:has-text("Send"), button:has-text("Next"), button:has-text("Suivant")',
+          )
+          .first();
+        if (await sendBtn.isVisible({ timeout: 1500 }).catch(() => false)) {
+          const btnText = (await sendBtn.innerText().catch(() => '')).toLowerCase();
+          if (
+            btnText.includes('envoyer') ||
+            btnText.includes('send') ||
+            btnText.includes('suivant') ||
+            btnText.includes('next')
+          ) {
+            await humanClick(page, sendBtn).catch(() => sendBtn.click().catch(() => {}));
+            await page.waitForTimeout(3000);
+          }
+        }
+        break;
+      }
+    }
+
+    // 2. Detect OTP input fields on page
+    // Case A: France Travail style 8 segmented inputs (#code-1 to #code-8)
+    const code1 = page.locator('#code-1').first();
+    const hasCode1 = await code1.isVisible({ timeout: 4000 }).catch(() => false);
+
+    // Case B: General segmented inputs (e.g. 6 single-character inputs)
+    const segmentedInputs = page.locator('input[maxlength="1"], input[data-index]');
+    const segCount = await segmentedInputs.count().catch(() => 0);
+
+    // Case C: Single OTP/PIN code field
+    const singleCodeSelectors = [
+      'input#code',
+      'input#security-code',
+      'input#pin',
+      'input#verification-code',
+      'input[name*="code" i]',
+      'input[id*="code" i]',
+      'input[name*="pin" i]',
+      'input[id*="pin" i]',
+      'input[name*="otp" i]',
+      'input[type="tel"]',
+      'input[autocomplete="one-time-code"]',
+      'input[placeholder*="code" i]',
+      'input[aria-label*="code" i]',
+    ];
+
+    let singleFieldLocator: Locator | null = null;
+    if (!hasCode1 && segCount < 4) {
+      for (const sel of singleCodeSelectors) {
+        const el = page.locator(sel).first();
+        if (await el.isVisible({ timeout: 1000 }).catch(() => false)) {
+          singleFieldLocator = el;
+          break;
+        }
+      }
+    }
+
+    const hasAnyOtpInput = hasCode1 || segCount >= 4 || !!singleFieldLocator;
+    if (!hasAnyOtpInput) {
+      return false;
+    }
+
+    log(`2FA/OTP code entry detected for [${platform}] — polling Gmail for security code...`);
+    const otpResult = await gmailOtp.fetchOtpForPlatform(platform, userId, {
+      maxWaitSeconds: 50,
+      since: new Date(Date.now() - 3 * 60 * 1000),
+    });
+
+    if (!otpResult?.code) {
+      warn(`Could not retrieve OTP code from Gmail for [${platform}].`);
+      return false;
+    }
+
+    const code = otpResult.code;
+    log(`Retrieved OTP code [${code}] — entering into ${platform} verification form...`);
+
+    if (hasCode1) {
+      // Fill #code-1 through #code-8
+      const digits = code.split('');
+      for (let i = 0; i < Math.min(digits.length, 8); i++) {
+        const digitInput = page.locator(`#code-${i + 1}`).first();
+        if (await digitInput.isVisible().catch(() => false)) {
+          await digitInput.fill(digits[i]);
+          await page.waitForTimeout(80);
+        }
+      }
+    } else if (segCount >= 4) {
+      const digits = code.split('');
+      for (let i = 0; i < Math.min(digits.length, segCount); i++) {
+        const digitInput = segmentedInputs.nth(i);
+        if (await digitInput.isVisible().catch(() => false)) {
+          await digitInput.fill(digits[i]);
+          await page.waitForTimeout(80);
+        }
+      }
+    } else if (singleFieldLocator) {
+      await humanFill(singleFieldLocator, code);
+      await page.waitForTimeout(200);
+    }
+
+    // Submit the verification code
+    const submitBtn = page
+      .locator(
+        '#submit, button[type="submit"], button:has-text("Poursuivre"), button:has-text("Valider"), button:has-text("Confirmer"), button:has-text("Vérifier"), button:has-text("Verify"), button:has-text("Submit"), button:has-text("Continuer"), button:has-text("Continue")',
+      )
+      .first();
+
+    if (await submitBtn.isVisible().catch(() => false)) {
+      await humanClick(page, submitBtn).catch(() => submitBtn.click({ force: true }).catch(() => {}));
+    } else {
+      await page.keyboard.press('Enter');
+    }
+
+    log(`Submitted 2FA code for [${platform}]. Waiting for validation...`);
+    await page.waitForTimeout(5000);
+
+    // Handle post-OTP consent screen (e.g. France Travail: "Faire confiance à ce navigateur" for 3 months)
+    const trustBtn = page
+      .locator(
+        'button:has-text("Faire confiance à ce navigateur"), a:has-text("Faire confiance à ce navigateur"), button:has-text("confiance")',
+      )
+      .first();
+    if (await trustBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
+      log(`Found "Faire confiance à ce navigateur" button for [${platform}] — clicking to remember session for 3 months...`);
+      await humanClick(page, trustBtn).catch(() => trustBtn.click({ force: true }).catch(() => {}));
+      await page.waitForTimeout(4000);
+    }
+
+    return true;
+  } catch (err: any) {
+    warn(`Error in handleUniversalEmailOtp for ${platform}: ${err.message}`);
+    return false;
+  }
+}
+
+/**
+ * Detects and automatically solves horizontal slide-to-verify challenges
+ * (Arkose Labs, FunCaptcha, SmartRecruiters security challenge, etc.).
+ * Drags the handle from left to right across the track.
+ */
+export async function trySolveSlideChallenge(page: Page): Promise<boolean> {
+  try {
+    const slideNotice = page
+      .locator('text="Slide right to secure", text="Glissez vers la droite", [aria-label*="slide" i]')
+      .first();
+    const isVisible = await slideNotice.isVisible({ timeout: 2000 }).catch(() => false);
+    if (!isVisible) return false;
+
+    // Find the slider button/handle
+    const handleSelectors = [
+      '[role="slider"]',
+      '.btn_slide',
+      '.slider-btn',
+      '[class*="slider" i] [class*="handle" i]',
+      '[class*="slider" i] [class*="thumb" i]',
+      '[class*="slider" i] [class*="button" i]',
+      '[class*="secsdk" i] [class*="handle" i]',
+      'div[class*="arrow" i]',
+      'button[class*="slide" i]',
+      'div[class*="slide" i]',
+    ];
+
+    let handle: Locator | null = null;
+    for (const sel of handleSelectors) {
+      const el = page.locator(sel).first();
+      if (await el.isVisible().catch(() => false)) {
+        handle = el;
+        break;
+      }
+    }
+
+    if (!handle) {
+      const nearbyButton = slideNotice
+        .locator(
+          'xpath=ancestor::*[contains(@class, "slide") or contains(@class, "sec") or contains(@class, "box") or contains(@class, "modal") or contains(@class, "card")][1]//button | ancestor::*[1]//div[contains(@class, "btn")]',
+        )
+        .first();
+      if (await nearbyButton.isVisible().catch(() => false)) {
+        handle = nearbyButton;
+      }
+    }
+
+    if (!handle) return false;
+
+    const handleBox = await handle.boundingBox().catch(() => null);
+    if (!handleBox) return false;
+
+    // Find track width from parent container or default ~260px
+    const parent = handle.locator('xpath=..').first();
+    const parentBox = await parent.boundingBox().catch(() => null);
+    const dragDistance =
+      parentBox && parentBox.width > handleBox.width + 40 ? parentBox.width - handleBox.width - 5 : 260;
+
+    const startX = handleBox.x + handleBox.width / 2;
+    const startY = handleBox.y + handleBox.height / 2;
+
+    // Simulate natural human drag with easing and jitter
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    const steps = 25;
+    for (let i = 1; i <= steps; i++) {
+      const progress = i / steps;
+      const easeProgress = Math.sin((progress * Math.PI) / 2);
+      const currentX = startX + dragDistance * easeProgress;
+      const jitterY = startY + (Math.random() * 4 - 2);
+      await page.mouse.move(currentX, jitterY, { steps: 2 });
+      await page.waitForTimeout(15 + Math.floor(Math.random() * 20));
+    }
+    await page.mouse.up();
+    await page.waitForTimeout(2500);
+
+    const stillChallenged = await slideNotice.isVisible().catch(() => false);
+    return !stillChallenged;
+  } catch {
+    return false;
+  }
+}
+

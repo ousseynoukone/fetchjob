@@ -1,9 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, fillIdentityFields, uploadCv } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, fillIdentityFields, uploadCv, handleUniversalEmailOtp } from './ats-common';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
+import { REMOTE_LOGIN_URLS } from '../../platform-credentials/remote-login.service';
+import { GmailOtpService } from '../../common/gmail-otp.service';
 
 // France Travail aggregates postings from many partner sites — a large
 // share of `sourceUrl`s point at the employer's own external site
@@ -16,7 +18,10 @@ export class FranceTravailApplier implements JobApplier {
   readonly credentialPlatform = 'france_travail';
   private readonly logger = new Logger(FranceTravailApplier.name);
 
-  constructor(private ai: AiService) {}
+  constructor(
+    private ai: AiService,
+    private gmailOtp: GmailOtpService,
+  ) {}
 
   async apply(page: Page, ctx: ApplyContext): Promise<ApplyResult> {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -27,7 +32,7 @@ export class FranceTravailApplier implements JobApplier {
     // tab instead of the original job-listing tab it came from.
     let activePage = page;
 
-    const loginResult = await this.ensureLoggedIn(page);
+    const loginResult = await this.ensureLoggedIn(page, ctx);
     if (loginResult) return loginResult;
 
     const applyButton = page.getByRole('button', { name: /^postuler/i }).or(page.getByRole('link', { name: /^postuler/i })).first();
@@ -346,7 +351,9 @@ export class FranceTravailApplier implements JobApplier {
       // eventually gave up on it.
       submitText: /^envoyer$|envoyer( ma)? candidature|valider ma candidature/i,
       nextText: /suivant|continuer/i,
-      successText: /candidature envoyée|votre candidature a bien été (envoyée|transmise)/i,
+      successText:
+        /candidature (a (bien )?été (envoyée|transmise|enregistrée|prise en compte)|envoyée|transmise)|confirmation de candidature|candidature enregistrée/i,
+      successUrl: /candidature\/confirmation|postulerenligne\/confirmation|confirmation|merci/i,
       blockedNote: 'Le formulaire de candidature France Travail contient un champ non renseigné — à finaliser manuellement.',
       unresolvedNote: 'Soumission France Travail envoyée mais confirmation non détectée — à vérifier manuellement.',
     });
@@ -355,14 +362,66 @@ export class FranceTravailApplier implements JobApplier {
     return activePage === page ? loopResult : { ...loopResult, finalPage: activePage };
   }
 
-  private async ensureLoggedIn(page: Page): Promise<ApplyResult | null> {
+  private async ensureLoggedIn(page: Page, ctx: ApplyContext): Promise<ApplyResult | null> {
     const onLoginWall = await SESSION_CHECKS.france_travail.isLoginWallVisible(page);
     if (!onLoginWall) return null; // already have a valid, reused session
+
+    // Attempt automatic background re-login if credentials are stored
+    if (
+      ctx.credential?.email &&
+      ctx.credential?.password &&
+      ctx.credential.email !== '(session importée)' &&
+      ctx.credential.email !== '(connecté via navigateur intégré)'
+    ) {
+      await ctx.appendLog?.(`Session expirée — reconnexion automatique France Travail avec ${ctx.credential.email}...`);
+      try {
+        await page.goto(REMOTE_LOGIN_URLS.france_travail, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        const idField = page.locator('#identifiant, input[name="identifiant"]').first();
+        await idField.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+        await dismissCookieBanner(page).catch(() => {});
+
+        if (await idField.isVisible().catch(() => false)) {
+          await idField.fill(ctx.credential.email);
+          const passField = page.locator('#password, input[name="password"], input[type="password"]').first();
+          if (await passField.isVisible().catch(() => false)) {
+            await passField.fill(ctx.credential.password);
+          }
+          const loginBtn = page.locator('#submit, #boutonConnexion, #boutonSeConnecter, button:has-text("Se connecter"), button[type="submit"]').first();
+          if (await loginBtn.isVisible().catch(() => false)) {
+            await loginBtn.click({ force: true }).catch(() => loginBtn.click());
+          } else {
+            await idField.press('Enter');
+          }
+          await page.waitForTimeout(5000);
+        }
+
+        // Automatic email 2FA / OTP validation via Gmail
+        await ctx.appendLog?.('Vérification 2FA / OTP — recherche de canal e-mail et relevé Gmail...');
+        await handleUniversalEmailOtp(page, 'france_travail', ctx.userId, this.gmailOtp, {
+          log: (m) => ctx.appendLog?.(m),
+          warn: (m) => ctx.appendLog?.(`⚠️ ${m}`),
+        });
+
+        const stillOnWall = await SESSION_CHECKS.france_travail.isLoginWallVisible(page);
+        if (!stillOnWall) {
+          await ctx.appendLog?.('Reconnexion automatique France Travail réussie !');
+          const state = await page.context().storageState().catch(() => null);
+          if (state) {
+            await ctx.onSessionUpdated?.(JSON.stringify(state));
+          }
+          await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          await dismissCookieBanner(page).catch(() => {});
+          return null;
+        }
+      } catch (err: any) {
+        this.logger.warn(`Auto-relogin France Travail error: ${err.message}`);
+      }
+    }
 
     return {
       success: false,
       sessionExpired: true,
-      note: "Session France Travail absente ou expirée — exécutez `npm run establish-session -- france_travail votre@email.com` sur votre machine pour la rétablir.",
+      note: "Session France Travail absente ou expirée — ouvrez Comptes dans Paramètres pour vous connecter via le navigateur intégré.",
     };
   }
 }

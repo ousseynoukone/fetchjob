@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { dismissCookieBanner, fillIdentityFields, uploadCv } from './ats-common';
+import { dismissCookieBanner, fillIdentityFields, uploadCv, humanClick, trySolveSlideChallenge } from './ats-common';
 import { fillKnownFields } from './form-fields';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
@@ -18,8 +18,27 @@ export class SmartRecruitersApplier implements JobApplier {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await dismissCookieBanner(page);
 
-    // Detect challenge/captcha early
-    const isChallenge = await page.locator('text="Verification Required", text="Slide right to secure", [class*="captcha" i]').count().catch(() => 0);
+    // Detect challenge/captcha early — solve slider if present
+    const isSlider = await page
+      .locator('text="Slide right to secure", text="Glissez vers la droite"')
+      .first()
+      .isVisible({ timeout: 2000 })
+      .catch(() => false);
+    if (isSlider) {
+      await ctx.appendLog?.('Défi anti-robot (slider) détecté sur SmartRecruiters — tentative de résolution...');
+      const solved = await trySolveSlideChallenge(page);
+      if (solved) {
+        await ctx.appendLog?.('Défi anti-robot (slider) résolu avec succès !');
+        await page.waitForTimeout(2000);
+      } else {
+        return {
+          success: false,
+          note: 'Vérification anti-robot (slider) requise sur SmartRecruiters -- à finaliser manuellement.',
+        };
+      }
+    }
+
+    const isChallenge = await page.locator('text="Verification Required", [class*="captcha" i]').count().catch(() => 0);
     if (isChallenge > 0) {
       return {
         success: false,
@@ -34,7 +53,7 @@ export class SmartRecruitersApplier implements JobApplier {
       .first();
 
     if (await openFormButton.isVisible().catch(() => false)) {
-      await openFormButton.click();
+      await humanClick(page, openFormButton).catch(() => openFormButton.click().catch(() => {}));
       await page.waitForTimeout(2000);
     }
 

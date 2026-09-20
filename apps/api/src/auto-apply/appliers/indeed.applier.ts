@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, fillIdentityFields, uploadCv } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, fillIdentityFields, uploadCv, humanClick, humanFill } from './ats-common';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
 
@@ -57,7 +57,9 @@ export class IndeedApplier implements JobApplier {
     }
 
     const popupPromise = page.waitForEvent('popup', { timeout: 5000 }).catch(() => null);
-    await applyButton.click();
+    // Humanized click — Cloudflare (Indeed's WAF) profiles mouse trajectories;
+    // a bare synthetic .click() is a detectable bot signal on this exact button.
+    await humanClick(page, applyButton).catch(() => applyButton.click().catch(() => {}));
     const popup = await popupPromise;
     const target = popup || page;
     await target.waitForTimeout(1500);
@@ -85,7 +87,7 @@ export class IndeedApplier implements JobApplier {
         )
         .first();
       if (await coverLetterField.isVisible().catch(() => false)) {
-        await coverLetterField.fill(ctx.coverLetter).catch(() => {});
+        await humanFill(coverLetterField, ctx.coverLetter).catch(() => {});
       }
     }
 
@@ -126,7 +128,7 @@ export class IndeedApplier implements JobApplier {
     return {
       success: false,
       sessionExpired: true,
-      note: "Session Indeed absente ou expirée — exécutez `npm run establish-session -- indeed votre@email.com` sur votre machine pour la rétablir.",
+      note: "Session Indeed absente ou expirée — ouvrez la page Comptes dans FindUrJob et cliquez sur \"Ouvrir la session\" pour Indeed afin de vous reconnecter.",
     };
   }
 }
