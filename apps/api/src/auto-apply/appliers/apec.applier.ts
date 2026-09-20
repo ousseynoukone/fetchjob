@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { dismissCookieBanner, SESSION_CHECKS, humanClick, humanFill, uploadCv, handleUniversalEmailOtp } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS, humanClick, humanFill, uploadCv, handleUniversalEmailOtp, hasSecurityCheck, trySolveSlideChallenge } from './ats-common';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
 import { GmailOtpService } from '../../common/gmail-otp.service';
@@ -45,6 +45,17 @@ export class ApecApplier implements JobApplier {
     await dismissCookieBanner(page);
     await page.waitForTimeout(2000);
 
+    if (await hasSecurityCheck(page)) {
+      const solved = await trySolveSlideChallenge(page);
+      if (!solved) {
+        return {
+          success: false,
+          note: 'CAPTCHA ou test anti-robot détecté au chargement — veuillez valider la candidature manuellement ou rafraîchir la session.',
+        };
+      }
+      await page.waitForTimeout(2000);
+    }
+
     // Confirmed live: with no valid session, the SAME #emailid/#password
     // login fields the recording used (there, inline on this apply page,
     // via APEC's own apec-candidature-login component) appear instead of
@@ -72,6 +83,17 @@ export class ApecApplier implements JobApplier {
             await passField.press('Enter');
           }
           await page.waitForTimeout(4000);
+
+          if (await hasSecurityCheck(page)) {
+            const solved = await trySolveSlideChallenge(page);
+            if (!solved) {
+              return {
+                success: false,
+                note: 'CAPTCHA ou test anti-robot détecté après connexion — veuillez valider la candidature manuellement ou rafraîchir la session.',
+              };
+            }
+            await page.waitForTimeout(2000);
+          }
 
           // Check if APEC triggered email 2FA / OTP verification
           await handleUniversalEmailOtp(page, 'apec', ctx.userId, this.gmailOtp, {

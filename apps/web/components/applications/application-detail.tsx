@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { useApplicationsStore } from '@/lib/applications-store';
 import apiClient from '@/lib/api-client';
 import AppShell from '@/components/layout/app-shell';
+import RemoteLoginModal from '@/components/settings/remote-login-modal';
 import {
   ArrowLeft,
   ExternalLink,
@@ -63,6 +64,7 @@ export default function ApplicationDetail({ id }: { id: string }) {
   const [tab, setTab] = useState('Offre');
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [showRemoteLogin, setShowRemoteLogin] = useState(false);
 
   useEffect(() => {
     fetchById(id);
@@ -191,6 +193,12 @@ export default function ApplicationDetail({ id }: { id: string }) {
                 </span>
               </div>
               <div className="flex items-center gap-2 shrink-0 self-start sm:self-auto">
+                <button
+                  className="btn btn-primary btn-xs gap-1.5"
+                  onClick={() => setShowRemoteLogin(true)}
+                >
+                  <ExternalLink className="w-3.5 h-3.5" /> Finaliser manuellement
+                </button>
                 <button
                   className="btn btn-warning btn-xs gap-1.5"
                   disabled={busy === 'retry'}
@@ -447,6 +455,18 @@ export default function ApplicationDetail({ id }: { id: string }) {
             <Check className="w-4 h-4 shrink-0" /> {notice}
           </div>
         </div>
+      )}
+
+      {showRemoteLogin && current?.jobOffer?.source && (
+        <RemoteLoginModal
+          platform={current.jobOffer.source as any}
+          targetUrl={current.sourceUrl}
+          onClose={() => setShowRemoteLogin(false)}
+          onLoggedIn={() => {
+            setShowRemoteLogin(false);
+            handleAction('markApplied', () => markApplied(id), 'Candidature marquée comme envoyée');
+          }}
+        />
       )}
     </AppShell>
   );

@@ -3,7 +3,7 @@ import type { AiService } from '../../ai/ai.service';
 import { ApplyContext, ApplyResult } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
 import { buildFormSnapshot, applyFormPlan, formatFieldsForPrompt, formatButtonsForPrompt, buildCandidateBrief } from './ai-form-snapshot';
-import { humanClick } from './ats-common';
+import { humanClick, hasSecurityCheck, trySolveSlideChallenge } from './ats-common';
 
 export interface FormLoopOptions {
   maxSteps?: number;
@@ -71,6 +71,14 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
   let lastSnapshotSignature = '';
 
   for (let step = 0; step < maxSteps; step++) {
+    if (await hasSecurityCheck(page)) {
+      const solved = await trySolveSlideChallenge(page);
+      if (!solved) {
+        return { success: false, note: 'CAPTCHA ou test anti-robot détecté — veuillez valider la candidature manuellement ou rafraîchir la session.' };
+      }
+      await page.waitForTimeout(2000); // give it time to proceed after slide
+    }
+
     await fillKnownFields(page, ctx.knownAnswers);
 
     // Confirmed live on a Viveris career-site apply attempt: its "Postuler"
@@ -91,8 +99,15 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
     const submitButton = page.getByRole('button', { name: opts.submitText }).first();
     if (!preSubmitSnapshot.fields.length && (await submitButton.isVisible().catch(() => false))) {
       await humanClick(page, submitButton).catch(() => {});
-      await page.waitForTimeout(2500);
-      const confirmed = await detectFormSuccess(page, opts.successText, opts.successUrl);
+      
+      // Poll for confirmation up to 8 seconds to accommodate slow SPAs (like France Travail)
+      let confirmed = false;
+      for (let i = 0; i < 8; i++) {
+        await page.waitForTimeout(1000);
+        confirmed = await detectFormSuccess(page, opts.successText, opts.successUrl);
+        if (confirmed) break;
+      }
+      
       return confirmed ? { success: true } : await reportBlockedState(page, ctx, opts.unresolvedNote);
     }
 

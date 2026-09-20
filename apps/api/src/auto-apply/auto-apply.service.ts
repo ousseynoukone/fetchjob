@@ -40,7 +40,8 @@ const DEFAULT_MAX_AI_CALLS_PER_ATTEMPT = 3;
 // Only strips characters that would actually break a filename on disk or in
 // an upload — keeps the name itself fully intact and readable.
 function sanitizeCvFileName(fullName: string): string {
-  const cleaned = (fullName || '').trim().replace(/[\\/:*?"<>|]+/g, '').replace(/\s+/g, ' ').trim();
+  const firstOnly = (fullName || '').split(' ')[0];
+  const cleaned = (firstOnly || '').trim().replace(/[\\/:*?"<>|]+/g, '').replace(/\s+/g, ' ').trim();
   return cleaned || 'CV';
 }
 
@@ -217,6 +218,8 @@ export class AutoApplyService {
     // delay — a pause request otherwise wouldn't take effect until the whole
     // list (each one 45-150s apart by default) finished on its own.
     isCancelled?: () => boolean;
+    sourceDailyLimits?: Record<string, number>;
+    maxApplicationsPerDay?: number;
   }): Promise<AutoApplyRunResult> {
     const { userId, applicationIds, atsEnabled, appendLog, isCancelled } = params;
     const minDelaySeconds = Math.min(params.minDelaySeconds, params.maxDelaySeconds);
@@ -241,6 +244,35 @@ export class AutoApplyService {
         include: { jobOffer: true },
       });
       if (!application) continue;
+
+      const source = application.jobOffer?.source || 'unknown';
+      const configuredLimit = params.sourceDailyLimits?.[source];
+      const dailyLimit =
+        configuredLimit !== undefined && configuredLimit > 0
+          ? configuredLimit
+          : (params.maxApplicationsPerDay || 0);
+
+      if (dailyLimit > 0) {
+        const startOfDay = new Date();
+        startOfDay.setHours(0, 0, 0, 0);
+        // Only confirmed applications (status: 'applied') count against the limit.
+        // If an offer is 'needs_review' (à vérifier), it does NOT count.
+        const confirmedToday = await this.prisma.application.count({
+          where: {
+            campaignId: application.campaignId,
+            status: 'applied',
+            appliedAt: { gte: startOfDay },
+            jobOffer: { source },
+          },
+        });
+
+        if (confirmedToday >= dailyLimit) {
+          await appendLog(
+            `Quota quotidien de candidatures confirmées atteint pour ${source} (${confirmedToday}/${dailyLimit} confirmées sans doute). Offre ignorée pour aujourd'hui.`,
+          );
+          continue;
+        }
+      }
 
       try {
         await appendLog(`Auto-apply en cours : ${application.jobTitle} chez ${application.company}...`);

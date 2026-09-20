@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { dismissCookieBanner, hasSecurityCheck, fillIdentityFields, uploadCv, humanClick, humanFill } from './ats-common';
+import { dismissCookieBanner, hasSecurityCheck, fillIdentityFields, uploadCv, humanClick, humanFill, trySolveSlideChallenge } from './ats-common';
 import { fillKnownFields } from './form-fields';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
@@ -56,10 +56,14 @@ export class GenericApplier implements JobApplier {
     await dismissCookieBanner(page);
 
     if (await hasSecurityCheck(page)) {
-      return {
-        success: false,
-        note: 'Vérification de sécurité affichée par la plateforme — à finaliser manuellement.',
-      };
+      const solved = await trySolveSlideChallenge(page);
+      if (!solved) {
+        return {
+          success: false,
+          note: 'Vérification de sécurité affichée par la plateforme — à finaliser manuellement.',
+        };
+      }
+      await page.waitForTimeout(2000);
     }
 
     const revealButton = page
@@ -134,10 +138,14 @@ export class GenericApplier implements JobApplier {
     });
 
     if (!result.success && (await hasSecurityCheck(page))) {
-      return {
-        success: false,
-        note: 'Vérification de sécurité affichée après soumission — à finaliser manuellement.',
-      };
+      const solved = await trySolveSlideChallenge(page);
+      if (!solved) {
+        return {
+          success: false,
+          note: 'Vérification de sécurité affichée après soumission — à finaliser manuellement.',
+        };
+      }
+      await page.waitForTimeout(2000);
     }
 
     return result;

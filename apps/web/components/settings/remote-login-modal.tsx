@@ -43,6 +43,7 @@ export default function RemoteLoginModal({
   onLoggedIn,
 }: {
   platform: SupportedPlatform;
+  targetUrl?: string;
   onClose: () => void;
   onLoggedIn: () => void;
 }) {
@@ -81,7 +82,8 @@ export default function RemoteLoginModal({
 
     (async () => {
       try {
-        const res = await apiClient.post(`/api/parametres/identifiants/${platform}/remote-login/start`);
+        const payload = targetUrl ? { targetUrl } : {};
+        const res = await apiClient.post(`/api/parametres/identifiants/${platform}/remote-login/start`, payload);
         if (cancelled) return;
         const sessionId = res.data.sessionId as string;
         sessionIdRef.current = sessionId;
@@ -98,13 +100,22 @@ export default function RemoteLoginModal({
           } catch {
             return;
           }
+
           if (payload.dataUrl) setFrame(payload.dataUrl);
-          setStatus(payload.status);
-          if (payload.message) setMessage(payload.message);
-          if (payload.status === 'done') {
-            intentionalCloseRef.current = true;
-            onLoggedIn();
-            source.close();
+
+          if (payload.status === 'error' || payload.status === 'done') {
+            setStatus(payload.status);
+            if (payload.message) setMessage(payload.message);
+            if (payload.status === 'done') {
+              // Not closing the source! Let it continue to receive active frames
+              intentionalCloseRef.current = true;
+              onLoggedIn();
+            } else if (payload.status === 'error') {
+              source.close();
+            }
+          } else {
+            // Keep the 'done' status visible if it was already achieved
+            setStatus((prev) => (prev === 'done' ? 'done' : 'active'));
           }
         };
         source.onerror = () => {
@@ -148,13 +159,13 @@ export default function RemoteLoginModal({
 
   const handleMouseDown = (e: React.MouseEvent<HTMLImageElement>) => {
     const { x, y } = toNativeCoords(e);
-    // Send natural mouse movement right before press
     sendInput({ kind: 'mouseMoved', x, y });
     sendInput({ kind: 'mousePressed', x, y });
-    // Realistic human press duration before release
-    setTimeout(() => {
-      sendInput({ kind: 'mouseReleased', x, y });
-    }, 70 + Math.random() * 40);
+  };
+
+  const handleMouseUp = (e: React.MouseEvent<HTMLImageElement>) => {
+    const { x, y } = toNativeCoords(e);
+    sendInput({ kind: 'mouseReleased', x, y });
   };
 
   const handleWheel = (e: React.WheelEvent<HTMLImageElement>) => {
@@ -271,6 +282,7 @@ export default function RemoteLoginModal({
               className="w-full h-full cursor-crosshair select-none object-contain"
               onMouseMove={handleMouseMove}
               onMouseDown={handleMouseDown}
+              onMouseUp={handleMouseUp}
               onWheel={handleWheel}
               draggable={false}
             />
@@ -282,14 +294,9 @@ export default function RemoteLoginModal({
           )}
 
           {status === 'done' && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/75 backdrop-blur-xs">
-              <div className="flex items-center gap-3 text-success bg-base-100 rounded-2xl px-6 py-4 shadow-2xl border border-success/30">
-                <CheckCircle2 className="w-6 h-6" />
-                <div>
-                  <h4 className="text-sm font-semibold text-base-content">Session enregistrée !</h4>
-                  <p className="text-xs text-base-content/70">{message || 'Connexion réussie.'}</p>
-                </div>
-              </div>
+            <div className="absolute top-4 right-4 z-50 flex items-center gap-2 text-success bg-base-100 rounded-lg px-4 py-2 shadow-lg border border-success/30 pointer-events-none">
+              <CheckCircle2 className="w-5 h-5" />
+              <span className="text-xs font-semibold">Session enregistrée ! Vous pouvez continuer à utiliser le navigateur.</span>
             </div>
           )}
 

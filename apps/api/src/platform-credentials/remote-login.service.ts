@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
-import { chromium } from 'playwright';
-import type { BrowserContext, Page, CDPSession } from 'playwright';
+import { chromium } from 'patchright';
+import type { BrowserContext, Page, CDPSession } from 'patchright';
 import { Subject, Observable } from 'rxjs';
 import { randomUUID } from 'crypto';
 import * as path from 'path';
@@ -21,7 +21,8 @@ import { SupportedPlatform } from './dto/upsert-credential.dto';
 // toward "looks like the same returning browser" rather than "looks new
 // every time". Not backed by a persistent volume on Render's free tier
 // (no such thing there), so this only actually helps local testing today.
-const PROFILE_BASE_DIR = process.env.REMOTE_LOGIN_PROFILE_DIR || '/root/.findurjob/remote-login-profiles';
+import * as os from 'os';
+const PROFILE_BASE_DIR = process.env.REMOTE_LOGIN_PROFILE_DIR || path.join(os.homedir(), '.findurjob', 'remote-login-profiles');
 
 // Google's own multi-step login (identifier -> password -> 2FA, all on
 // accounts.google.com) makes both of this service's other automatic
@@ -69,7 +70,8 @@ interface ActiveSession {
   // Set once a saved credential has actually been written into the form, so
   // the retry-on-every-tick below stops -- otherwise it would refill a
   // field the person deliberately cleared to retype.
-  prefilled?: boolean;
+  prefilledEmail?: boolean;
+  prefilledPassword?: boolean;
   // Best-effort capture of whatever the user types into the login form
   // during this session -- not read back this session, only saved once
   // login succeeds so the NEXT login to this same platform can be
@@ -144,6 +146,7 @@ const SPECIAL_KEYS: Record<string, { key: string; code: string; keyCode: number 
 export class RemoteLoginService implements OnModuleDestroy {
   private readonly logger = new Logger(RemoteLoginService.name);
   private readonly sessions = new Map<string, ActiveSession>();
+  private readonly startingPromises = new Map<string, Promise<string>>();
 
   constructor(
     private crypto: CryptoService,
@@ -151,24 +154,32 @@ export class RemoteLoginService implements OnModuleDestroy {
     private prisma: PrismaService,
   ) {}
 
-  async start(platform: SupportedPlatform): Promise<string> {
+  async start(platform: SupportedPlatform, customTargetUrl?: string): Promise<string> {
     const check = SESSION_CHECKS[platform];
     if (!check) throw new Error(`Unsupported platform: ${platform}`);
 
-    // Confirmed live: reopening the login modal (e.g. after it appeared
-    // stuck) without this launched a SECOND Chrome process against the
-    // exact same persistent profile directory -- Chrome profiles were
-    // never designed for concurrent multi-process access, and three
-    // processes piled up this way on the same LinkedIn profile, corrupting
-    // it badly enough that every session (old and new alike) just spun
-    // forever with no frames and no error anywhere to explain why. Closing
-    // any session already tracked for this platform first guarantees at
-    // most one browser per platform profile at any time.
-    for (const [existingId, existingSession] of this.sessions) {
-      if (existingSession.platform === platform) {
-        await this.cleanup(existingId, { dataUrl: null, status: 'error', message: 'Nouvelle session ouverte pour cette plateforme.' });
-      }
+    const existingPromise = this.startingPromises.get(platform);
+    if (existingPromise) {
+      this.logger.log(`Une session est déjà en cours de démarrage pour ${platform}, attente...`);
+      return existingPromise;
     }
+
+    const promise = this._startInner(platform, check, customTargetUrl);
+    this.startingPromises.set(platform, promise);
+
+    try {
+      return await promise;
+    } finally {
+      this.startingPromises.delete(platform);
+    }
+  }
+
+  private async _startInner(platform: SupportedPlatform, check: any, customTargetUrl?: string): Promise<string> {
+      for (const [existingId, existingSession] of this.sessions) {
+        if (existingSession.platform === platform) {
+          await this.cleanup(existingId, { dataUrl: null, status: 'error', message: 'Nouvelle session ouverte pour cette plateforme.' });
+        }
+      }
 
     const sessionId = randomUUID();
     const frames = new Subject<RemoteLoginFrame>();
@@ -235,24 +246,27 @@ export class RemoteLoginService implements OnModuleDestroy {
     // never gives off. See PROFILE_BASE_DIR above for the persistence
     // caveat (local only, not on Render's free tier).
     const context = await chromium.launchPersistentContext(profileDir, {
-      headless: true,
+      headless: process.env.AUTO_APPLY_HEADLESS !== 'false',
       channel: 'chromium',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-blink-features=AutomationControlled',
-        '--disable-infobars',
-        '--lang=fr-FR',
-        // New headless mode is harder for bot-detection to fingerprint than the
-        // old --headless (confirmed live: LinkedIn and France Travail both check
-        // for navigator.webdriver and CDP-specific quirks that the old headless
-        // mode exposes but --headless=new suppresses).
-        '--headless=new',
         '--disable-features=IsolateOrigins,site-per-process',
         '--disable-dev-shm-usage',
-        // Disable the "Chrome is being controlled by automated test software"
-        // infobar that some platforms detect via DOM accessibility APIs.
-        '--enable-automation=false',
+        '--disable-gpu',
+        '--disable-software-rasterizer',
+        '--disable-extensions',
+        '--disable-background-networking',
+        '--mute-audio',
+        '--no-first-run',
+        '--disable-infobars',
+        '--renderer-process-limit=1',
+        '--disable-accelerated-2d-canvas',
+        '--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider',
+        `--js-flags=--max-old-space-size=${process.env.CHROMIUM_RENDERER_HEAP_MB || '160'}`,
+        '--lang=fr-FR',
+        '--enable-automation=false', // Kept from original remote-login
       ],
       userAgent,
       // Fixed at 1280x800, NOT fp.viewport (1920x1080) -- the frontend's
@@ -272,9 +286,47 @@ export class RemoteLoginService implements OnModuleDestroy {
         'Upgrade-Insecure-Requests': '1',
       },
     });
-    if (platform !== 'hellowork') {
+    if (platform !== 'hellowork' && platform !== 'apec') {
       await context.addInitScript(buildFingerprintScript(fp));
     }
+    
+    // Unification des sessions : Si l'utilisateur a déjà une session active en base
+    // de données (soit via un export JSON, soit via l'auto-apply, soit via une
+    // connexion précédente), on l'injecte directement dans ce navigateur. Ainsi,
+    // il n'aura pas à se reconnecter s'il est déjà connecté !
+    try {
+      const userId = await this.localUser.getDefaultUserId();
+      const existing = await this.prisma.platformCredential.findUnique({
+        where: { userId_platform: { userId, platform } },
+      });
+      if (existing && existing.sessionStateEncrypted) {
+        let parsed = JSON.parse(this.crypto.decrypt(existing.sessionStateEncrypted));
+        if (typeof parsed === 'string') parsed = JSON.parse(parsed);
+        if (Array.isArray(parsed)) parsed = { cookies: parsed };
+        if (parsed?.cookies && Array.isArray(parsed.cookies)) {
+          // Normalize (same as browser-session.service.ts)
+          let normalized = parsed.cookies
+            .filter((c: any) => c && typeof c.name === 'string' && typeof c.domain === 'string')
+            .map((c: any) => {
+              const domain = c.hostOnly === false && !c.domain.startsWith('.') ? `.${c.domain}` : c.domain;
+              const sameSiteRaw = String(c.sameSite ?? '').toLowerCase();
+              const sameSite = sameSiteRaw === 'strict' ? 'Strict' : sameSiteRaw === 'no_restriction' || sameSiteRaw === 'none' ? 'None' : 'Lax';
+              const expires = typeof c.expires === 'number' ? c.expires : typeof c.expirationDate === 'number' ? c.expirationDate : -1;
+              return { name: c.name, value: c.value ?? '', domain, path: c.path || '/', expires, httpOnly: !!c.httpOnly, secure: !!c.secure, sameSite };
+            });
+            
+          if (platform === 'linkedin') {
+            normalized = normalized.filter((c: any) => c.domain && c.domain.includes('linkedin.com') && !c.domain.includes('fr.linkedin.com'))
+              .map((c: any) => c.domain.includes('linkedin.com') ? { ...c, domain: '.linkedin.com' } : c);
+          }
+          await context.addCookies(normalized);
+          this.logger.log(`Injected ${normalized.length} cookies from DB into remote-login for ${platform}`);
+        }
+      }
+    } catch (e: any) {
+      this.logger.warn(`Failed to inject existing DB session into remote-login: ${e.message}`);
+    }
+
     // A persistent context starts with one page already open (about:blank)
     // rather than none -- reuse it instead of opening a second, unused tab.
     const page = context.pages()[0] || (await context.newPage());
@@ -326,8 +378,8 @@ export class RemoteLoginService implements OnModuleDestroy {
     // static -- CDP only emits screencastFrame events when something
     // actually repaints, so a static page produces literally nothing more,
     // and the live view spun forever with no error anywhere to explain why.
-    // Navigate straight to the dedicated login URL (e.g. /signin or /login)
-    const targetUrl = REMOTE_LOGIN_URLS[platform] || check.homeUrl;
+    // Navigate straight to the custom URL if provided, otherwise the dedicated login URL
+    const targetUrl = customTargetUrl || REMOTE_LOGIN_URLS[platform] || check.homeUrl;
     this.navigateAndPrefill(sessionId, session, targetUrl).catch((error: any) => {
       this.logger.warn(`Remote-login navigation failed for ${platform}: ${error.message}`);
     });
@@ -343,8 +395,8 @@ export class RemoteLoginService implements OnModuleDestroy {
     // consent overlay at all -- on HelloWork specifically, that banner sat
     // on top of the whole page intercepting every click/keystroke, leaving
     // the person watching the live view completely unable to interact with
-    // anything underneath it, with no visible error anywhere to explain why.
-    await dismissCookieBanner(page).catch(() => {});
+    // nothing underneath it, with no visible error anywhere to explain why.
+    await dismissCookieBanner(page as any).catch(() => {});
 
     if (MANUAL_CONFIRM_PLATFORMS.has(session.platform)) return;
 
@@ -354,9 +406,8 @@ export class RemoteLoginService implements OnModuleDestroy {
     // any wait here was sitting in). pollLoginState retries it on each tick
     // until it actually lands, which is robust to however many navigations
     // and re-renders the platform does on the way to its login form.
-    session.prefilled = await this.prefillSavedCredential(session).catch((error: any) => {
+    await this.prefillSavedCredential(session).catch((error: any) => {
       this.logger.warn(`Remote-login credential prefill failed: ${error.message}`);
-      return false;
     });
     await this.checkRememberMe(page).catch(() => {});
 
@@ -397,7 +448,7 @@ export class RemoteLoginService implements OnModuleDestroy {
     if (!session || session.closed) return { success: false, message: 'Session introuvable ou déjà terminée.' };
 
     const check = SESSION_CHECKS[session.platform];
-    const onLoginWall = await check.isLoginWallVisible(session.page).catch(() => false);
+    const onLoginWall = await check.isLoginWallVisible(session.page as any).catch(() => false);
     if (onLoginWall) {
       return { success: false, message: "La page de connexion semble toujours active — finalisez la connexion sur la page puis réessayez." };
     }
@@ -421,9 +472,8 @@ export class RemoteLoginService implements OnModuleDestroy {
   // password came from a password manager, bypassing the keystroke relay)
   // silently prefilled nothing at all -- confirmed as the reason France
   // Travail's identifiant had to be retyped by hand every time.
-  // Returns whether anything was actually written into the form, so the
-  // caller knows whether to keep retrying on later ticks.
-  private async prefillSavedCredential(session: ActiveSession): Promise<boolean> {
+  // Returns nothing, mutates session.prefilledEmail and session.prefilledPassword
+  private async prefillSavedCredential(session: ActiveSession): Promise<void> {
     const userId = await this.localUser.getDefaultUserId();
     let row = await this.prisma.platformCredential.findUnique({
       where: { userId_platform: { userId, platform: session.platform } },
@@ -442,7 +492,7 @@ export class RemoteLoginService implements OnModuleDestroy {
         orderBy: { updatedAt: 'desc' },
       });
     }
-    if (!row) return false;
+    if (!row) return;
 
     let savedPassword: string | null = null;
     let email = '';
@@ -464,35 +514,32 @@ export class RemoteLoginService implements OnModuleDestroy {
     }
 
     const hasEmail = !!email && email !== NO_CAPTURED_EMAIL_PLACEHOLDER && email !== '(session importée)';
-    if (!hasEmail && !savedPassword) return false;
+    if (!hasEmail && !savedPassword) return;
 
-    let filledAnything = false;
-
-    if (hasEmail) {
-      const emailField = session.page.locator(LOGIN_EMAIL_SELECTOR).first();
+    if (hasEmail && !session.prefilledEmail) {
+      // Avoid picking hidden honeypot/tracking inputs that happen to match the selector
+      const emailField = session.page.locator(LOGIN_EMAIL_SELECTOR).locator('visible=true').first();
       const isVis = await emailField.isVisible({ timeout: 1500 }).catch(() => false);
       if (isVis) {
         const current = await emailField.inputValue({ timeout: 1000 }).catch(() => null);
         if (current === '') {
           await this.humanFillField(session.page, emailField, email);
-          filledAnything = true;
+          session.prefilledEmail = true;
         }
       }
     }
 
-    if (savedPassword) {
-      const passwordField = session.page.locator(LOGIN_PASSWORD_SELECTOR).first();
+    if (savedPassword && !session.prefilledPassword) {
+      const passwordField = session.page.locator(LOGIN_PASSWORD_SELECTOR).locator('visible=true').first();
       const isVis = await passwordField.isVisible({ timeout: 1500 }).catch(() => false);
       if (isVis) {
         const current = await passwordField.inputValue({ timeout: 1000 }).catch(() => null);
         if (current === '') {
           await this.humanFillField(session.page, passwordField, savedPassword);
-          filledAnything = true;
+          session.prefilledPassword = true;
         }
       }
     }
-
-    return filledAnything;
   }
 
   private async humanFillField(page: Page, fieldLocator: any, value: string): Promise<void> {
@@ -535,15 +582,13 @@ export class RemoteLoginService implements OnModuleDestroy {
     try {
       switch (event.kind) {
         case 'mousePressed':
+          await session.page.mouse.down({ button: 'left' });
+          break;
         case 'mouseReleased':
+          await session.page.mouse.up({ button: 'left' });
+          break;
         case 'mouseMoved':
-          await cdpSession.send('Input.dispatchMouseEvent', {
-            type: event.kind,
-            x: event.x,
-            y: event.y,
-            button: 'left',
-            clickCount: event.kind === 'mousePressed' ? 1 : 0,
-          });
+          await session.page.mouse.move(event.x, event.y);
           break;
         case 'wheel':
           await cdpSession.send('Input.dispatchMouseEvent', {
@@ -637,6 +682,7 @@ export class RemoteLoginService implements OnModuleDestroy {
     // confirmed live to starve the CDP screencast and stall the live view.
     const email = await session.page
       .locator(LOGIN_EMAIL_SELECTOR)
+      .locator('visible=true')
       .first()
       .inputValue({ timeout: 1000 })
       .catch(() => '');
@@ -644,6 +690,7 @@ export class RemoteLoginService implements OnModuleDestroy {
 
     const password = await session.page
       .locator(LOGIN_PASSWORD_SELECTOR)
+      .locator('visible=true')
       .first()
       .inputValue({ timeout: 1000 })
       .catch(() => '');
@@ -661,7 +708,7 @@ export class RemoteLoginService implements OnModuleDestroy {
     session.polling = true;
     try {
       const check = SESSION_CHECKS[session.platform];
-      const onLoginWall = await check.isLoginWallVisible(session.page).catch(() => true);
+      const onLoginWall = await check.isLoginWallVisible(session.page as any).catch(() => true);
 
       if (onLoginWall) {
         session.consecutiveLoggedIn = 0;
@@ -670,9 +717,9 @@ export class RemoteLoginService implements OnModuleDestroy {
         // empty field, so this can't fight the person's own typing) --
         // navigateAndPrefill's single attempt usually runs before the form
         // exists at all on platforms that redirect their way to it.
-        if (!session.prefilled && !MANUAL_CONFIRM_PLATFORMS.has(session.platform)) {
-          session.prefilled = await this.prefillSavedCredential(session).catch(() => false);
-          if (session.prefilled) await this.checkRememberMe(session.page).catch(() => {});
+        if ((!session.prefilledEmail || !session.prefilledPassword) && !MANUAL_CONFIRM_PLATFORMS.has(session.platform)) {
+          await this.prefillSavedCredential(session).catch(() => {});
+          if (session.prefilledEmail || session.prefilledPassword) await this.checkRememberMe(session.page).catch(() => {});
         }
 
         // Still on the login form — whatever's in its fields right now is
@@ -739,7 +786,14 @@ export class RemoteLoginService implements OnModuleDestroy {
         saveCookies(session.platform, await session.context.cookies());
       } catch {}
 
-      await this.cleanup(sessionId, { dataUrl: null, status: 'done', message: 'Connexion réussie — session enregistrée.' });
+      // DO NOT call cleanup here. The user wants to keep the browser open
+      // to test applying manually and see if DataDome blocks them.
+      // Send a status update instead.
+      session.frames.next({ dataUrl: null, status: 'done', message: 'Connexion réussie — session enregistrée.' });
+      
+      // Stop the polling timer so it doesn't keep saving the session every 2 seconds
+      clearInterval(session.pollTimer);
+      
       return true;
     } catch (error: any) {
       this.logger.error(`Failed to persist remote-login session: ${error.message}`);

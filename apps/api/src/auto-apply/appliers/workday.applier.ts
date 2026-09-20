@@ -48,7 +48,8 @@ export class WorkdayApplier implements JobApplier {
     const autofillInput = page.locator('input[type="file"]').first();
     if (await autofillInput.count().catch(() => 0)) {
       await uploadCv(autofillInput, ctx).catch(() => {});
-      await page.waitForTimeout(1500);
+      await page.locator('[data-automation-id="spinner"], [class*="spinner" i]').first().waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
+      await page.waitForTimeout(3000);
     }
 
     // Workday's own resume-parsing autofill usually populates name/email

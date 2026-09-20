@@ -27,7 +27,7 @@ export class IndeedApplier implements JobApplier {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await dismissCookieBanner(page);
 
-    const applyButton = page.getByRole('button', { name: /apply now|postuler maintenant|postuler dès maintenant/i }).first();
+    const applyButton = page.getByRole('button', { name: /apply now|postuler( maintenant| dès maintenant)?|continuer pour postuler/i }).first();
     const hasApplyButton = await applyButton.isVisible().catch(() => false);
     if (!hasApplyButton) {
       // No inline "Indeed Apply" button — some postings only offer a link
@@ -35,7 +35,7 @@ export class IndeedApplier implements JobApplier {
       // giving up, so ATS-by-URL routing (or the generic fallback) gets a
       // real shot at the real form.
       const externalApplyButton = page
-        .getByRole('link', { name: /apply now|apply on company site|postuler sur le site/i })
+        .getByRole('link', { name: /apply( now| on company site)?|postuler( sur le site)?|continuer pour postuler/i })
         .first();
 
       if (!(await externalApplyButton.isVisible().catch(() => false))) {
@@ -74,6 +74,7 @@ export class IndeedApplier implements JobApplier {
     const fileInput = target.locator('input[type="file"]').first();
     if (await fileInput.count().catch(() => 0)) {
       await uploadCv(fileInput, ctx).catch(() => {});
+      await target.waitForTimeout(1500);
     }
 
     if (ctx.coverLetter) {

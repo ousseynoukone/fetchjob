@@ -421,13 +421,19 @@ export class CampaignService implements OnModuleInit {
   // How many candidatures have already been prepared today for each source,
   // across every run — a manual "Lancer" on top of the scheduled run must
   // not let a source blow past its own daily limit just because the count
-  // resets per call instead of per day.
-  private async preparedTodayBySource(campaignId: string): Promise<Map<string, number>> {
+  // Count how many candidatures are CONFIRMED submitted today (status: 'applied')
+  // for each source. "À vérifier" (needs_review) or failed attempts do NOT count:
+  // the daily quota strictly tracks confirmed successful applications.
+  private async confirmedTodayBySource(campaignId: string): Promise<Map<string, number>> {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
 
     const rows = await this.prisma.application.findMany({
-      where: { campaignId, createdAt: { gte: startOfDay } },
+      where: {
+        campaignId,
+        status: 'applied',
+        appliedAt: { gte: startOfDay },
+      },
       select: { jobOffer: { select: { source: true } } },
     });
 
@@ -446,7 +452,7 @@ export class CampaignService implements OnModuleInit {
     campaign: { id: string; maxApplicationsPerDay: number; sourceDailyLimits: unknown },
     sources: string[],
   ): Promise<Map<string, number>> {
-    const preparedToday = await this.preparedTodayBySource(campaign.id);
+    const confirmedToday = await this.confirmedTodayBySource(campaign.id);
     const overrides = (campaign.sourceDailyLimits || {}) as Record<string, number>;
 
     const remaining = new Map<string, number>();
@@ -454,8 +460,8 @@ export class CampaignService implements OnModuleInit {
     for (const source of sources) {
       const configuredLimit = Number(overrides[source]);
       const dailyLimit = configuredLimit > 0 ? configuredLimit : campaign.maxApplicationsPerDay;
-      const alreadyToday = preparedToday.get(source) || 0;
-      remaining.set(source, Math.max(0, dailyLimit - alreadyToday));
+      const alreadyConfirmed = confirmedToday.get(source) || 0;
+      remaining.set(source, Math.max(0, dailyLimit - alreadyConfirmed));
     }
 
     return remaining;
@@ -709,19 +715,66 @@ export class CampaignService implements OnModuleInit {
         return;
       }
 
-      // Also pick up any existing unattempted candidatures in 'to_apply'
-      // so an interrupted run or previous batch doesn't get left behind.
+      // Count applications already CONFIRMED today per source (status: 'applied' only).
+      // "À vérifier" (needs_review) or failed attempts do NOT count against the limit.
+      const confirmedToday = await this.confirmedTodayBySource(campaign.id);
+
+      // Query candidate applications in 'to_apply' (newly created + pending)
       const pendingApps = await this.prisma.application.findMany({
         where: {
           campaignId: campaign.id,
           status: 'to_apply',
         },
-        select: { id: true },
+        include: { jobOffer: { select: { source: true } } },
+        orderBy: [
+          { matchScore: 'desc' },
+          { createdAt: 'desc' },
+        ],
       });
-      const toApplyIds = [...new Set([...createdApplicationIds, ...pendingApps.map((a) => a.id)])];
+
+      const overrides = (campaign.sourceDailyLimits || {}) as Record<string, number>;
+      const selectedBySource = new Map<string, number>();
+      const toApplyIds: string[] = [];
+
+      // Prioritize newly created applications from this run, then pending by match score
+      const newlyCreatedSet = new Set(createdApplicationIds);
+      const sortedApps = [
+        ...pendingApps.filter((a) => newlyCreatedSet.has(a.id)),
+        ...pendingApps.filter((a) => !newlyCreatedSet.has(a.id)),
+      ];
+
+      for (const app of sortedApps) {
+        const source = app.jobOffer?.source || 'unknown';
+        const configuredLimit = Number(overrides[source]);
+        const dailyLimit = configuredLimit > 0 ? configuredLimit : campaign.maxApplicationsPerDay;
+        const alreadyConfirmed = confirmedToday.get(source) || 0;
+
+        if (alreadyConfirmed >= dailyLimit) continue; // daily quota of confirmed applications already reached
+
+        // Queue enough candidates so that if one fails into 'needs_review' (à vérifier),
+        // the runner can keep trying until the confirmed quota is achieved.
+        const remainingNeeded = dailyLimit - alreadyConfirmed;
+        const maxCandidatesToQueue = Math.max(remainingNeeded * 2, remainingNeeded + 2);
+        const selected = selectedBySource.get(source) || 0;
+
+        if (selected < maxCandidatesToQueue) {
+          toApplyIds.push(app.id);
+          selectedBySource.set(source, selected + 1);
+        }
+      }
 
       if (campaign.actionMode === 'auto_apply' && toApplyIds.length) {
-        await this.appendLog(runId, `Auto-apply: soumission de ${toApplyIds.length} candidature(s)...`);
+        const summaryParts: string[] = [];
+        for (const [source, count] of selectedBySource.entries()) {
+          const confirmed = confirmedToday.get(source) || 0;
+          const configuredLimit = Number(overrides[source]);
+          const limit = configuredLimit > 0 ? configuredLimit : campaign.maxApplicationsPerDay;
+          summaryParts.push(`${count} sur ${source} (${confirmed}/${limit} confirmée(s) aujourd'hui)`);
+        }
+        await this.appendLog(
+          runId,
+          `Auto-apply: sélection de ${toApplyIds.length} candidature(s) (${summaryParts.join(', ')})...`,
+        );
         const { applied, needsReview, cancelled: autoApplyCancelled } = await this.autoApply.run({
           userId,
           applicationIds: toApplyIds,
@@ -730,6 +783,8 @@ export class CampaignService implements OnModuleInit {
           maxDelaySeconds: campaign.autoApplyMaxDelaySeconds,
           appendLog: (message) => this.appendLog(runId, message),
           isCancelled: () => this.cancelledCampaigns.has(campaign.id),
+          sourceDailyLimits: overrides,
+          maxApplicationsPerDay: campaign.maxApplicationsPerDay,
         });
         await this.appendLog(runId, `Auto-apply terminé: ${applied} envoyée(s), ${needsReview} à vérifier.`);
 

@@ -32,8 +32,11 @@ export class PlatformCredentialsController {
   // in exactly as they would in their own browser (solving any CAPTCHA/2FA
   // themselves), instead of this app ever touching a password.
   @Post(':platform/remote-login/start')
-  async startRemoteLogin(@Param('platform') platform: SupportedPlatform) {
-    const sessionId = await this.remoteLogin.start(platform);
+  async startRemoteLogin(
+    @Param('platform') platform: SupportedPlatform,
+    @Body('targetUrl') targetUrl?: string
+  ) {
+    const sessionId = await this.remoteLogin.start(platform, targetUrl);
     return { sessionId };
   }
 

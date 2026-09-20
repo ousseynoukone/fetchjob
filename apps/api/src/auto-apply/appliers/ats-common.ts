@@ -462,10 +462,13 @@ export async function dismissCookieBanner(page: Page): Promise<void> {
 // URL-only check misses it entirely. Checked after every login attempt,
 // across every account-based applier; on a hit, the applier must abandon
 // and report `needs_review`, never try to work around it.
-const SECURITY_CHECK_TEXT = /échec de la vérification|browser check failed|verify you are human|unusual activity|friendlycaptcha|hcaptcha|recaptcha|security check|vérification supplémentaire|prouvez que vous êtes humain/i;
+const SECURITY_CHECK_TEXT = /échec de la vérification|browser check failed|verify you are human|unusual activity|friendlycaptcha|hcaptcha|recaptcha|datadome|cloudflare|security check|vérification supplémentaire|prouvez que vous êtes humain|validate you are human|vérification de sécurité en cours|vérifiez que vous êtes humain/i;
 
 export async function hasSecurityCheck(page: Page): Promise<boolean> {
   if (SECURITY_CHECK_TEXT.test(page.url())) return true;
+  for (const frame of page.frames()) {
+    if (/captcha|datadome/i.test(frame.url())) return true;
+  }
   const bodyText = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
   return SECURITY_CHECK_TEXT.test(bodyText);
 }
@@ -576,7 +579,23 @@ export const SESSION_CHECKS: Record<string, SessionCheck> = {
       // runs (from the real auto-apply flow, ensureLoggedIn below) while
       // genuinely logged in.
       if (page.url().includes('espacepersonnel')) {
+        // Wait up to 15s to be absolutely sure the dashboard has had time to load,
+        // rather than returning true (login wall visible) immediately if the network is slow.
+        try {
+          await Promise.race([
+            page.locator('#identifiant').waitFor({ state: 'visible', timeout: 15000 }),
+            page.getByText(/mon espace personnel/i).first().waitFor({ state: 'visible', timeout: 15000 })
+          ]);
+        } catch { /* Timeout, let the checks below decide */ }
+        
         const onDashboard = await page.getByText(/mon espace personnel/i).first().isVisible().catch(() => false);
+        const onLogin = await page.locator('#identifiant, input[name="identifiant"]').first().isVisible().catch(() => false);
+        if (onLogin) return true;
+        if (onDashboard) return false;
+        
+        // If neither showed up, check if the URL redirected to auth
+        if (page.url().includes('authentification-candidat.francetravail.fr')) return true;
+        
         return !onDashboard;
       }
       return false;
@@ -943,29 +962,48 @@ export async function handleUniversalEmailOtp(
  */
 export async function trySolveSlideChallenge(page: Page): Promise<boolean> {
   try {
-    const slideNotice = page
-      .locator('text="Slide right to secure", text="Glissez vers la droite", [aria-label*="slide" i]')
-      .first();
-    const isVisible = await slideNotice.isVisible({ timeout: 2000 }).catch(() => false);
-    if (!isVisible) return false;
+    let slideNotice: Locator | null = null;
+    let targetFrame: any = page;
+
+    // Search in main page and all frames
+    for (const frame of [page, ...page.frames()]) {
+      const noticeSelectors = [
+        'text=/Slide right to secure/i',
+        'text=/Glissez vers la droite/i',
+        'text=/Glisser pour v.rifier/i',
+        'text=/Faites glisser/i',
+        '[aria-label*="slide" i]',
+      ];
+      for (const sel of noticeSelectors) {
+        const notice = frame.locator(sel).first();
+        if (await notice.isVisible({ timeout: 1000 }).catch(() => false)) {
+          slideNotice = notice;
+          targetFrame = frame;
+          break;
+        }
+      }
+      if (slideNotice) break;
+    }
+
+    if (!slideNotice) return false;
 
     // Find the slider button/handle
     const handleSelectors = [
       '[role="slider"]',
-      '.btn_slide',
+      '.slider',
       '.slider-btn',
+      '.btn_slide',
       '[class*="slider" i] [class*="handle" i]',
       '[class*="slider" i] [class*="thumb" i]',
       '[class*="slider" i] [class*="button" i]',
       '[class*="secsdk" i] [class*="handle" i]',
       'div[class*="arrow" i]',
       'button[class*="slide" i]',
-      'div[class*="slide" i]',
     ];
 
     let handle: Locator | null = null;
     for (const sel of handleSelectors) {
-      const el = page.locator(sel).first();
+      const el = targetFrame.locator(sel).first();
       if (await el.isVisible().catch(() => false)) {
         handle = el;
         break;

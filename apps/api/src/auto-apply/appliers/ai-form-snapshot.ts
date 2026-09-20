@@ -366,5 +366,15 @@ export function buildCandidateBrief(ctx: ApplyContext): string {
     .slice(0, 600);
   const links = (cv.links || []).map((l: any) => `${l.type || 'lien'}: ${l.url}`).join(', ');
   const brief = `Nom: ${cv.fullName || ''}, Civilité: Monsieur, Email: ${cv.email || ''}, Téléphone: ${cv.phone || ''}, Ville: ${cv.location || 'Ile-de-France, France'}. Titre: ${cv.headline || ''}. Droit de travailler en France: Oui. RQTH: Non. Disponibilité: Immédiate. Liens: ${links}. Compétences: ${skills}. Résumé: ${summary}. Parcours: ${experiences}`;
-  return brief.slice(0, 1500);
+  
+  let finalBrief = brief.slice(0, 1500);
+  if (ctx.knownAnswers && ctx.knownAnswers.size > 0) {
+    const qaPairs = Array.from(ctx.knownAnswers.entries())
+      .map(([q, a]) => `Q: ${q} -> R: ${a}`)
+      .join(' | ')
+      .slice(0, 500); // budget 500 characters for previous answers to save tokens
+    finalBrief += `\nRéponses précédentes: ${qaPairs}`;
+  }
+  
+  return finalBrief;
 }

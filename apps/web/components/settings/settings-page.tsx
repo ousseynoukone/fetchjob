@@ -119,33 +119,33 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
   if (isGmail) {
     return (
       <div className="border border-base-300 rounded-xl p-4 bg-base-100/50">
-        <div className="flex items-center justify-between mb-2">
+        <div className="flex flex-wrap items-center justify-between mb-2 gap-2">
           <div className="flex items-center gap-2">
             <span className="font-semibold text-sm">Gmail (Passerelle 2FA & Codes de sécurité)</span>
           </div>
           {item?.configured ? (
-            <div className="flex items-center gap-2">
-              <span className="badge badge-success badge-sm gap-1 text-xs">
-                <CheckCircle2 className="w-3 h-3" /> Connecté ({item.email})
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="badge badge-success badge-sm gap-1 text-xs whitespace-nowrap">
+                <CheckCircle2 className="w-3 h-3 shrink-0" /> Connecté ({item.email})
               </span>
               <button
                 type="button"
-                className="btn btn-ghost btn-xs text-base-content/60 hover:text-primary"
+                className="btn btn-ghost btn-xs text-base-content/60 hover:text-primary shrink-0"
                 onClick={() => setIsEditing(!isEditing)}
               >
                 {isEditing ? 'Fermer' : 'Modifier'}
               </button>
               <button
                 type="button"
-                className="btn btn-ghost btn-xs text-base-content/60 hover:text-primary gap-1"
+                className="btn btn-ghost btn-xs text-base-content/60 hover:text-primary gap-1 shrink-0"
                 onClick={() => setShowRemoteLogin(true)}
                 title="Se connecter via navigateur"
               >
-                <MonitorPlay className="w-3.5 h-3.5" /> Navigateur
+                <MonitorPlay className="w-3.5 h-3.5 shrink-0" /> Navigateur
               </button>
               <button
                 type="button"
-                className="btn btn-ghost btn-xs text-error"
+                className="btn btn-ghost btn-xs text-error shrink-0"
                 onClick={() => remove(platform)}
                 title="Supprimer"
               >
@@ -153,9 +153,9 @@ function PlatformCredentialRow({ platform }: { platform: SupportedPlatform }) {
               </button>
             </div>
           ) : (
-            <div className="flex items-center gap-2">
-              <span className="badge badge-ghost badge-sm gap-1 text-xs text-base-content/60">
-                <XCircle className="w-3 h-3" /> Non configuré
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="badge badge-ghost badge-sm gap-1 text-xs text-base-content/60 whitespace-nowrap">
+                <XCircle className="w-3 h-3 shrink-0" /> Non configuré
               </span>
               <button
                 type="button"

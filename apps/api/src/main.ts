@@ -11,6 +11,10 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  // Enable shutdown hooks so that services (like BrowserSessionService) 
+  // can properly close their Playwright instances when the app stops or restarts
+  app.enableShutdownHooks();
+
   // Enable CORS
   const allowedOrigins = [
     process.env.FRONTEND_URL,

@@ -16,7 +16,7 @@
  */
 
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
-import { chromium as stealthChromium } from 'playwright-extra';
+import { chromium as stealthChromium } from 'patchright';
 import type { Browser, BrowserContext } from 'playwright';
 import {
   buildFingerprintScript,
@@ -26,10 +26,6 @@ import {
   FINGERPRINT_PROFILES,
   withCurrentChromeVersion,
 } from '../scraping/stealth-browser';
-
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-stealthChromium.use(StealthPlugin());
 
 // A cookie export pasted from a browser extension (Cookie-Editor,
 // EditThisCookie, ...) is a bare array of cookie objects using Chrome's own
@@ -88,7 +84,7 @@ export class BrowserSessionService implements OnModuleDestroy {
       this.browser = null;
     }
     if (!this.browser) {
-      this.browser = await stealthChromium.launch({
+      this.browser = (await stealthChromium.launch({
         headless: process.env.AUTO_APPLY_HEADLESS !== 'false',
         // Without this, Playwright launches its lightweight
         // "chrome-headless-shell" binary for headless mode instead of full
@@ -141,7 +137,7 @@ export class BrowserSessionService implements OnModuleDestroy {
           `--js-flags=--max-old-space-size=${process.env.CHROMIUM_RENDERER_HEAP_MB || '160'}`,
           '--lang=fr-FR',
         ],
-      });
+      })) as unknown as Browser;
       this.logger.log('Stealth browser launched for auto-apply');
     }
     return this.browser;
@@ -165,7 +161,16 @@ export class BrowserSessionService implements OnModuleDestroy {
 
         // For authenticated sessions or platforms that monitor device consistency (like LinkedIn),
     // always use a standard Windows 10 Chrome desktop profile rather than a random Safari profile.
-    const rawFp = (sessionStateJson || siteName === 'linkedin') ? FINGERPRINT_PROFILES[0] : randomProfile();
+    const ACCOUNT_PLATFORMS = new Set([
+      'linkedin',
+      'france_travail',
+      'hellowork',
+      'indeed',
+      'apec',
+      'welcome_to_the_jungle',
+    ]);
+    const isAccountPlatform = siteName && ACCOUNT_PLATFORMS.has(siteName);
+    const rawFp = (sessionStateJson || isAccountPlatform) ? FINGERPRINT_PROFILES[0] : randomProfile();
     // Confirmed live: these profiles' own Chrome version segment (127/126)
     // was 26+ major versions behind the actually-installed Chromium build
     // (153) -- a mismatch bot management systems like Cloudflare check for
@@ -216,9 +221,9 @@ export class BrowserSessionService implements OnModuleDestroy {
       storageState = undefined;
     }
 
-    const context = await browser.newContext({
+    const context = (await browser.newContext({
       userAgent: fp.userAgent,
-      viewport: fp.viewport,
+      viewport: { width: 1280, height: 800 }, // Aligné avec remote-login pour avoir exactement la même empreinte
       locale: fp.locale,
       timezoneId: fp.timezoneId,
       deviceScaleFactor: fp.deviceScaleFactor,
@@ -230,10 +235,12 @@ export class BrowserSessionService implements OnModuleDestroy {
         DNT: '1',
         'Upgrade-Insecure-Requests': '1',
       },
-    });
+    })) as unknown as BrowserContext;
 
     // Inject fingerprint overrides before any page script runs
-    await context.addInitScript(buildFingerprintScript(fp));
+    if (siteName !== 'hellowork' && siteName !== 'apec') {
+      await context.addInitScript(buildFingerprintScript(fp));
+    }
 
     // Restore persisted site cookies (supplements storageState) — but never
     // let a stale on-disk cookie from a PAST run clobber a same-name/domain
@@ -265,7 +272,7 @@ export class BrowserSessionService implements OnModuleDestroy {
     // RemoteLoginService) -- there's no legitimate case where it still
     // needs supplementing from this file, only ways for it to get hurt by
     // one.
-    if (siteName && siteName !== 'linkedin') {
+    if (siteName && !ACCOUNT_PLATFORMS.has(siteName)) {
       const saved = loadCookies(siteName);
       if (saved.length > 0) {
         const existingKeys = new Set(

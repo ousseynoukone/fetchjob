@@ -9,6 +9,7 @@ import { BrowserSessionService } from '../auto-apply/browser-session.service';
 import {
   dismissCookieBanner,
   hasSecurityCheck,
+  trySolveSlideChallenge,
   hasAlreadyAppliedIndicator,
   blockHeavyResources,
   normalizeLinkedInUrl,
@@ -242,13 +243,24 @@ export class VerificationService {
               // guessing from the note text alone.
               await this.captureVerificationScreenshot(page, application.id);
 
+              let isBlocked = false;
               if (await hasSecurityCheck(page)) {
-                unconfirmed++;
-                await this.prisma.application.update({
-                  where: { id: application.id },
-                  data: { verificationNote: 'Vérification impossible : contrôle de sécurité affiché par la plateforme.' },
-                });
-                await this.appendLog(runId, `${label} : contrôle de sécurité, vérification impossible.`);
+                const solved = await trySolveSlideChallenge(page);
+                if (!solved) {
+                  isBlocked = true;
+                  unconfirmed++;
+                  await this.prisma.application.update({
+                    where: { id: application.id },
+                    data: { verificationNote: 'Vérification impossible : contrôle de sécurité affiché par la plateforme.' },
+                  });
+                  await this.appendLog(runId, `${label} : contrôle de sécurité, vérification impossible.`);
+                } else {
+                  await page.waitForTimeout(2000);
+                }
+              }
+
+              if (isBlocked) {
+                // Nothing else to do for this application.
               } else if (await hasAlreadyAppliedIndicator(page)) {
                 confirmed++;
                 if (application.status === 'needs_review') {

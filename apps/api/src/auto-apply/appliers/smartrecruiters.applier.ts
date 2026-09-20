@@ -65,12 +65,18 @@ export class SmartRecruitersApplier implements JobApplier {
     const fileInput = page.locator('input[type="file"]').first();
     if (await fileInput.count().catch(() => 0)) {
       await uploadCv(fileInput, ctx).catch(() => {});
+      
+      // SmartRecruiters often extracts CV data asynchronously and shows a loading state.
+      // Wait for any 'loading' overlay to disappear, or just give it a solid buffer
+      // so the form fields have time to populate before the AI starts reading the snapshot.
+      await page.locator('[class*="spinner" i], [class*="loading" i], [aria-busy="true"]').first().waitFor({ state: 'hidden', timeout: 8000 }).catch(() => {});
+      await page.waitForTimeout(3000);
     }
 
     await fillKnownFields(page, ctx.knownAnswers);
 
     return runFormLoop(page, ctx, this.ai, {
-      maxSteps: 4,
+      maxSteps: 6,
       submitText: /submit|send my application|apply/i,
       nextText: /^next$|^continue$/i,
       successText: /application submitted|thank you for applying|thanks for applying/i,

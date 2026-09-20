@@ -294,6 +294,8 @@ export class AiService {
 
 REGLE ABSOLUE, LA PLUS IMPORTANTE : ne change JAMAIS quelle technologie, langage, framework, outil ou base de donnees a ete utilise. Tu peux reformuler, reordonner, raccourcir ou mettre en avant un aspect deja present — mais chaque techno citee dans ta reponse doit deja etre citee dans la source correspondante (le bullet ORIGINAL pour une experience, le README reel pour un nouveau projet, l'ensemble du CV pour le resume). Une techno mentionnee sur l'experience X ne doit jamais migrer vers l'experience Y, meme si elle fait partie des competences listees ailleurs.
 
+REGLE ANTI-ATS : NE CITE JAMAIS le nom de l'entreprise cible (${offer.company}) nulle part dans le CV (ni dans le resume, ni ailleurs). Les ATS (logiciels de recrutement) s'embrouillent et prennent souvent le nom de l'entreprise pour le nom de famille du candidat quand il est ecrit dans le CV. Reste focus sur le poste et les competences, sans nommer la boite.
+
 Exemple INTERDIT : bullet original "API en Spring Boot / PostgreSQL" -> bullet adapte "API en ASP.NET / SQL Server" (fabrication, meme si le candidat connait aussi C#/.NET ailleurs).
 Exemple AUTORISE : bullet original "API REST avec Spring Boot, JWT et PostgreSQL, tests unitaires JUnit" -> bullet adapte "Developpement d'API REST securisees (Spring Boot, JWT) avec PostgreSQL" (reformulation qui ne garde que des elements deja presents).
 
@@ -308,7 +310,7 @@ ${reposBlock ? `\nDEPOTS GITHUB DU CANDIDAT AVEC EXTRAIT REEL DE LEUR README (so
 INSTRUCTIONS PAR CHAMP :
 - "experiences" : reformule les "bullets" de chaque experience pour mettre en avant les elements deja presents et pertinents pour cette offre. Tu peux aussi enrichir un bullet avec un fait reel tire des NOTES COMPLEMENTAIRES s'il concerne clairement cette experience (ex: une techno que le candidat dit avoir utilisee a ce poste mais qu'il a oublie de detailler) — jamais avec un fait tire des depots GitHub, qui sont des projets personnels sans lien avec un employeur. Garde le meme nombre d'experiences et de bullets par experience.
 - "skillGroups" : ne supprime JAMAIS une competence existante. Tu PEUX en ajouter une nouvelle si et seulement si elle apparait clairement dans les DEPOTS GITHUB ci-dessus (langage, dependance reelle, sujet) ou dans les NOTES COMPLEMENTAIRES du candidat — une competence prouvee par du vrai travail mais absente de la liste est un oubli a corriger, pas une invention. N'ajoute jamais une competence qui n'apparait nulle part dans les donnees fournies. L'ordre au sein de chaque groupe n'a pas d'importance, il sera recalcule automatiquement.
-- "summary" : 2 a 3 phrases d'accroche ciblees sur cette offre, basees uniquement sur les faits reels du CV (experiences/competences/projets) — jamais de metrique ou technologie non presente ailleurs dans les donnees fournies.
+- "summary" : 2 a 3 phrases d'accroche ciblees sur cette offre, basees uniquement sur les faits reels du CV (experiences/competences/projets) — jamais de metrique ou technologie non presente ailleurs dans les donnees fournies. Ne cite JAMAIS le nom de l'entreprise cible.
 - "newProjects" : voir instructions ci-dessus.
 
 Reponds uniquement avec un JSON de la forme { "experiences": [...], "skillGroups": [...], "summary": string, "newProjects": [{ "name": string, "bullets": string[] }] }, chaque section au meme format que dans les donnees d'entree.`;
@@ -430,6 +432,7 @@ Regles imperatives :
   * Annees d'experience avec une techno / langage (ex: Java, Spring, React, TypeScript, SQL...) : calcule ou estime intelligemment les annees d'experience en fonction des dates des experiences et projets du profil (ex: profil confirme ou senior avec des experiences developpeur fullstack depuis plusieurs annees -> 4 a 6 ans selon la techno). Reponds avec le chiffre approprie.
   * Questions ouvertes de motivation ("Pourquoi aimez-vous ce metier ?", "Parlez-moi d'un projet complexe...", "Pourquoi ce poste ?", etc.) : redige une reponse professionnelle, engagee, naturelle et concise (2 a 3 phrases percutantes) ancree dans les projets et competences reelles du profil.
   * Questions administratives / standard en France : Droit/autorisation de travailler en France = "Oui", RQTH = "Non", Disponibilite = "Immediate" (ou "Des que possible"), Devise = "EUR", Pays = "France", Permis B = "Oui".
+  * Questions personnalisees (Salaire attendu, preavis, statut, etc.) : Si le recruteur pose une question dont le sens ou l'intention correspond a l'une des "Reponses precedentes" fournies dans le profil candidat, UTILISE CETTE REPONSE EXACTE (ou adapte la forme si necessaire).
 - Ne laisse de cote que les questions tres confidentielles ou purement subjectives dont aucune deduction raisonnable n'est possible.
 - "action" est le SEUL bouton a cliquer pour avancer : kind "submit" uniquement si c'est la soumission finale de la candidature, "next"/"review" pour avancer d'une etape intermediaire, "stop" si aucun bouton ne permet d'avancer sereinement.
 

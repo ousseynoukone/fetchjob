@@ -82,6 +82,7 @@ export class WelcomeToTheJungleApplier implements JobApplier {
     const fileInput = page.locator('input[type="file"]').first();
     if (await fileInput.count().catch(() => 0)) {
       await uploadCv(fileInput, ctx).catch(() => {});
+      await page.waitForTimeout(1500);
     }
 
     if (ctx.coverLetter) {

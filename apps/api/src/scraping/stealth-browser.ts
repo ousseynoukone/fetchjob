@@ -58,8 +58,8 @@ export interface FingerprintProfile {
 export const FINGERPRINT_PROFILES: FingerprintProfile[] = [
   {
     userAgent:
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
-    viewport: { width: 1920, height: 1080 },
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36',
+    viewport: { width: 1280, height: 800 },
     locale: 'fr-FR',
     timezoneId: 'Europe/Paris',
     platform: 'Win32',
@@ -239,52 +239,46 @@ export function buildFingerprintScript(fp: FingerprintProfile): string {
       hardwareConcurrency: { get: () => ${fp.hardwareConcurrency} },
       deviceMemory:        { get: () => ${fp.deviceMemory} },
       languages:           { get: () => ['fr-FR','fr','en-US','en'] },
-      webdriver:           { get: () => false },
       vendor:              { get: () => 'Google Inc.' },
     });
   } catch(e) {}
 
-  // 2. WebGL vendor/renderer spoofing
-  const patchWebGL = (klass) => {
-    const orig = klass.prototype.getParameter;
-    klass.prototype.getParameter = function(param) {
-      if (param === 37445) return ${v};
-      if (param === 37446) return ${r};
-      return orig.apply(this, arguments);
+  // 2. WebGL vendor/renderer spoofing (ONLY applied if running in Docker/Linux)
+  // On native Windows/Mac, spoofing WebGL is counter-productive because the real GPU
+  // is trusted, and JS-based spoofing is easily detected by Cloudflare.
+  if (${process.platform === 'linux'}) {
+    const patchWebGL = (klass) => {
+      const orig = klass.prototype.getParameter;
+      klass.prototype.getParameter = function(param) {
+        if (param === 37445) return ${v};
+        if (param === 37446) return ${r};
+        return orig.apply(this, arguments);
+      };
+      // Mask the toString to avoid basic detection
+      klass.prototype.getParameter.toString = function() {
+        return "function getParameter() { [native code] }";
+      };
     };
-  };
-  try { patchWebGL(WebGLRenderingContext); } catch(e) {}
-  try { patchWebGL(WebGL2RenderingContext); } catch(e) {}
+    try { patchWebGL(WebGLRenderingContext); } catch(e) {}
+    try { patchWebGL(WebGL2RenderingContext); } catch(e) {}
+  
+    // 3. navigator.plugins — headless Linux usually has 0 plugins
+    try {
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => {
+          const a = [
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+            { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
+          ];
+          Object.setPrototypeOf(a, window.PluginArray.prototype);
+          return a;
+        },
+      });
+    } catch(e) {}
+  }
 
-  // 3. Canvas pixel noise — tiny per-session shift defeats canvas fingerprinting
-  const _tdu = HTMLCanvasElement.prototype.toDataURL;
-  HTMLCanvasElement.prototype.toDataURL = function(type, ...args) {
-    const ctx = this.getContext('2d');
-    if (ctx) {
-      const d = ctx.getImageData(0, 0, this.width || 1, this.height || 1);
-      const i = Math.floor(Math.random() * d.data.length / 4) * 4;
-      d.data[i] = Math.max(0, Math.min(255, d.data[i] + (Math.random() > .5 ? 1 : -1)));
-      ctx.putImageData(d, 0, 0);
-    }
-    return _tdu.apply(this, [type, ...args]);
-  };
-
-  // 4. navigator.plugins — headless shows 0; fake 3 standard Chrome ones
-  try {
-    Object.defineProperty(navigator, 'plugins', {
-      get: () => {
-        const a = [
-          { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-          { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
-          { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
-        ];
-        Object.setPrototypeOf(a, window.PluginArray.prototype);
-        return a;
-      },
-    });
-  } catch(e) {}
-
-  // 5. Remove CDP / Playwright window markers
+  // 4. Remove CDP / Playwright window markers
   ['cdc_adoQpoasnfa76pfcZLmcfl_Array','cdc_adoQpoasnfa76pfcZLmcfl_Promise',
    'cdc_adoQpoasnfa76pfcZLmcfl_Symbol','__playwright','__pw_manual','_playwrightRunner',
   ].forEach(k => { try { delete window[k]; } catch(e) {} });
