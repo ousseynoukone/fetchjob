@@ -283,6 +283,16 @@ export function buildFingerprintScript(fp: FingerprintProfile): string {
    'cdc_adoQpoasnfa76pfcZLmcfl_Symbol','__playwright','__pw_manual','_playwrightRunner',
   ].forEach(k => { try { delete window[k]; } catch(e) {} });
 
+  // 5. Spoof window.chrome and Notification.permission
+  try {
+    if (!window.chrome) {
+      window.chrome = { app: { isInstalled: false }, runtime: {} };
+    }
+    if (window.Notification && Notification.permission === 'denied') {
+      Object.defineProperty(Notification, 'permission', { get: () => 'default' });
+    }
+  } catch(e) {}
+
   // 6. screen colorDepth
   try {
     Object.defineProperties(screen, {

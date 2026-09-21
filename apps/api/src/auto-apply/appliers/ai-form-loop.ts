@@ -22,6 +22,7 @@ export interface FormLoopOptions {
 }
 
 export async function detectFormSuccess(page: Page, successText: RegExp, successUrl?: RegExp): Promise<boolean> {
+  if (await hasSecurityCheck(page)) return false;
   if (successUrl?.test(page.url())) return true;
   // Checked across every frame, not just the top-level page — some ATS embed
   // the post-submit confirmation inside an iframe widget.
@@ -110,6 +111,18 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
       
       return confirmed ? { success: true } : await reportBlockedState(page, ctx, opts.unresolvedNote);
     }
+    
+    // Check if a CAPTCHA popped up dynamically after the first fast-path interactions
+    if (await hasSecurityCheck(page)) {
+      const solved = await trySolveSlideChallenge(page);
+      if (!solved) {
+         return {
+           success: false,
+           note: 'CAPTCHA ou test anti-robot détecté en cours de saisie — veuillez valider manuellement.',
+         };
+      }
+      await page.waitForTimeout(2000);
+    }
 
     const nextButton = page.getByRole('button', { name: opts.nextText }).first();
     if (await nextButton.isVisible().catch(() => false)) {
@@ -126,6 +139,17 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
       // progress if no validation error is now visible.
       const stillBlocked = await page.locator('[role="alert"], [class*="error" i]').first().isVisible().catch(() => false);
       if (!stillBlocked) continue;
+    }
+    
+    if (await hasSecurityCheck(page)) {
+      const solved = await trySolveSlideChallenge(page);
+      if (!solved) {
+         return {
+           success: false,
+           note: 'CAPTCHA ou test anti-robot détecté en cours de saisie — veuillez valider manuellement.',
+         };
+      }
+      await page.waitForTimeout(2000);
     }
 
     // Neither a known submit nor a known "next" matched this step, or the
@@ -186,6 +210,13 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
     await page.waitForTimeout(plan.action.kind === 'submit' ? 2500 : 1200);
 
     if (plan.action.kind === 'submit') {
+      if (await hasSecurityCheck(page)) {
+        const solved = await trySolveSlideChallenge(page);
+        if (!solved) {
+           return { success: false, note: 'CAPTCHA ou test anti-robot détecté après la soumission — veuillez valider manuellement.' };
+        }
+        await page.waitForTimeout(2000);
+      }
       const confirmed = await detectFormSuccess(page, opts.successText, opts.successUrl);
       if (confirmed) return { success: true };
       // Confirmed live on a Viveris career-site apply attempt: the model's
