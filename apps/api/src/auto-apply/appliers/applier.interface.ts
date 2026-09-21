@@ -61,6 +61,9 @@ export interface ApplyResult {
   // now-irrelevant tab, showing/reporting whatever was left on it instead
   // of the actual form the attempt succeeded or failed on.
   finalPage?: Page;
+  // Set when a form was successfully submitted, but its confirmation page
+  // could not be definitively recognized by the generic applier.
+  needsReview?: boolean;
 }
 
 export interface JobApplier {

@@ -63,7 +63,7 @@ async function reportBlockedState(page: Page, ctx: ApplyContext, fallbackNote: s
     const labels = unknownFields.map((f) => f.questionText).join(', ');
     return { success: false, note: `${fallbackNote} (champ(s) bloquant(s) détecté(s) : ${labels})` };
   }
-  return { success: false, note: fallbackNote };
+  return { success: false, note: fallbackNote, needsReview: fallbackNote.includes('à vérifier manuellement') };
 }
 
 export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, opts: FormLoopOptions): Promise<ApplyResult> {

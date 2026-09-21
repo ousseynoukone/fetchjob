@@ -233,6 +233,15 @@ export class RemoteLoginService implements OnModuleDestroy {
     // if this fresh process's own session map has nothing running for this
     // platform, there is no legitimate in-progress login these files could
     // still correctly be guarding.
+    try {
+      const { execSync } = require('child_process');
+      if (process.platform === 'win32') {
+        execSync(`wmic process where "name='chrome.exe' and commandline like '%${platform}%'" call terminate`, { stdio: 'ignore' });
+      } else {
+        execSync(`pkill -f "${profileDir}"`, { stdio: 'ignore' });
+      }
+    } catch (e) {}
+
     await Promise.all(
       ['SingletonLock', 'SingletonSocket', 'SingletonCookie'].map((name) =>
         fs.unlink(path.join(profileDir, name)).catch(() => {}),

@@ -809,12 +809,11 @@ export async function handleUniversalEmailOtp(
       'a:has-text("par e-mail")',
       'a:has-text("by email")',
       '[data-testid*="email" i]',
-    ];
+    ].join(', ');
 
-    for (const sel of emailChannelSelectors) {
-      const el = page.locator(sel).first();
-      if (await el.isVisible({ timeout: 1500 }).catch(() => false)) {
-        log(`Found 2FA channel option [${sel}] — selecting email verification...`);
+    const el = page.locator(emailChannelSelectors).first();
+    if (await el.isVisible({ timeout: 1500 }).catch(() => false)) {
+      log(`Found 2FA channel option — selecting email verification...`);
         await humanClick(page, el).catch(() => el.click().catch(() => {}));
         await page.waitForTimeout(2000);
 
@@ -836,9 +835,7 @@ export async function handleUniversalEmailOtp(
             await page.waitForTimeout(3000);
           }
         }
-        break;
       }
-    }
 
     // 2. Detect OTP input fields on page
     // Case A: France Travail style 8 segmented inputs (#code-1 to #code-8)
@@ -864,16 +861,13 @@ export async function handleUniversalEmailOtp(
       'input[autocomplete="one-time-code"]',
       'input[placeholder*="code" i]',
       'input[aria-label*="code" i]',
-    ];
+    ].join(', ');
 
     let singleFieldLocator: Locator | null = null;
     if (!hasCode1 && segCount < 4) {
-      for (const sel of singleCodeSelectors) {
-        const el = page.locator(sel).first();
-        if (await el.isVisible({ timeout: 1000 }).catch(() => false)) {
-          singleFieldLocator = el;
-          break;
-        }
+      const el = page.locator(singleCodeSelectors).first();
+      if (await el.isVisible({ timeout: 1000 }).catch(() => false)) {
+        singleFieldLocator = el;
       }
     }
 
@@ -965,24 +959,22 @@ export async function trySolveSlideChallenge(page: Page): Promise<boolean> {
     let slideNotice: Locator | null = null;
     let targetFrame: any = page;
 
-    // Search in main page and all frames
+    // Combine selectors to avoid N*1000ms delays when no captcha is present
+    const combinedSelector = [
+      'text=/Slide right to secure/i',
+      'text=/Glissez vers la droite/i',
+      'text=/Glisser pour v.rifier/i',
+      'text=/Faites glisser/i',
+      '[aria-label*="slide" i]',
+    ].join(', ');
+
     for (const frame of [page, ...page.frames()]) {
-      const noticeSelectors = [
-        'text=/Slide right to secure/i',
-        'text=/Glissez vers la droite/i',
-        'text=/Glisser pour v.rifier/i',
-        'text=/Faites glisser/i',
-        '[aria-label*="slide" i]',
-      ];
-      for (const sel of noticeSelectors) {
-        const notice = frame.locator(sel).first();
-        if (await notice.isVisible({ timeout: 1000 }).catch(() => false)) {
-          slideNotice = notice;
-          targetFrame = frame;
-          break;
-        }
+      const notice = frame.locator(combinedSelector).first();
+      if (await notice.isVisible({ timeout: 1000 }).catch(() => false)) {
+        slideNotice = notice;
+        targetFrame = frame;
+        break;
       }
-      if (slideNotice) break;
     }
 
     if (!slideNotice) return false;

@@ -78,7 +78,7 @@ export class SmartRecruitersApplier implements JobApplier {
     return runFormLoop(page, ctx, this.ai, {
       maxSteps: 6,
       submitText: /submit|send my application|apply/i,
-      nextText: /^next$|^continue$/i,
+      nextText: /next|continue|suivant|continuer/i,
       successText: /application submitted|thank you for applying|thanks for applying/i,
       blockedNote: 'Le formulaire SmartRecruiters contient des questions personnalisées non renseignées — à finaliser manuellement.',
       unresolvedNote: 'Soumission SmartRecruiters envoyée mais confirmation non détectée — à vérifier manuellement.',

@@ -27,15 +27,25 @@ export class IndeedApplier implements JobApplier {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await dismissCookieBanner(page);
 
-    const applyButton = page.getByRole('button', { name: /apply now|postuler( maintenant| dès maintenant)?|continuer pour postuler/i }).first();
-    const hasApplyButton = await applyButton.isVisible().catch(() => false);
+    let applyButton = page
+      .getByRole('button', { name: /apply( now)?|postuler( maintenant| dès maintenant)?/i })
+      .filter({ hasNotText: /continuer|sur le site|company site/i })
+      .first();
+    let hasApplyButton = await applyButton.isVisible().catch(() => false);
+    
+    if (!hasApplyButton) {
+      applyButton = page.locator('[data-testid="indeedApplyButton-test"], [data-testid="indeed-apply-widget"], #indeedApplyButton').first();
+      hasApplyButton = await applyButton.isVisible().catch(() => false);
+    }
+
     if (!hasApplyButton) {
       // No inline "Indeed Apply" button — some postings only offer a link
       // straight to the employer's own site instead. Follow it rather than
       // giving up, so ATS-by-URL routing (or the generic fallback) gets a
       // real shot at the real form.
       const externalApplyButton = page
-        .getByRole('link', { name: /apply( now| on company site)?|postuler( sur le site)?|continuer pour postuler/i })
+        .locator('a, button')
+        .filter({ hasText: /apply on company site|postuler sur|continuer pour postuler/i })
         .first();
 
       if (!(await externalApplyButton.isVisible().catch(() => false))) {

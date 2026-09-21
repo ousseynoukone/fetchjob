@@ -21,8 +21,8 @@ export class GreenhouseApplier implements JobApplier {
     await dismissCookieBanner(page);
 
     const revealFormLink = page
-      .getByRole('link', { name: /apply for this job|apply now/i })
-      .or(page.getByRole('button', { name: /apply for this job|apply now/i }))
+      .getByRole('link', { name: /apply|postuler/i })
+      .or(page.getByRole('button', { name: /apply|postuler/i }))
       .first();
     if (await revealFormLink.isVisible().catch(() => false)) {
       await humanClick(page, revealFormLink).catch(() => revealFormLink.click().catch(() => {}));
@@ -51,9 +51,9 @@ export class GreenhouseApplier implements JobApplier {
 
     return runFormLoop(page, ctx, this.ai, {
       maxSteps: 4,
-      submitText: /submit application/i,
-      nextText: /^next$|^continue$/i,
-      successText: /application submitted|thank you for applying|thanks for applying/i,
+      submitText: /submit|soumettre|envoyer|apply|postuler/i,
+      nextText: /next|continue|suivant|continuer/i,
+      successText: /application submitted|thank you for applying|thanks for applying|candidature envoyée|merci de votre/i,
       blockedNote: 'Le formulaire Greenhouse contient des questions personnalisées non renseignées — à finaliser manuellement.',
       unresolvedNote: 'Soumission Greenhouse envoyée mais confirmation non détectée — à vérifier manuellement.',
     });

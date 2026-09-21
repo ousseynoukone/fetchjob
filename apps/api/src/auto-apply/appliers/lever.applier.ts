@@ -19,7 +19,7 @@ export class LeverApplier implements JobApplier {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await dismissCookieBanner(page);
 
-    const revealFormLink = page.getByRole('link', { name: /apply for this job/i }).first();
+    const revealFormLink = page.getByRole('link', { name: /apply|postuler/i }).first();
     if (await revealFormLink.isVisible().catch(() => false)) {
       await humanClick(page, revealFormLink).catch(() => revealFormLink.click().catch(() => {}));
       await page.waitForTimeout(1000);
@@ -38,7 +38,7 @@ export class LeverApplier implements JobApplier {
       await uploadCv(fileInput, ctx).catch(() => {});
     } else {
       // Lever hides the file input behind an "Attach Resume/CV" button.
-      const attachButton = page.getByText(/attach resume|attach cv/i).first();
+      const attachButton = page.getByText(/attach resume|attach cv|joindre un cv|parcourir/i).first();
       if (await attachButton.isVisible().catch(() => false)) {
         await humanClick(page, attachButton).catch(() => attachButton.click().catch(() => {}));
         await page.waitForTimeout(500);
@@ -57,9 +57,9 @@ export class LeverApplier implements JobApplier {
 
     return runFormLoop(page, ctx, this.ai, {
       maxSteps: 4,
-      submitText: /submit application/i,
-      nextText: /^next$|^continue$/i,
-      successText: /application submitted|thank you for applying|thanks for applying/i,
+      submitText: /submit|soumettre|envoyer|apply/i,
+      nextText: /next|continue|suivant|continuer/i,
+      successText: /application submitted|thank you for applying|thanks for applying|candidature envoyée|merci de votre/i,
       blockedNote: 'Le formulaire Lever contient des questions personnalisées non renseignées — à finaliser manuellement.',
       unresolvedNote: 'Soumission Lever envoyée mais confirmation non détectée — à vérifier manuellement.',
     });

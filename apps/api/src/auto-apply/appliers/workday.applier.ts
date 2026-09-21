@@ -24,7 +24,7 @@ export class WorkdayApplier implements JobApplier {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await dismissCookieBanner(page);
 
-    const applyButton = page.getByRole('button', { name: /^apply$/i }).or(page.getByRole('link', { name: /^apply$/i })).first();
+    const applyButton = page.getByRole('button', { name: /apply|postuler/i }).or(page.getByRole('link', { name: /apply|postuler/i })).first();
     if (await applyButton.isVisible().catch(() => false)) {
       await humanClick(page, applyButton).catch(() => applyButton.click().catch(() => {}));
       await page.waitForTimeout(1500);
@@ -59,8 +59,8 @@ export class WorkdayApplier implements JobApplier {
 
     return runFormLoop(page, ctx, this.ai, {
       maxSteps: 8,
-      submitText: /submit/i,
-      nextText: /^next$|^continue$/i,
+      submitText: /submit|soumettre|envoyer/i,
+      nextText: /next|continue|suivant|continuer/i,
       successText: /application submitted|thank you for applying/i,
       blockedNote: 'Le formulaire Workday contient un champ obligatoire non renseigné — à finaliser manuellement.',
       unresolvedNote: 'Soumission Workday envoyée mais confirmation non détectée — à vérifier manuellement.',
