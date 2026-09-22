@@ -50,7 +50,27 @@ export class SessionHealthService implements OnModuleInit {
     }
   }
 
+  // One sweep at a time. Confirmed live: the post-boot check, the 20-minute
+  // cron and a manual check-now all fired within seconds of each other and
+  // ran concurrently through the same browser -- every platform visited two
+  // or three times back to back, which is both wasted work and exactly the
+  // burst of repeated automated traffic anti-bot systems score against.
+  private sweepInProgress = false;
+
   async run(force = false): Promise<{ platform: string; status: 'refreshed' | 'expired' | 'error' | 'skipped' }[]> {
+    if (this.sweepInProgress) {
+      this.logger.log('Session health sweep already in progress — skipping this trigger.');
+      return [];
+    }
+    this.sweepInProgress = true;
+    try {
+      return await this.sweep(force);
+    } finally {
+      this.sweepInProgress = false;
+    }
+  }
+
+  private async sweep(force: boolean): Promise<{ platform: string; status: 'refreshed' | 'expired' | 'error' | 'skipped' }[]> {
     const allCreds = await this.prisma.platformCredential.findMany();
     const credentials = allCreds.filter((c) => c.sessionStateEncrypted || c.emailEncrypted);
 
@@ -139,6 +159,7 @@ export class SessionHealthService implements OnModuleInit {
     const cred = await this.credentials.getDecrypted(userId, platform);
     if (!cred.sessionState) {
       if (
+        platform !== 'linkedin' &&
         cred.email &&
         cred.password &&
         cred.email !== '(session importée)' &&
@@ -161,6 +182,7 @@ export class SessionHealthService implements OnModuleInit {
           await context.close().catch(() => {});
         }
       }
+      this.logger.log(`No usable session for ${platform} and no stored credentials to re-login with — left as expired.`);
       return 'expired';
     }
 
@@ -169,26 +191,52 @@ export class SessionHealthService implements OnModuleInit {
     try {
       await blockHeavyResources(context);
       const page = await context.newPage();
-      await page.goto(check.homeUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await dismissCookieBanner(page).catch(() => {});
-      await page.waitForTimeout(2000 + Math.random() * 2000);
+      let onLoginWall: boolean;
+      try {
+        await page.goto(check.homeUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await dismissCookieBanner(page).catch(() => {});
+        await page.waitForTimeout(2000 + Math.random() * 2000);
 
-      // Simulate natural human glance and smooth scrolling
-      await page
-        .evaluate(() => {
-          const win = (globalThis as any).window;
-          if (win && win.scrollBy) {
-            win.scrollBy({ top: 250 + Math.random() * 200, behavior: 'smooth' });
-          }
-        })
-        .catch(() => {});
-      await page.waitForTimeout(2000 + Math.random() * 1500);
+        // Simulate natural human glance and smooth scrolling
+        await page
+          .evaluate(() => {
+            const win = (globalThis as any).window;
+            if (win && win.scrollBy) {
+              win.scrollBy({ top: 250 + Math.random() * 200, behavior: 'smooth' });
+            }
+          })
+          .catch(() => {});
+        await page.waitForTimeout(2000 + Math.random() * 1500);
 
-      const onLoginWall = await check.isLoginWallVisible(page);
+        onLoginWall = await check.isLoginWallVisible(page);
+      } catch (err: any) {
+        if (!/ERR_TOO_MANY_REDIRECTS/.test(err?.message || '')) throw err;
+        // A redirect loop from the stored cookies is not a transient network
+        // error -- it's the platform rejecting that cookie set outright, and
+        // the set stays unusable until replaced. Confirmed live on LinkedIn:
+        // left as an escaping exception, this surfaced as "check failed",
+        // recorded nothing, and every 20-minute sweep failed identically
+        // forever while the UI still showed the session as fine. Routed
+        // into the expired-session branch below instead, with the bad
+        // cookies cleared first so the re-login (for platforms that allow
+        // it) starts from a clean login page rather than the same loop.
+        this.logger.warn(`Stored ${platform} session produced a redirect loop — treating it as expired.`);
+        await context.clearCookies().catch(() => {});
+        onLoginWall = true;
+      }
+
       if (onLoginWall) {
         // If credentials (email + password) are available, attempt automatic background re-login
         // so the user does NOT have to open the manual remote browser repeatedly!
-        if (cred.email && cred.password && cred.email !== '(session importée)' && cred.email !== '(connecté via navigateur intégré)') {
+        // NOTE: LinkedIn requires interactive device trust / 2FA. Automated headless password login
+        // triggers security checkpoints and phone prompts. We strictly NEVER automate password entry on LinkedIn.
+        if (
+          platform !== 'linkedin' &&
+          cred.email &&
+          cred.password &&
+          cred.email !== '(session importée)' &&
+          cred.email !== '(connecté via navigateur intégré)'
+        ) {
           this.logger.log(`Session expired for ${platform} — attempting automatic background re-login...`);
           const relogged = await this.attemptBackgroundLogin(page, platform, cred.email, cred.password, userId);
           if (relogged) {
@@ -200,6 +248,7 @@ export class SessionHealthService implements OnModuleInit {
           }
         }
 
+        this.logger.warn(`Session expired for ${platform} — needs a reconnect from Comptes.`);
         await this.credentials.recordSessionExpired(userId, platform);
         return 'expired';
       }
@@ -313,21 +362,6 @@ export class SessionHealthService implements OnModuleInit {
         }
       }
 
-      if (platform === 'linkedin') {
-        const emailField = page.locator('input#username, input[name="session_key"]').first();
-        const passField = page.locator('input#password, input[name="session_password"]').first();
-        if ((await emailField.isVisible().catch(() => false)) && (await passField.isVisible().catch(() => false))) {
-          await emailField.fill(email);
-          await passField.fill(pass);
-          await page.keyboard.press('Enter');
-          await page.waitForTimeout(5000);
-
-          await handleUniversalEmailOtp(page, 'linkedin', userId, this.gmailOtp, this.logger);
-
-          const url = page.url();
-          return !url.includes('/login') && !url.includes('/checkpoint');
-        }
-      }
 
       if (platform === 'indeed') {
         const emailField = page.locator('#login-email-input, input[name="__email"]').first();

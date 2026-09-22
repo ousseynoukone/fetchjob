@@ -1,13 +1,21 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
 import { LocalUserService } from '../common/local-user.service';
-import { EmailService } from '../email/email.service';
 import { normalizeLabel } from '../auto-apply/appliers/form-fields';
 import type { DetectedField } from '../auto-apply/appliers/form-fields';
 
 export interface UnknownFieldEntry extends DetectedField {
   platform: string;
   sourceUrl: string;
+}
+
+export interface AnsweredFieldEntry {
+  platform: string;
+  sourceUrl: string;
+  questionText: string;
+  answer: string;
+  fieldType: string;
+  options?: string[];
 }
 
 @Injectable()
@@ -17,7 +25,6 @@ export class CustomQuestionsService {
   constructor(
     private prisma: PrismaService,
     private localUser: LocalUserService,
-    private email: EmailService,
   ) {}
 
   async list() {
@@ -89,13 +96,58 @@ export class CustomQuestionsService {
       }
     }
 
-    if (newlyCaptured.length) {
-      const items = newlyCaptured.map((q) => `<li>[${q.platform}] ${q.questionText}</li>`).join('');
-      await this.email.send(
-        `${newlyCaptured.length} nouvelle(s) question(s) à répondre pour l'auto-apply`,
-        `<p>De nouvelles questions personnalisées ont bloqué l'auto-apply :</p><ul>${items}</ul>` +
-          `<p>Répondez-y une fois dans FindUrJob (page Questions) pour qu'elles soient remplies automatiquement la prochaine fois.</p>`,
-      );
+    // No email from here. This runs once per apply attempt that hits a new
+    // question, and a single campaign can hit a dozen of those inside an
+    // hour -- one email each. Newly captured questions are reported by the
+    // periodic digest instead (see digest.service.ts), which also means an
+    // apply attempt never waits on SMTP.
+  }
+
+  // Automatically caches answers produced by the AI during an apply attempt.
+  // Once recorded, subsequent occurrences of the same question on ANY platform
+  // will be filled directly from knownAnswers without incurring extra AI calls.
+  async recordAnswered(userId: string, entries: AnsweredFieldEntry[]): Promise<void> {
+    if (!entries.length) return;
+
+    for (const entry of entries) {
+      if (!entry.questionText || !entry.answer || !entry.answer.trim()) continue;
+      const questionTextNormalized = normalizeLabel(entry.questionText);
+      const existing = await this.prisma.customQuestion.findUnique({
+        where: { userId_questionTextNormalized: { userId, questionTextNormalized } },
+      });
+
+      if (existing) {
+        const updateData: any = {
+          occurrenceCount: { increment: 1 },
+          lastSeenAt: new Date(),
+          lastSourceUrl: entry.sourceUrl,
+        };
+        // Only set the answer if it was previously unanswered
+        if (!existing.answer) {
+          updateData.answer = entry.answer;
+          updateData.answeredAt = new Date();
+        }
+        await this.prisma.customQuestion.update({
+          where: { id: existing.id },
+          data: updateData,
+        });
+      } else {
+        await this.prisma.customQuestion.create({
+          data: {
+            userId,
+            platform: entry.platform,
+            questionText: entry.questionText,
+            questionTextNormalized,
+            fieldType: entry.fieldType || 'text',
+            options: entry.options || [],
+            answer: entry.answer,
+            answeredAt: new Date(),
+            occurrenceCount: 1,
+            lastSeenAt: new Date(),
+            lastSourceUrl: entry.sourceUrl,
+          },
+        });
+      }
     }
   }
 }

@@ -48,7 +48,7 @@ export class DigestService {
 
     const userId = await this.localUser.getDefaultUserId();
 
-    const [sent, needsReview] = await Promise.all([
+    const [sent, needsReview, newQuestions, expiredCredentials] = await Promise.all([
       this.prisma.application.findMany({
         where: { userId, status: 'applied', appliedAt: { gt: lastSentAt } },
         include: { jobOffer: true },
@@ -57,6 +57,22 @@ export class DigestService {
       this.prisma.application.count({
         where: { userId, status: 'needs_review', updatedAt: { gt: lastSentAt } },
       }),
+      // Questions captured since the last digest and still unanswered --
+      // one that got answered in the meantime is no longer news.
+      this.prisma.customQuestion.findMany({
+        where: { userId, createdAt: { gt: lastSentAt }, answer: null },
+        select: { platform: true, questionText: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+      // NEWLY expired since the last digest, not "still expired": the
+      // health sweep re-marks nothing once a row is already expired (see
+      // PlatformCredentialsService.recordSessionExpired), so updatedAt only
+      // moves on the actual transition. A session that stays expired for
+      // days is mentioned once, not in every digest until it's fixed.
+      this.prisma.platformCredential.findMany({
+        where: { userId, lastLoginError: 'Session expirée', updatedAt: { gt: lastSentAt } },
+        select: { platform: true },
+      }),
     ]);
 
     // Still move the clock forward even with nothing to report — otherwise
@@ -64,16 +80,16 @@ export class DigestService {
     // something finally happens, instead of waiting out the interval.
     await this.settings.setLastDigestSentAt(new Date());
 
-    if (!sent.length && !needsReview) return;
-
-    await this.email.sendDigestEmail(
-      sent.map((application) => ({
+    await this.email.sendDigestEmail({
+      sent: sent.map((application) => ({
         id: application.id,
         jobTitle: application.jobTitle,
         company: application.company,
         jobOfferUrl: application.jobOffer.url,
       })),
-      needsReview,
-    );
+      needsReviewCount: needsReview,
+      newQuestions,
+      expiredPlatforms: expiredCredentials.map((c) => c.platform),
+    });
   }
 }

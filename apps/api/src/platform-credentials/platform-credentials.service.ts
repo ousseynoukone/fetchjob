@@ -2,7 +2,6 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
 import { CryptoService } from '../common/crypto.service';
 import { LocalUserService } from '../common/local-user.service';
-import { EmailService } from '../email/email.service';
 import { SUPPORTED_PLATFORMS, SupportedPlatform } from './dto/upsert-credential.dto';
 
 export interface PlatformCredentialStatus {
@@ -32,7 +31,6 @@ export class PlatformCredentialsService {
     private prisma: PrismaService,
     private crypto: CryptoService,
     private localUser: LocalUserService,
-    private email: EmailService,
   ) {}
 
   async listStatus(): Promise<PlatformCredentialStatus[]> {
@@ -190,29 +188,28 @@ export class PlatformCredentialsService {
     });
   }
 
+  // No email from here. Every notification this app sends goes through the
+  // periodic digest (see digest.service.ts) -- at most one email per
+  // interval, and only when there's news. This used to send its own alert
+  // on every call, and the health sweep calls it every 20 minutes for as
+  // long as a session stays expired: a fresh "Session linkedin expirée"
+  // email several times an hour, around the clock.
+  //
+  // The DB write is transition-only too: a row that's already marked
+  // expired is left untouched, so its `updatedAt` only ever moves on the
+  // moment it actually expired -- which is what lets the digest tell
+  // "newly expired since the last email" from "still expired" without a
+  // schema change.
   async recordSessionExpired(userId: string, platform: SupportedPlatform) {
+    const previous = await this.prisma.platformCredential.findUnique({
+      where: { userId_platform: { userId, platform } },
+      select: { lastLoginError: true },
+    });
+    if (previous?.lastLoginError === 'Session expirée') return;
+
     await this.prisma.platformCredential.update({
       where: { userId_platform: { userId, platform } },
       data: { lastLoginError: 'Session expirée' },
     });
-
-    // Only LinkedIn's applier ever attempts an automatic password login —
-    // re-entering a password in Paramètres does nothing for the other
-    // platforms (their own bot-detection blocks a headless login attempt
-    // outright), so telling every platform's user to "re-enter your
-    // password" was actively misleading for most of them. The other branch
-    // used to point at the old establish-session.js CLI script -- outdated
-    // now that the in-app remote-login flow (Comptes → "Ouvrir la session")
-    // covers every account-based platform and needs nothing run locally.
-    const fixInstructions =
-      platform === 'linkedin'
-        ? 'Renseignez à nouveau votre mot de passe dans Paramètres pour réactiver la connexion automatique.'
-        : `Cette plateforme bloque la connexion automatique par mot de passe — ouvrez Comptes dans FindUrJob et ` +
-          `cliquez sur "Ouvrir la session" pour ${platform} afin de vous reconnecter directement depuis l'application.`;
-
-    await this.email.send(
-      `Session ${platform} expirée`,
-      `<p>La session ${platform} utilisée par l'auto-apply a expiré.</p><p>${fixInstructions}</p>`,
-    );
   }
 }
