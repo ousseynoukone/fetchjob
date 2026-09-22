@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, fillIdentityFields, uploadCv, humanFill } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, fillIdentityFields, uploadCv, humanFill, findCvFileInput } from './ats-common';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
 import { REMOTE_LOGIN_URLS } from '../../platform-credentials/remote-login.service';
@@ -37,6 +37,44 @@ export class HelloWorkApplier implements JobApplier {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await dismissCookieBanner(page);
 
+    // Confirmed live: after a morning of retries HelloWork's edge (Azure
+    // Application Gateway) answered a job URL with a bare "403 Forbidden".
+    // That is a rate/behaviour block, not a missing button.
+    const bodyText = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
+    if (/^\s*403 forbidden|application-gateway|access denied|request blocked/i.test(bodyText) && bodyText.length < 400) {
+      await ctx.appendLog?.("HelloWork refuse l'accès à cette page (403) — blocage temporaire côté HelloWork.");
+      return {
+        success: false,
+        blockedByWaf: true,
+        note: "HelloWork a refusé l'accès à l'offre (403, protection anti-robot) — à relancer plus tard, en espaçant les tentatives.",
+      };
+    }
+
+    // Confirmed live with a real session (Canal+ offer, probed step by
+    // step): on an external offer the header CTA reads "Postuler sur le
+    // site du recruteur" and every click path ends at HelloWork's own
+    // redirector, /fr-fr/emplois/redirectionexterne.html?offerId=<id>,
+    // which then navigates to the employer's posting by itself (~2s).
+    // Going there directly skips the lazy "#postuler" frame, the
+    // openInNewTab button and the popup race that failed on 7 offers in
+    // one run -- and the destination URL is read straight from the tab.
+    const headerCta = (await page.locator('[data-cy="applyButtonHeader"]').first().innerText().catch(() => '')).trim();
+    const offerIdMatch = ctx.application.sourceUrl.match(/\/emplois\/(\d+)\.html/);
+    if (/sur le site/i.test(headerCta) && offerIdMatch) {
+      await ctx.appendLog?.('HelloWork renvoie vers le site du recruteur pour cette offre — passage par son redirecteur...');
+      await page
+        .goto(`https://www.hellowork.com/fr-fr/emplois/redirectionexterne.html?offerId=${offerIdMatch[1]}`, { waitUntil: 'domcontentloaded', timeout: 30000 })
+        .catch(() => {});
+      for (let i = 0; i < 12 && /hellowork\.com/i.test(page.url()); i++) await page.waitForTimeout(1000);
+      if (!/hellowork\.com/i.test(page.url()) && /^https?:/.test(page.url())) {
+        return { success: false, redirectToExternalUrl: page.url() };
+      }
+      return {
+        success: false,
+        note: "HelloWork renvoie vers le site du recruteur mais son redirecteur n'a pas abouti — à traiter manuellement.",
+      };
+    }
+
     const applyButton = page.getByRole('button', { name: /^postuler/i }).or(page.getByRole('link', { name: /^postuler/i })).first();
     const hasApplyButton = await applyButton.isVisible().catch(() => false);
     if (!hasApplyButton) {
@@ -55,6 +93,38 @@ export class HelloWorkApplier implements JobApplier {
     const externalUrl = await resolveExternalApplyUrl(page, applyButton, /hellowork\.com/i);
     if (externalUrl) {
       return { success: false, redirectToExternalUrl: externalUrl };
+    }
+
+    // The header "Postuler" is an anchor to the page's own "#postuler"
+    // section, whose content is a LAZY turbo-frame
+    // (#offer-detail-step-frame) that only loads once scrolled into view.
+    // Confirmed live on two external HelloWork offers (M6, Astek): the
+    // instant check below ran before that frame existed, missed the
+    // "Postuler sur le site du recruteur" button, and the attempt then
+    // spent its whole budget trying to fill a form that wasn't there. Wait
+    // for the frame to have rendered SOMETHING actionable first.
+    await page
+      .locator('#offer-detail-step-frame button, #offer-detail-step-frame a, #offer-detail-step-frame input, #postuler button, #postuler input')
+      .first()
+      .waitFor({ state: 'visible', timeout: 10000 })
+      .catch(() => {});
+
+    // HelloWork can also display an intermediate page: "Finalisez votre candidature sur le site du recruteur"
+    // with a button "Postuler sur le site du recruteur".
+    const recruiterSiteBtn = page
+      .locator('button, a, [role="button"]')
+      .filter({ hasText: /site du recruteur|site du partenaire|site de l.entreprise/i })
+      .first();
+    if (await recruiterSiteBtn.isVisible().catch(() => false)) {
+      await ctx.appendLog?.('HelloWork renvoie vers le site du recruteur pour cette offre...');
+      const externalRecruiterUrl = await resolveExternalApplyUrl(page, recruiterSiteBtn, /hellowork\.com/i);
+      if (externalRecruiterUrl) {
+        return { success: false, redirectToExternalUrl: externalRecruiterUrl };
+      }
+      return {
+        success: false,
+        note: "HelloWork renvoie vers le site du recruteur mais l'adresse de destination n'a pas pu être lue — à traiter manuellement.",
+      };
     }
 
     if (await page.getByText(GUEST_ACCOUNT_CREATION_TEXT).first().isVisible().catch(() => false)) {
@@ -77,8 +147,8 @@ export class HelloWorkApplier implements JobApplier {
     // scanInvalidFields can ever surface (it deliberately excludes file
     // inputs), which is exactly what "à finaliser manuellement" without a
     // useful reason turned out to mean in practice.
-    const fileInput = page.locator('input[type="file"]').first();
-    if (await fileInput.count().catch(() => 0)) {
+    const fileInput = await findCvFileInput(page);
+    if (fileInput) {
       await uploadCv(fileInput, ctx).catch(() => {});
     }
 

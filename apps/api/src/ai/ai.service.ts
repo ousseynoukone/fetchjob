@@ -430,11 +430,14 @@ Regles imperatives :
 - Remplis activement un MAXIMUM de champs en utilisant les donnees reelles du profil candidat ci-dessous :
   * Coordonnees / Identite : Nom, prenom, civilite (Monsieur), email, telephone, ville, liens LinkedIn/portfolio doivent toujours etre remplis avec les donnees du profil si demandes.
   * Annees d'experience avec une techno / langage (ex: Java, Spring, React, TypeScript, SQL...) : calcule ou estime intelligemment les annees d'experience en fonction des dates des experiences et projets du profil (ex: profil confirme ou senior avec des experiences developpeur fullstack depuis plusieurs annees -> 4 a 6 ans selon la techno). Reponds avec le chiffre approprie.
-  * Questions ouvertes de motivation ("Pourquoi aimez-vous ce metier ?", "Parlez-moi d'un projet complexe...", "Pourquoi ce poste ?", etc.) : redige une reponse professionnelle, engagee, naturelle et concise (2 a 3 phrases percutantes) ancree dans les projets et competences reelles du profil.
+  * Questions ouvertes de motivation et projets ("Pourquoi aimez-vous ce metier ?", "Parlez-moi d'un projet complexe...", "Pourquoi ce poste / ce langage ?", "Avez-vous deja developpe en utilisant l'IA ?", etc.) : redige une reponse professionnelle, engagee, naturelle et concise (2 a 3 phrases percutantes) ancree dans les projets et competences reelles du profil (ex: Diagnocare pour projet complexe et IA, M3U8 streaming, ITIC Paris, robustesse et microservices pour Java).
+  * Questions de cooptation / parrainage interne ("Si vous êtes référé par un employé...", "Email du parrain", "Connaissez-vous quelqu'un chez nous ?") : si aucun parrain n'est declare dans le profil, reponds "Non", "N/A" ou laisse vide selon le type de champ.
+  * Une question "depuis combien d'annees / combien d'annees d'experience" sur une techno ABSENTE du profil attend quand meme un NOMBRE : reponds "0" (jamais vide, jamais "N/A", jamais du texte -- confirme en direct : un champ laisse vide est refuse "Saisie non valide" et bloque toute la candidature).
+  * Salaire / pretentions : si le champ est numerique ou demande un montant, reponds un NOMBRE ENTIER en euros annuels bruts (ex: 40000), jamais une fourchette ni "35-40k" (confirme en direct : "Seules des valeurs numeriques sont autorisees").
   * Questions administratives / standard en France : Droit/autorisation de travailler en France = "Oui", RQTH = "Non", Disponibilite = "Immediate" (ou "Des que possible"), Devise = "EUR", Pays = "France", Permis B = "Oui".
-  * Questions personnalisees (Salaire attendu, preavis, statut, etc.) : Si le recruteur pose une question dont le sens ou l'intention correspond a l'une des "Reponses precedentes" fournies dans le profil candidat, UTILISE CETTE REPONSE EXACTE (ou adapte la forme si necessaire).
-- Ne laisse de cote que les questions tres confidentielles ou purement subjectives dont aucune deduction raisonnable n'est possible.
-- "action" est le SEUL bouton a cliquer pour avancer : kind "submit" uniquement si c'est la soumission finale de la candidature, "next"/"review" pour avancer d'une etape intermediaire, "stop" si aucun bouton ne permet d'avancer sereinement.
+  * Questions personnalisees (Salaire attendu, preavis, statut, etc.) : Si le recruteur pose une question dont le sens ou l'intention correspond a l'une des "Reponses precedentes enregistrees" fournies dans le profil candidat, UTILISE CETTE REPONSE EXACTE (ou adapte la forme si necessaire).
+- Ne choisis JAMAIS l'action "stop" si un bouton de soumission ("submit") ou d'avancement ("next"/"review") est disponible et que les champs sont remplis.
+- "action" est le SEUL bouton a cliquer pour avancer : kind "submit" uniquement si c'est la soumission finale de la candidature, "next"/"review" pour avancer d'une etape intermediaire.
 
 PROFIL CANDIDAT: ${input.candidateBrief}
 POSTE VISE: ${input.jobTitle} chez ${input.company}
@@ -450,7 +453,7 @@ ${input.buttonsText}`;
         model: MODEL,
         messages: [{ role: 'user', content: stripLoneSurrogates(prompt) }],
         response_format: { type: 'json_object' },
-        max_tokens: 500,
+        max_tokens: 1500,
         temperature: 0,
       });
 

@@ -1,6 +1,6 @@
-import type { Page } from 'playwright';
+import type { Page, Locator } from 'playwright';
 import type { ApplyContext } from './applier.interface';
-import { KNOWN_FIELD_LABEL_EXCLUDE } from './form-fields';
+import { KNOWN_FIELD_LABEL_EXCLUDE, numericFromAnswer } from './form-fields';
 import { humanFill, humanClick } from './ats-common';
 
 // The functions passed to page.evaluate() below run inside the browser, not
@@ -156,11 +156,31 @@ function buildFormSnapshotOnce(page: Page): Promise<FormSnapshot> {
         const legend = fieldset?.querySelector('legend');
         let groupLabel = legend?.textContent?.trim() || '';
         if (!groupLabel) {
-          const container = fieldset || first.closest('div, li') || first.parentElement;
-          let prev = container?.previousElementSibling;
-          while (prev && !groupLabel) {
-            groupLabel = prev.textContent?.trim() || '';
-            prev = prev.previousElementSibling;
+          let current = first;
+          for (let i = 0; i < 4; i++) {
+            if (!current || current === doc.body) break;
+            const ariaLabelledby = current.getAttribute('aria-labelledby');
+            if (ariaLabelledby) {
+              const lbl = doc.getElementById(ariaLabelledby);
+              if (lbl && lbl.textContent?.trim()) { groupLabel = lbl.textContent.trim(); break; }
+            }
+            if (current.getAttribute('role') === 'group' && current.getAttribute('aria-label')) {
+              groupLabel = current.getAttribute('aria-label').trim(); break;
+            }
+            current = current.parentElement;
+          }
+        }
+        if (!groupLabel) {
+          let current = first.parentElement;
+          for (let i = 0; i < 4; i++) {
+            if (!current || current === doc.body || groupLabel) break;
+            let prev = current.previousElementSibling;
+            while (prev && !groupLabel) {
+              const text = prev.textContent?.trim();
+              if (text && text.length > 2) groupLabel = text;
+              prev = prev.previousElementSibling;
+            }
+            current = current.parentElement;
           }
         }
         if (excludeRe.test(groupLabel)) continue;
@@ -222,16 +242,39 @@ function buildFormSnapshotOnce(page: Page): Promise<FormSnapshot> {
         }
 
         const value = (el.value || '').trim();
-        if (value) continue; // already filled — don't re-ask
+        // Confirmed live on a Direct Emploi form: "Niveau de formation" sat on
+        // its default "Aucune formation" option, which carries a non-empty
+        // value, so it counted as "already filled" and was never asked --
+        // the form then rejected it. A select whose selected option reads
+        // like a placeholder (or is its first, blank-valued option) is
+        // unanswered whatever its value attribute says.
+        const placeholderRe = /^(--|—|\.\.\.|)$|choisir|choisissez|s[ée]lectionn|aucun|veuillez|select|choose|please|^--/i;
+        const selectedText = tagName === 'select' ? (el.options?.[el.selectedIndex]?.textContent || '').trim() : '';
+        const selectUnanswered =
+          tagName === 'select' && (!value || placeholderRe.test(selectedText) || (el.selectedIndex === 0 && !el.options?.[0]?.value));
+        if (value && !selectUnanswered) continue; // already filled — don't re-ask
 
         const label = extractLabel(el);
         if (!label || excludeRe.test(label)) continue;
 
         if (tagName === 'select') {
-          const options = Array.from(el.options || [])
+          // Same Direct Emploi form: "Métier" has ~60 options and the model
+          // only ever saw the first 8 -- none of them "Développeur", so it
+          // either guessed one of those 8 ("Banque / Assurance" for a
+          // developer) or answered something selectOption() couldn't match.
+          // Real option lists are sent up to 60 entries; beyond that,
+          // entries that look relevant to a tech candidate are kept first.
+          const allOptions = Array.from(el.options || [])
             .map((o: any) => (o.textContent || '').trim())
-            .filter(Boolean)
-            .slice(0, 8);
+            .filter((t: string) => t && !placeholderRe.test(t));
+          const MAX_OPTIONS = 60;
+          let options = allOptions;
+          if (allOptions.length > MAX_OPTIONS) {
+            const relevant = /informati|d[ée]velop|logiciel|software|web|digital|num[ée]ri|\bit\b|ing[ée]nieur|tech|data|syst[èe]me|r[ée]seau|bac|master|licence|dipl|ann[ée]e/i;
+            const preferred = allOptions.filter((t: string) => relevant.test(t));
+            const rest = allOptions.filter((t: string) => !relevant.test(t));
+            options = [...preferred, ...rest].slice(0, MAX_OPTIONS);
+          }
           fields.push({ idx: tag(el), label: truncate(label), kind: 'select', options });
         } else if (tagName === 'textarea') {
           fields.push({ idx: tag(el), label: truncate(label), kind: 'textarea' });
@@ -273,6 +316,61 @@ export interface FormStepPlan {
 // its `data-ai-idx` attribute — any idx the model hallucinated (not present
 // in the snapshot it was actually given) simply matches nothing and is
 // skipped rather than throwing, since a single bad reference should never
+// A typeahead "select" (Select2, react-select, Choices.js, Taleez's own):
+// an <input role=combobox> whose options only exist in a listbox once you
+// type. Confirmed live on a Taleez form ("Votre expérience": typing left
+// the text in the search box, "Aucun résultat", and the field still
+// invalid). After typing, the matching option has to be picked -- the
+// closest visible one, or Enter as a last resort.
+async function pickComboboxOption(page: Page, el: Locator, value: string): Promise<void> {
+  const isCombobox = await el
+    .evaluate((e: any) => {
+      const role = (e.getAttribute('role') || '').toLowerCase();
+      const auto = (e.getAttribute('aria-autocomplete') || '').toLowerCase();
+      const cls = `${e.className || ''} ${e.parentElement?.className || ''} ${e.closest('[class*="select" i], [class*="combobox" i], [class*="autocomplete" i]')?.className || ''}`;
+      return role === 'combobox' || auto === 'list' || auto === 'both' || /select2|react-select|choices|autocomplete|combobox|typeahead|selectize/i.test(cls);
+    })
+    .catch(() => false);
+  if (!isCombobox) return;
+  await page.waitForTimeout(700);
+  const wanted = (value || '').trim().toLowerCase();
+  const options = page.locator('[role="option"], .select2-results__option, [class*="option" i]:not([class*="options" i]), li[id*="option" i], .dropdown-location, [class*="suggestion" i] li, [class*="autocomplete" i] li');
+  const count = await options.count().catch(() => 0);
+  let best: Locator | null = null;
+  let firstVisible: Locator | null = null;
+  for (let i = 0; i < Math.min(count, 40); i++) {
+    const opt = options.nth(i);
+    if (!(await opt.isVisible().catch(() => false))) continue;
+    const text = (await opt.innerText().catch(() => '')).trim().toLowerCase();
+    if (!text || /aucun r[ée]sultat|no results|no options/i.test(text)) continue;
+    if (!firstVisible) firstVisible = opt;
+    if (text === wanted || text.includes(wanted) || wanted.includes(text)) {
+      best = opt;
+      break;
+    }
+  }
+  const pick = best || firstVisible;
+  if (pick) {
+    await humanClick(page, pick).catch(() => pick.click().catch(() => {}));
+  } else {
+    // No suggestion to take: close whatever the widget opened and leave
+    // the typed text. (Enter here used to commit garbage on tag-style
+    // inputs and could submit the form.)
+    await el.press('Escape').catch(() => {});
+  }
+  await page.waitForTimeout(300);
+  // Confirmed live on a Workable address box ("Paris, France, F, Fr, Fra,
+  // Fran, Franc, France"): an autocomplete that commits every partial
+  // keystroke leaves the field worse than empty. The field must end up
+  // holding the intended value, or a suggestion that starts with it.
+  const finalValue = (await el.inputValue({ timeout: 1000 }).catch(() => '')) || '';
+  const lowered = finalValue.toLowerCase();
+  if (finalValue && lowered !== wanted && !lowered.startsWith(wanted) && !(pick && lowered.includes(wanted.split(',')[0].trim()))) {
+    await el.fill(value).catch(() => {});
+    await el.press('Escape').catch(() => {});
+  }
+}
+
 // abort an otherwise-good plan.
 export async function applyFormPlan(page: Page, plan: FormStepPlan): Promise<void> {
   for (const f of plan.fields || []) {
@@ -294,11 +392,67 @@ export async function applyFormPlan(page: Page, plan: FormStepPlan): Promise<voi
           .catch(() => {});
       }
     } else if (tagName === 'select') {
-      await el
-        .selectOption({ label: f.value })
-        .catch(() => el.selectOption(f.value).catch(() => {}));
+      // Exact label, then value, then the closest option text -- the model
+      // routinely answers "Informatique" for an option that reads
+      // "Informatique / Télécoms", or drops an accent, and a strict match
+      // silently left the select on its placeholder.
+      const wanted = (f.value || '').trim();
+      const selected = await el
+        .selectOption({ label: wanted })
+        .catch(() => el.selectOption(wanted).catch(() => [] as string[]));
+      if (!selected.length && wanted) {
+        await el
+          .evaluate((e: any, want: string) => {
+            const norm = (t: string) => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+            const w = norm(want);
+            const opts = Array.from(e.options || []) as any[];
+            const scored = opts
+              .map((o) => ({ o, t: norm(o.textContent || '') }))
+              .filter(({ t }) => t)
+              .map(({ o, t }) => ({ o, score: t === w ? 3 : t.includes(w) || w.includes(t) ? 2 : w.split(' ').some((word) => word.length > 3 && t.includes(word)) ? 1 : 0 }))
+              .sort((a, b) => b.score - a.score);
+            if (scored[0]?.score > 0) {
+              e.value = scored[0].o.value;
+              e.dispatchEvent(new Event('input', { bubbles: true }));
+              e.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          }, wanted)
+          .catch(() => {});
+      }
     } else {
+      // A URL field only ever accepts a URL. Confirmed live on a real WTTJ
+      // application: a required "X" (Twitter) profile field the candidate
+      // has no value for got the model's best guess -- the candidate's
+      // NAME -- which the form rejected ("Invalid URL"), blocking submit on
+      // every retry. Left empty instead, it surfaces through the existing
+      // blocked-field report as a real, answerable question rather than a
+      // hallucinated value that can never validate.
+      const value = (f.value || '').trim();
+      const isUrlValue = /^https?:\/\//i.test(value);
+      if (type === 'url' && !isUrlValue) continue;
+      // Same guard for URL fields that are only URL fields by NAME: confirmed
+      // live on a WTTJ form whose "X" (Twitter) input is a plain text box --
+      // the candidate's name went in, "URL invalide", submit blocked.
+      const looksLikeUrlField = await el
+        .evaluate((e: any) => {
+          // Each source tested on its own: WTTJ's "X" (Twitter) field has a
+          // one-letter label, which a combined "label + name + id" string
+          // never matched as ^x$ (confirmed live -- the name went in again).
+          const parts = [e.labels?.[0]?.textContent, e.getAttribute('aria-label'), e.getAttribute('placeholder'), e.name, e.id]
+            .map((v: any) => (v || '').toString().trim())
+            .filter(Boolean);
+          const urlish = /\burl\b|https?:|twitter|linkedin|github|gitlab|portfolio|site web|website|\blien\b|\blink\b/i;
+          return parts.some((p: string) => /^x$|^x \(twitter\)$/i.test(p) || urlish.test(p));
+        })
+        .catch(() => false);
+      if (looksLikeUrlField && !isUrlValue) continue;
+      if (type === 'number') {
+        const numeric = numericFromAnswer(f.value);
+        if (!numeric) continue;
+        f.value = numeric;
+      }
       await humanFill(el, f.value);
+      await pickComboboxOption(page, el, f.value);
     }
   }
 
@@ -353,9 +507,9 @@ export function buildCandidateBrief(ctx: ApplyContext): string {
   const cv = ctx.cv as any;
   const skills = (cv.skillGroups || [])
     .flatMap((g: any) => g.items || [])
-    .slice(0, 16)
+    .slice(0, 20)
     .join(', ');
-  const summary = (cv.summary || '').slice(0, 250);
+  const summary = (cv.summary || '').slice(0, 300);
   const experiences = (cv.experiences || [])
     .slice(0, 5)
     .map((e: any) => {
@@ -363,17 +517,23 @@ export function buildCandidateBrief(ctx: ApplyContext): string {
       return `${e.role || ''} @ ${e.company || ''} (${e.period || ''})${bullets ? ` — ${bullets}` : ''}`;
     })
     .join(' | ')
-    .slice(0, 600);
+    .slice(0, 700);
+  const projects = (cv.projects || [])
+    .slice(0, 4)
+    .map((p: any) => `${p.name || ''}: ${(p.bullets || []).slice(0, 2).join('; ')}`)
+    .join(' | ')
+    .slice(0, 500);
+  const extraCtx = (cv.additionalContext || '').slice(0, 300);
   const links = (cv.links || []).map((l: any) => `${l.type || 'lien'}: ${l.url}`).join(', ');
-  const brief = `Nom: ${cv.fullName || ''}, Civilité: Monsieur, Email: ${cv.email || ''}, Téléphone: ${cv.phone || ''}, Ville: ${cv.location || 'Ile-de-France, France'}. Titre: ${cv.headline || ''}. Droit de travailler en France: Oui. RQTH: Non. Disponibilité: Immédiate. Liens: ${links}. Compétences: ${skills}. Résumé: ${summary}. Parcours: ${experiences}`;
+  const brief = `Nom: ${cv.fullName || ''}, Civilité: Monsieur, Email: ${cv.email || ''}, Téléphone: ${cv.phone || ''}, Ville: ${cv.location || 'Ile-de-France, France'}. Titre: ${cv.headline || ''}. Droit de travailler en France: Oui. RQTH: Non. Disponibilité: Immédiate. Liens: ${links}. Compétences: ${skills}. Résumé: ${summary}. Parcours: ${experiences}${projects ? `. Projets phares: ${projects}` : ''}${extraCtx ? `. Contexte candidat: ${extraCtx}` : ''}`;
   
-  let finalBrief = brief.slice(0, 1500);
+  let finalBrief = brief.slice(0, 2500);
   if (ctx.knownAnswers && ctx.knownAnswers.size > 0) {
     const qaPairs = Array.from(ctx.knownAnswers.entries())
       .map(([q, a]) => `Q: ${q} -> R: ${a}`)
       .join(' | ')
-      .slice(0, 500); // budget 500 characters for previous answers to save tokens
-    finalBrief += `\nRéponses précédentes: ${qaPairs}`;
+      .slice(0, 800);
+    finalBrief += `\nRéponses précédentes enregistrées: ${qaPairs}`;
   }
   
   return finalBrief;

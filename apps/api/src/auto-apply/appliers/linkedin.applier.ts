@@ -2,10 +2,21 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { fillKnownFields, scanInvalidFields } from './form-fields';
-import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, hasJobClosedIndicator, fillIdentityFields, uploadCv, normalizeLinkedInUrl } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, hasJobClosedIndicator, fillIdentityFields, uploadCv, normalizeLinkedInUrl, findCvFileInput, humanClick } from './ats-common';
 import { buildFormSnapshot, applyFormPlan, formatFieldsForPrompt, formatButtonsForPrompt, buildCandidateBrief } from './ai-form-snapshot';
 import { detectFormSuccess } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
+
+// Confirmed live (probe with a real session, September 2026): LinkedIn's
+// current Easy Apply modal is a native <dialog data-testid="dialog"> under
+// a React #root, with hashed class names, a HEADER#dialog-header and NO
+// role="dialog" / .artdeco-modal / .jobs-easy-apply-modal at all. The old
+// selectors never matched it, so a fully rendered "Postuler chez ..." form
+// read as "modal not shown"; the retry click then landed outside the
+// dialog and popped LinkedIn's "Enregistrer cette candidature ?" prompt.
+// Both generations are matched.
+const EASY_APPLY_MODAL_SELECTOR =
+  'dialog[data-testid="dialog"]:visible, dialog[open]:visible, .jobs-easy-apply-modal:visible, [role="dialog"]:visible, .artdeco-modal:visible';
 
 const EASY_APPLY_SUCCESS_TEXT = /application sent|candidature envoy[eé]e|votre candidature a [eé]t[eé] envoy[eé]e/i;
 
@@ -37,12 +48,12 @@ export class LinkedInApplier implements JobApplier {
       await this.gotoWithRateLimitRetry(page, ctx, targetUrl);
     } catch (err: any) {
       if (err.message && err.message.includes('ERR_TOO_MANY_REDIRECTS')) {
-        await ctx.appendLog?.('Session LinkedIn révoquée ou invalide (boucle de redirection détectée).');
-        // Clear stale/revoked cookies before login to break the redirect loop
-        await page.context().clearCookies().catch(() => {});
-        const loginRes = await this.performDirectLogin(page, ctx);
-        if (loginRes) return loginRes;
-        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await ctx.appendLog?.('Session LinkedIn expirée ou invalide (boucle de redirection détectée).');
+        return {
+          success: false,
+          sessionExpired: true,
+          note: "Session LinkedIn expirée — ouvrez la page Comptes dans FindUrJob et cliquez sur \"Ouvrir la session\" pour LinkedIn afin de vous reconnecter.",
+        };
       } else {
         throw err;
       }
@@ -185,7 +196,7 @@ export class LinkedInApplier implements JobApplier {
     // modal, so this waits forever on an element that will never show while
     // the actual form is already fully rendered right next to it.
     const modalDialog = page
-      .locator('.jobs-easy-apply-modal:visible, [role="dialog"]:visible, .artdeco-modal:visible')
+      .locator(EASY_APPLY_MODAL_SELECTOR)
       .first();
     await modalDialog.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
 
@@ -225,7 +236,7 @@ export class LinkedInApplier implements JobApplier {
       // always a `page.locator`, never had this problem). Using locators
       // throughout avoids the blind spot entirely.
       const visibleDialog = page
-        .locator('.jobs-easy-apply-modal:visible, [role="dialog"]:visible, .artdeco-modal:visible')
+        .locator(EASY_APPLY_MODAL_SELECTOR)
         .first();
       const dialogVisible = await visibleDialog.isVisible().catch(() => false);
       // Count interactive elements OR any visible text content — some Easy Apply
@@ -291,7 +302,7 @@ export class LinkedInApplier implements JobApplier {
     let aiCallsUsed = 0;
     for (let step = 0; step < 8; step++) {
       const stepHeader = await page
-        .locator('[role="dialog"]:visible h3, [role="dialog"]:visible h2, .artdeco-modal__header:visible')
+        .locator('[role="dialog"]:visible h3, [role="dialog"]:visible h2, .artdeco-modal__header:visible, dialog[open] h2, #dialog-header h2')
         .first()
         .innerText()
         .catch(() => '');
@@ -301,9 +312,8 @@ export class LinkedInApplier implements JobApplier {
       await this.fillCvIdentityFields(page, ctx);
 
       // 2. CV Upload handling (hidden file input OR button)
-      const fileInput = page.locator('input[type="file"]').first();
-      const hasFileInput = (await fileInput.count().catch(() => 0)) > 0;
-      if (hasFileInput) {
+      const fileInput = await findCvFileInput(page);
+      if (fileInput) {
         try {
           await uploadCv(fileInput, ctx);
           await page.waitForTimeout(1500);
@@ -342,7 +352,7 @@ export class LinkedInApplier implements JobApplier {
       if (await submitButton.isVisible().catch(() => false)) {
         this.logger.log(`Submitting application for ${ctx.application.id}...`);
         await ctx.appendLog?.('Vérification finale et soumission de la candidature...');
-        await submitButton.click();
+        await humanClick(page, submitButton).catch(() => submitButton.click({ timeout: 5000 }).catch(() => {}));
         await page.waitForTimeout(4000);
 
         const confirmed = await page
@@ -362,7 +372,7 @@ export class LinkedInApplier implements JobApplier {
         .first();
 
       if (await reviewButton.isVisible().catch(() => false)) {
-        await reviewButton.click();
+        await humanClick(page, reviewButton).catch(() => reviewButton.click({ timeout: 5000 }).catch(() => {}));
         await page.waitForTimeout(2000);
         const blockedAfterReview = await page
           .locator('[role="alert"], .artdeco-inline-feedback--error, [class*="error" i]')
@@ -379,8 +389,26 @@ export class LinkedInApplier implements JobApplier {
         .first();
 
       if (await nextButton.isVisible().catch(() => false)) {
-        await nextButton.click();
+        const progressBefore = await this.readEasyApplyProgress(page);
+        await humanClick(page, nextButton).catch(() => nextButton.click({ timeout: 5000 }).catch(() => {}));
         await page.waitForTimeout(2000);
+        // Confirmed live (Infogene, new <dialog> UI): the inline error
+        // "Saisie non valide" carries hashed class names -- no role=alert,
+        // nothing with "error" in it -- so the class-based check below
+        // never fired, "Suivant" was clicked eight times on the same 3/5
+        // page and the AI fallback never ran. Two more signals: the error
+        // WORDING, and the "x/y pages" counter not moving.
+        const progressAfter = await this.readEasyApplyProgress(page);
+        const errorText = await page
+          .locator(EASY_APPLY_MODAL_SELECTOR)
+          .first()
+          .getByText(/saisie non valide|champ obligatoire|ce champ est requis|entrée non valide|invalid input|required field|please enter|veuillez (saisir|renseigner)/i)
+          .first()
+          .isVisible()
+          .catch(() => false);
+        if (errorText || (progressBefore && progressBefore === progressAfter)) {
+          // fall through to the AI fallback below
+        } else {
         // LinkedIn's "Next" validates the current step — a required field it
         // left empty just re-renders the same step with inline errors
         // ("artdeco-inline-feedback--error"). Blindly `continue`-ing here
@@ -394,6 +422,7 @@ export class LinkedInApplier implements JobApplier {
           .isVisible()
           .catch(() => false);
         if (!blockedAfterNext) continue;
+        }
       }
 
       // Before trying the AI fallback (or giving up), check whether the
@@ -578,87 +607,22 @@ export class LinkedInApplier implements JobApplier {
     return false;
   }
 
-  private async performDirectLogin(page: Page, ctx: ApplyContext): Promise<ApplyResult | null> {
-    const email = ctx.credential?.email;
-    const password = ctx.credential?.password;
-
-    if (!email || !password) {
-      await ctx.appendLog?.('Identifiants LinkedIn manquants (email et mot de passe requis).');
-      return {
-        success: false,
-        sessionExpired: true,
-        note: 'Identifiants LinkedIn non configurés -- renseignez votre mot de passe dans Paramètres.',
-      };
-    }
-
-    try {
-      await ctx.appendLog?.(`Connexion automatique LinkedIn avec l'identifiant ${email}...`);
-      // Clear all cookies to break any redirect-loop caused by stale/revoked session cookies.
-      // A poisoned LinkedIn session cookie (li_at, JSESSIONID, etc.) causes ERR_TOO_MANY_REDIRECTS
-      // even on the /login page itself -- wiping them all gives the browser a clean slate.
-      await page.context().clearCookies().catch(() => {});
-      await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await dismissCookieBanner(page);
-
-      const emailInput = page.locator('input#username, input[type="email"]:visible, input[autocomplete="username"]:visible, input[name="session_key"]').first();
-      await emailInput.fill(email);
-
-      const passwordInput = page.locator('input#password, input[type="password"]:visible, input[name="session_password"]').first();
-      await passwordInput.fill(password);
-
-      // Submit strictly via Enter to avoid misclicking third-party OAuth buttons
-      await passwordInput.press('Enter');
-
-      await page.waitForTimeout(5000);
-      if (page.url().includes('connect-services') || page.url().includes('/check/')) {
-        await page.waitForTimeout(3000);
-      }
-
-      // Check if CAPTCHA or checkpoint appeared
-      if (page.url().includes('/checkpoint/challenge') || (await page.locator('#captcha-internal').count()) > 0) {
-        await ctx.appendLog?.('LinkedIn demande une vérification de sécurité (CAPTCHA/Challenge).');
-        return {
-          success: false,
-          sessionExpired: true,
-          note: 'LinkedIn requiert une validation de sécurité manuelle.',
-        };
-      }
-
-      // Check if logged in (url no longer /login or /uas/login)
-      if (!page.url().includes('/login') && !page.url().includes('/uas/login')) {
-        await ctx.appendLog?.('Connexion automatique LinkedIn réussie !');
-        // Persist session cookies for subsequent visits
-        const state = await page.context().storageState().catch(() => null);
-        if (state) {
-          await ctx.onSessionUpdated?.(JSON.stringify(state));
-        }
-        return null;
-      } else {
-        await ctx.appendLog?.('Échec de la connexion LinkedIn (identifiants incorrects).');
-        return {
-          success: false,
-          sessionExpired: true,
-          note: 'Connexion LinkedIn rejetée -- vérifiez vos identifiants dans Paramètres.',
-        };
-      }
-    } catch (err: any) {
-      this.logger.error(`Login error: ${err.message}`);
-      // Clear the persisted session so the next run does not inherit a poisoned state
-      await ctx.onSessionUpdated?.("").catch(() => {});
-      return {
-        success: false,
-        sessionExpired: true,
-        note: `Erreur lors de la connexion LinkedIn : ${err.message}`,
-      };
-    }
+  // "3/5 pages" style counter of the Easy Apply modal, or '' when absent.
+  private async readEasyApplyProgress(page: Page): Promise<string> {
+    const text = await page.locator(EASY_APPLY_MODAL_SELECTOR).first().innerText({ timeout: 2000 }).catch(() => '');
+    const match = text.match(/(\d+)\s*\/\s*(\d+)\s*pages?/i);
+    return match ? `${match[1]}/${match[2]}` : '';
   }
 
   private async ensureLoggedIn(page: Page, ctx: ApplyContext): Promise<ApplyResult | null> {
     const onLoginWall = await SESSION_CHECKS.linkedin.isLoginWallVisible(page);
     if (!onLoginWall) return null;
 
-    await ctx.appendLog?.('Connexion requise sur LinkedIn, tentative de connexion automatique...');
-    const directLoginResult = await this.performDirectLogin(page, ctx);
-    return directLoginResult;
+    await ctx.appendLog?.('Session requise sur LinkedIn mais la session est expirée ou invalide.');
+    return {
+      success: false,
+      sessionExpired: true,
+      note: "Session LinkedIn expirée — ouvrez la page Comptes dans FindUrJob et cliquez sur \"Ouvrir la session\" pour LinkedIn afin de vous reconnecter en toute sécurité.",
+    };
   }
 }

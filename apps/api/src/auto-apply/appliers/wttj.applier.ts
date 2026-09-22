@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, humanFill, humanClick, uploadCv, splitName, findWttjApplyButton } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, humanFill, humanClick, uploadCv, splitName, findWttjApplyButton, findCvFileInput, waitForWttjHydration } from './ats-common';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
 import { REMOTE_LOGIN_URLS } from '../../platform-credentials/remote-login.service';
@@ -31,9 +31,37 @@ export class WelcomeToTheJungleApplier implements JobApplier {
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await dismissCookieBanner(page);
     await page.waitForTimeout(2000); // same WAF-challenge/SPA-hydration delay as resolveWelcomeToTheJungleApplyUrl
+    // The apply link's real href only exists after hydration (see
+    // waitForWttjHydration) -- read too early, an external offer looks
+    // native and gets clicked as one.
+    await waitForWttjHydration(page);
+
+    // Confirmed live with the real session: after hydration the HEADER
+    // apply link carries the employer URL outright for an external offer
+    // (href="https://recruiting.ferchau.com/..." target=_blank). Read it
+    // before clicking anything -- the generic "first visible Postuler"
+    // search below can land on another control (bottom bar, sidebar)
+    // whose click only summons the tracker dialog.
+    const headerHref = (await page.locator('[data-testid="job_header-button-apply"]').first().getAttribute('href').catch(() => null)) || '';
+    await ctx.appendLog?.(`Lien « Postuler » WTTJ après hydratation : ${headerHref ? headerHref.slice(0, 80) : '(absent)'}`);
+    if (/^https?:\/\//i.test(headerHref) && !OWN_DOMAIN.test(headerHref)) {
+      return { success: false, redirectToExternalUrl: headerHref };
+    }
 
     const applyButton = await findWttjApplyButton(page);
     if (!applyButton) {
+      // Confirmed live on 8 real failures: the listing URL itself had
+      // redirected to the employer's OWN career site (agap2's, with its own
+      // "Postulez à cette offre dès maintenant !" button) -- WTTJ's
+      // data-testid was never going to exist on a foreign page, and this
+      // applier gave up on a page that the generic fallback could have
+      // handled. Off-domain means "this is an external apply", not "no
+      // button": hand the resolved URL back so ATS-by-URL routing (or the
+      // generic fallback) gets its shot, exactly as an explicit redirect
+      // would.
+      if (!OWN_DOMAIN.test(page.url())) {
+        return { success: false, redirectToExternalUrl: page.url() };
+      }
       return {
         success: false,
         note: "Bouton de candidature Welcome to the Jungle introuvable sur cette offre — à traiter manuellement.",
@@ -43,6 +71,37 @@ export class WelcomeToTheJungleApplier implements JobApplier {
     const externalUrl = await resolveExternalApplyUrl(page, applyButton, OWN_DOMAIN);
     if (externalUrl) {
       return { success: false, redirectToExternalUrl: externalUrl };
+    }
+
+    // Confirmed live (FERCHAU offer): when the click DID open the employer's
+    // ATS in another tab, WTTJ itself shows a tracker dialog -- "Avez-vous
+    // postulé à ce job ... ? Ce job est géré sur une plateforme externe" --
+    // on the page this applier is still driving. That dialog is proof of
+    // an external apply even when the popup itself was missed; the href
+    // (hydrated by now) or the other open tab gives the URL to follow.
+    const trackerDialog = page.getByText(/g[ée]r[ée] sur une plateforme externe|avez-vous postul[ée]/i).first();
+    if (await trackerDialog.isVisible().catch(() => false)) {
+      const href =
+        (await page.locator('[data-testid="job_header-button-apply"]').first().getAttribute('href').catch(() => null)) ||
+        (await applyButton.getAttribute('href').catch(() => null));
+      // Confirmed live (FERCHAU, logged in): the employer tab can open
+      // several seconds AFTER the click -- WTTJ first records the click,
+      // then window.open()s -- so a tab that isn't there yet is waited for.
+      const findOtherTab = () => page.context().pages().find((p) => p !== page && !OWN_DOMAIN.test(p.url()) && /^https?:/.test(p.url()));
+      let otherTab = findOtherTab();
+      if (!otherTab) {
+        await page.context().waitForEvent('page', { timeout: 10000 }).catch(() => null);
+        await page.waitForTimeout(1500);
+        otherTab = findOtherTab();
+      }
+      if (otherTab) await otherTab.waitForLoadState('load', { timeout: 8000 }).catch(() => {});
+      const target = href && /^https?:\/\//i.test(href) && !OWN_DOMAIN.test(href) ? href : otherTab?.url() || null;
+      await otherTab?.close().catch(() => {});
+      if (target) return { success: false, redirectToExternalUrl: target };
+      return {
+        success: false,
+        note: "Welcome to the Jungle indique que cette offre se postule sur une plateforme externe, mais l'adresse n'a pas pu être lue — à traiter manuellement.",
+      };
     }
 
     // A stale/invalid session lands back on the signin page instead of the
@@ -79,8 +138,8 @@ export class WelcomeToTheJungleApplier implements JobApplier {
       await humanFill(lastNameField, last).catch(() => {});
     }
 
-    const fileInput = page.locator('input[type="file"]').first();
-    if (await fileInput.count().catch(() => 0)) {
+    const fileInput = await findCvFileInput(page);
+    if (fileInput) {
       await uploadCv(fileInput, ctx).catch(() => {});
       await page.waitForTimeout(1500);
     }

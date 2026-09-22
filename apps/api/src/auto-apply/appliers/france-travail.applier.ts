@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, fillIdentityFields, uploadCv, handleUniversalEmailOtp } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, fillIdentityFields, uploadCv, handleUniversalEmailOtp, findCvFileInput, humanClick, truncateAtBoundary } from './ats-common';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
 import { REMOTE_LOGIN_URLS } from '../../platform-credentials/remote-login.service';
@@ -89,7 +89,7 @@ export class FranceTravailApplier implements JobApplier {
         .filter({ hasText: /postuler/i })
         .first();
       if (await menuItem.isVisible({ timeout: 3000 }).catch(() => false)) {
-        await menuItem.click();
+        await humanClick(page, menuItem).catch(() => menuItem.click({ timeout: 5000 }).catch(() => {}));
         await page.waitForTimeout(1200);
       }
     }
@@ -109,9 +109,15 @@ export class FranceTravailApplier implements JobApplier {
     // francetravail.fr -- so the new tab is followed and adopted as the
     // page every subsequent step runs against, instead of being treated as
     // an external hand-off.
+    // Not only inside #contactZone any more: confirmed live (H&A DATA
+    // SOLUTIONS offer) that "Postuler" now opens a "Rappel des critères
+    // principaux avant de postuler" popover whose "Envoyer ma candidature"
+    // button sits outside that zone -- the #contactZone-only locator never
+    // saw it and the attempt idled on the listing page until its timeout.
     const nativeApplyLink = page
-      .locator('#contactZone a, #contactZone button')
+      .locator('#contactZone a, #contactZone button, a, button')
       .filter({ hasText: /envoyer ma candidature|postuler en ligne/i })
+      .filter({ visible: true })
       .first();
     // Actively polls for up to 5s (matching the analogous `menuItem` check
     // just above) rather than a single instant check right after the fixed
@@ -298,8 +304,8 @@ export class FranceTravailApplier implements JobApplier {
       // `count()`, not `isVisible()` — confirmed live that Playwright's
       // setInputFiles works on a hidden input, same issue found and fixed
       // across every applier here.
-      const fileInput = activePage.locator('input[type="file"]').first();
-      if (await fileInput.count().catch(() => 0)) {
+      const fileInput = await findCvFileInput(activePage);
+      if (fileInput) {
         await uploadCv(fileInput, ctx).catch(() => {});
       }
     }
@@ -332,8 +338,13 @@ export class FranceTravailApplier implements JobApplier {
         // Truncated here rather than relying on the field's own maxlength
         // to silently clip it, so the fill always lands a complete
         // sentence rather than a mid-word cut.
-        const trimmed =
-          ctx.coverLetter.length > 1500 ? `${ctx.coverLetter.slice(0, 1499).trimEnd()}…` : ctx.coverLetter;
+        // No "…" appended any more: that U+2026 was the ONLY character
+        // outside Latin-1 in the whole submission, and three consecutive
+        // native submissions with a >1500-char letter all ended in France
+        // Travail's "Une erreur technique a eu lieu" (confirmed by the
+        // pre-submit form dump), while the one known success had a short
+        // letter. Cut at a sentence boundary instead.
+        const trimmed = truncateAtBoundary(ctx.coverLetter, 1500);
         await coverLetterField.fill(trimmed).catch(() => {});
         await activePage.waitForTimeout(800);
         const current = await coverLetterField.inputValue().catch(() => trimmed);
@@ -357,9 +368,29 @@ export class FranceTravailApplier implements JobApplier {
       blockedNote: 'Le formulaire de candidature France Travail contient un champ non renseigné — à finaliser manuellement.',
       unresolvedNote: 'Soumission France Travail envoyée mais confirmation non détectée — à vérifier manuellement.',
     });
+
+    // Confirmed live on the attempts' own screenshots: 10 real "confirmation
+    // non détectée" results were nothing of the sort -- France Travail had
+    // put its own red banner on the page ("Une erreur technique a eu lieu et
+    // votre candidature n'a pu aboutir, merci de réessayer ultérieurement")
+    // and the submission had NOT gone through. Reporting that as "couldn't
+    // confirm" threw away the one piece of information on the page and left
+    // it indistinguishable from a submission that genuinely succeeded with
+    // unmatched wording. It's a platform-side rejection, and France Travail
+    // itself says to retry later, so it's named as exactly that.
+    let result = loopResult;
+    if (!loopResult.success) {
+      const bodyText = await activePage.locator('body').innerText({ timeout: 3000 }).catch(() => '');
+      if (/une erreur technique a eu lieu|candidature n.a pu aboutir/i.test(bodyText)) {
+        result = {
+          ...loopResult,
+          note: "France Travail a rejeté l'envoi avec une erreur technique de son côté (« votre candidature n'a pu aboutir, merci de réessayer ultérieurement ») — la candidature n'est pas partie, à relancer plus tard.",
+        };
+      }
+    }
     // See ApplyResult.finalPage -- only actually differs from `page` once
     // the `#contactZone` branch above adopted a new tab.
-    return activePage === page ? loopResult : { ...loopResult, finalPage: activePage };
+    return activePage === page ? result : { ...result, finalPage: activePage };
   }
 
   private async ensureLoggedIn(page: Page, ctx: ApplyContext): Promise<ApplyResult | null> {

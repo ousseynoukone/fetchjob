@@ -1,9 +1,9 @@
 import type { Page } from 'playwright';
 import type { AiService } from '../../ai/ai.service';
 import { ApplyContext, ApplyResult } from './applier.interface';
-import { fillKnownFields, scanInvalidFields } from './form-fields';
+import { fillKnownFields, scanInvalidFields, normalizeLabel } from './form-fields';
 import { buildFormSnapshot, applyFormPlan, formatFieldsForPrompt, formatButtonsForPrompt, buildCandidateBrief } from './ai-form-snapshot';
-import { humanClick, hasSecurityCheck, trySolveSlideChallenge } from './ats-common';
+import { humanClick, hasSecurityCheck, trySolveSlideChallenge, fillIdentityFields, resolveExternalApplyUrl, hasJobClosedIndicator, tickConsentCheckboxes, clickCvUploadControl, findCvFileInput, uploadCv } from './ats-common';
 
 export interface FormLoopOptions {
   maxSteps?: number;
@@ -13,6 +13,10 @@ export interface FormLoopOptions {
   submitText: RegExp;
   nextText: RegExp;
   successText: RegExp;
+  // Runs right before every submit click (both the fast path and the
+  // AI-planned one) -- for platform quirks that must be re-applied last,
+  // e.g. Lever's geocoded location, which its own resume parsing resets.
+  beforeSubmit?: () => Promise<void>;
   successUrl?: RegExp;
   // Used when the form is genuinely stuck (validation error nothing could
   // resolve, or the AI itself gave up).
@@ -66,6 +70,37 @@ async function reportBlockedState(page: Page, ctx: ApplyContext, fallbackNote: s
   return { success: false, note: fallbackNote, needsReview: fallbackNote.includes('à vérifier manuellement') };
 }
 
+// One log line with what the form holds right before a submit -- the
+// screenshot only ever shows the page AFTER the platform reacted (confirmed
+// live: three France Travail "erreur technique" verdicts in a row with no
+// way to tell what had actually been sent). Values are clipped; password
+// fields are never read.
+async function describeFormState(page: Page): Promise<string> {
+  return page
+    .evaluate(() => {
+      const out: string[] = [];
+      const doc: any = (globalThis as any).document;
+      const els = Array.from(doc.querySelectorAll('input:not([type=hidden]):not([type=password]):not([type=submit]):not([type=button]), textarea, select')) as any[];
+      for (const el of els) {
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        const type = (el.type || '').toLowerCase();
+        let value = '';
+        if (type === 'checkbox' || type === 'radio') {
+          if (!el.checked) continue;
+          value = '☑';
+        } else if (el.tagName === 'SELECT') value = el.options?.[el.selectedIndex]?.text || '';
+        else if (type === 'file') value = el.files?.length ? `${el.files.length} fichier` : 'aucun fichier';
+        else value = String(el.value || '');
+        if (!value) continue;
+        const label = (el.labels?.[0]?.textContent || el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.name || el.id || type).trim().replace(/\s+/g, ' ').slice(0, 24);
+        out.push(`${label}=${value.replace(/\s+/g, ' ').slice(0, 28)}`);
+      }
+      return out.join(' | ').slice(0, 600);
+    })
+    .catch(() => '');
+}
+
 export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, opts: FormLoopOptions): Promise<ApplyResult> {
   const maxSteps = opts.maxSteps ?? 6;
   let aiCallsUsed = 0;
@@ -80,6 +115,47 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
       await page.waitForTimeout(2000); // give it time to proceed after slide
     }
 
+    // A page that says the posting is gone has no form worth filling --
+    // checked every step, since a career site can only reveal this after
+    // a client-side redirect the applier's initial check ran before.
+    if (await hasJobClosedIndicator(page)) {
+      return { success: false, note: "L'offre n'est plus disponible sur le site du recruteur (expirée ou pourvue) — à ignorer." };
+    }
+
+    // Check if an external redirect button appeared (e.g. "Postuler sur le site du recruteur")
+    // HelloWork-only by construction (the ownDomain below is HelloWork's):
+    // on any other site this returned the CURRENT page as a "redirect",
+    // which the orchestrator could no longer follow -- confirmed live on a
+    // Taleez form that ended as "à vérifier — undefined".
+    const externalRecruiterBtn = page
+      .locator('button, a, [role="button"]')
+      .filter({ hasText: /sur le site du recruteur|sur le site employeur|sur le site du partenaire/i })
+      .first();
+    if (/hellowork\.com/i.test(page.url()) && (await externalRecruiterBtn.isVisible().catch(() => false))) {
+      const extUrl = await resolveExternalApplyUrl(page, externalRecruiterBtn, /hellowork\.com/i);
+      if (extUrl) {
+        return { success: false, redirectToExternalUrl: extUrl };
+      }
+    }
+
+    // Always fill any standard identity fields (phone, name, email, civility...) that appeared in this step
+    await fillIdentityFields(page, ctx.cv).catch(() => {});
+    await tickConsentCheckboxes(page).catch(() => 0);
+    // A step that only now shows the upload control (multi-step forms:
+    // Michael Page's step 2) still needs the CV.
+    const emptyFileInput = await page
+      .locator('input[type="file"]')
+      .evaluateAll((els: any[]) => els.some((e) => !e.files || e.files.length === 0))
+      .catch(() => false);
+    const anyFileInput = (await page.locator('input[type="file"]').count().catch(() => 0)) > 0;
+    if (!anyFileInput || emptyFileInput) {
+      const input = await findCvFileInput(page);
+      if (input && (await input.evaluate((e: any) => !e.files || e.files.length === 0).catch(() => false))) {
+        await uploadCv(input, ctx).catch(() => {});
+      } else if (!input) {
+        await clickCvUploadControl(page).catch(() => false);
+      }
+    }
     await fillKnownFields(page, ctx.knownAnswers);
 
     // Confirmed live on a Viveris career-site apply attempt: its "Postuler"
@@ -97,8 +173,18 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
     // fillIdentityFields/fillKnownFields already fully completed) while
     // deferring to the AI for a field neither of those own.
     const preSubmitSnapshot = await buildFormSnapshot(page);
+    // A page whose only fields are a job SEARCH form is not an application
+    // form -- confirmed live: the model dutifully filled "Recherche par
+    // mots-clés" / "Recherche par ville" / alert frequency on Capgemini's
+    // career site and clicked "Rechercher" as the submit.
+    const searchLike = /recherche par|mots?-cl[ée]s?|^rechercher|fr[ée]quence.*alerte|cr[ée]er une alerte|job title, keywords|search jobs/i;
+    if (preSubmitSnapshot.fields.length && preSubmitSnapshot.fields.every((f) => searchLike.test(f.label))) {
+      return { success: false, note: "La page d'arrivée est une page de recherche d'offres, pas un formulaire de candidature (offre probablement retirée) — à ignorer." };
+    }
     const submitButton = page.getByRole('button', { name: opts.submitText }).first();
     if (!preSubmitSnapshot.fields.length && (await submitButton.isVisible().catch(() => false))) {
+      if (opts.beforeSubmit) await opts.beforeSubmit().catch(() => {});
+      await ctx.appendLog?.(`Envoi du formulaire — contenu : ${await describeFormState(page)}`);
       await humanClick(page, submitButton).catch(() => {});
       
       // Poll for confirmation up to 8 seconds to accommodate slow SPAs (like France Travail)
@@ -206,7 +292,67 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
       return await reportBlockedState(page, ctx, opts.blockedNote);
     }
 
-    await applyFormPlan(page, plan);
+    // Automatically cache any questions answered by the AI into knownAnswers
+    // and CustomQuestion DB so next time, no AI call is needed for these questions.
+    const answeredEntries: { questionText: string; answer: string; fieldType: string; options?: string[] }[] = [];
+    for (const f of plan.fields || []) {
+      if (typeof f?.idx !== 'number' || !f.value || !f.value.trim()) continue;
+
+      const regularField = snapshot.fields.find((sf) => sf.idx === f.idx);
+      if (regularField && regularField.label) {
+        // A select answer is only worth remembering if it IS one of the
+        // options. Confirmed live on Direct Emploi: the model answered
+        // "Métier" with the job title and "Domaine d'expertise" with a
+        // guess, both got cached as known answers, and every later attempt
+        // on that form re-applied them (one never matched an option, the
+        // other picked a wrong sector) before the model could correct them.
+        if (regularField.kind === 'select' && regularField.options?.length) {
+          const norm = (t: string) => t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+          const wanted = norm(f.value);
+          const matched = regularField.options.find((o) => norm(o) === wanted || norm(o).includes(wanted) || wanted.includes(norm(o)));
+          if (!matched) continue;
+          f.value = matched;
+        }
+        answeredEntries.push({
+          questionText: regularField.label,
+          answer: f.value,
+          fieldType: regularField.kind,
+          options: regularField.options,
+        });
+        ctx.knownAnswers?.set(normalizeLabel(regularField.label), f.value);
+        continue;
+      }
+
+      const radioGroup = snapshot.fields.find(
+        (sf) => sf.kind === 'radio-group' && sf.radioOptions?.some((ro) => ro.idx === f.idx),
+      );
+      if (radioGroup && radioGroup.label) {
+        const option = radioGroup.radioOptions?.find((ro) => ro.idx === f.idx);
+        const ans = option?.text || f.value;
+        answeredEntries.push({
+          questionText: radioGroup.label,
+          answer: ans,
+          fieldType: 'radio',
+          options: radioGroup.radioOptions?.map((ro) => ro.text) || [],
+        });
+        ctx.knownAnswers?.set(normalizeLabel(radioGroup.label), ans);
+      }
+    }
+
+    if (answeredEntries.length && ctx.saveAnsweredFields) {
+      await ctx.saveAnsweredFields(answeredEntries).catch(() => {});
+    }
+
+    if (plan.action.kind === 'submit' && opts.beforeSubmit) {
+      // The plan's own fields first, the platform's last-word tweak next,
+      // then the click the plan asked for.
+      await applyFormPlan(page, { ...plan, action: { ...plan.action, idx: null } });
+      await opts.beforeSubmit().catch(() => {});
+      await applyFormPlan(page, { fields: [], action: plan.action });
+    } else {
+      await applyFormPlan(page, plan);
+    }
+    if (plan.action.kind === 'submit') await ctx.appendLog?.(`Envoi du formulaire — contenu : ${await describeFormState(page)}`);
     await page.waitForTimeout(plan.action.kind === 'submit' ? 2500 : 1200);
 
     if (plan.action.kind === 'submit') {

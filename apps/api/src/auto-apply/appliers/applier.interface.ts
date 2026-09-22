@@ -27,6 +27,10 @@ export interface ApplyContext {
   // stored (and the user notified) instead of just failing silently again
   // next time the same offer/question comes up.
   reportUnknownFields: (fields: DetectedField[]) => Promise<void>;
+  // Automatically persists newly answered fields produced by AI so they can be reused without calling AI again
+  saveAnsweredFields?: (
+    fields: { questionText: string; answer: string; fieldType: string; options?: string[] }[],
+  ) => Promise<void>;
   appendLog?: (message: string) => Promise<void>;
   credential?: { email: string; password?: string | null } | null;
   onSessionUpdated?: (newSessionState: string) => Promise<void>;
@@ -47,6 +51,11 @@ export interface ApplyResult {
   // `npm run establish-session -- <platform> ...` rather than silently
   // leaving every candidature on that platform stuck in `needs_review`.
   sessionExpired?: boolean;
+  // The platform's WAF refused the page outright (HTTP 403 / "Forbidden"):
+  // the run skips that platform's remaining candidatures rather than
+  // hammering a wall that only gets higher (confirmed live on HelloWork
+  // after four retry passes in one morning).
+  blockedByWaf?: boolean;
   // Set when this applier discovered, mid-flow, that the real application
   // happens somewhere else entirely (LinkedIn/Indeed/HelloWork postings
   // with no in-platform apply flow just send the visitor to the employer's

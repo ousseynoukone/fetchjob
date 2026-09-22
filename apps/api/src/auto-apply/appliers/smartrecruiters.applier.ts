@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { dismissCookieBanner, fillIdentityFields, uploadCv, humanClick, trySolveSlideChallenge } from './ats-common';
+import { dismissCookieBanner, fillIdentityFields, uploadCv, humanClick, trySolveSlideChallenge, findCvFileInput } from './ats-common';
 import { fillKnownFields } from './form-fields';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
@@ -62,8 +62,8 @@ export class SmartRecruitersApplier implements JobApplier {
     // `count()`, not `isVisible()` — confirmed live that Playwright's
     // setInputFiles works on a hidden input, same issue found and fixed
     // across every applier here.
-    const fileInput = page.locator('input[type="file"]').first();
-    if (await fileInput.count().catch(() => 0)) {
+    const fileInput = await findCvFileInput(page);
+    if (fileInput) {
       await uploadCv(fileInput, ctx).catch(() => {});
       
       // SmartRecruiters often extracts CV data asynchronously and shows a loading state.

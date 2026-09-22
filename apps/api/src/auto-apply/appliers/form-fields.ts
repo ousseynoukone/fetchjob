@@ -13,7 +13,7 @@ declare const CSS: any;
 // answer (a learned "years of experience" answer must never land in the
 // email field just because of a labeling quirk).
 export const KNOWN_FIELD_LABEL_EXCLUDE =
-  /first name|last name|full name|^name$|votre nom|votre pr[ée]nom|nom d'usage|nom de famille|nom de naissance|^e-?mail|courriel|adresse e-?mail|phone|t[ée]l[ée]phone|mobile|portable|num[ée]ro de (portable|t[ée]l[ée]phone|mobile)|resume|^cv$|cover letter|lettre de motivation|pr[ée]nom|^nom$|mot de passe|password|code de validation|captcha|se connecter|connexion|identifiant|civilit[ée]|gender|genre|salutation|titre de civilit[ée]|^country$|^pays$|votre pays|^currency$|^devise$|monnaie|rqth|handicap|travailleur handicap[ée]|disability|droit de travailler|autorisation de travail|work authori[sz]ation|eligible to work|l[ée]galement autoris[ée]|disponibilit[ée]|availability|d[ée]lai de pr[ée]avis|notice period/i;
+  /first name|last name|full name|^name$|votre nom|votre pr[ée]nom|nom d'usage|nom de famille|nom de naissance|^e-?mail|courriel|adresse e-?mail|phone|t[ée]l[ée]phone|mobile|portable|num[ée]ro de (portable|t[ée]l[ée]phone|mobile)|resume|^cv$|cover letter|lettre de motivation|pr[ée]nom|^nom$|mot de passe|password|code de validation|captcha|se connecter|connexion|identifiant|civilit[ée]|gender|genre|salutation|titre de civilit[ée]|^country$|^pays$|votre pays|^currency$|^devise$|monnaie/i;
 
 export interface DetectedField {
   questionText: string;
@@ -58,12 +58,31 @@ function extractRadioGroupLabel(el: any): string {
   const fieldset = el.closest('fieldset');
   const legend = fieldset?.querySelector('legend');
   if (legend?.textContent?.trim()) return legend.textContent.trim();
-  const container = fieldset || el.closest('div, li') || el.parentElement;
-  let prev = container?.previousElementSibling;
-  while (prev) {
-    const text = prev.textContent?.trim();
-    if (text) return text;
-    prev = prev.previousElementSibling;
+
+  let current = el;
+  for (let i = 0; i < 4; i++) {
+    if (!current || current === document.body) break;
+    const ariaLabelledby = current.getAttribute('aria-labelledby');
+    if (ariaLabelledby) {
+      const lbl = document.getElementById(ariaLabelledby);
+      if (lbl && lbl.textContent?.trim()) return lbl.textContent.trim();
+    }
+    if (current.getAttribute('role') === 'group' && current.getAttribute('aria-label')) {
+      return current.getAttribute('aria-label').trim();
+    }
+    current = current.parentElement;
+  }
+
+  current = el.parentElement;
+  for (let i = 0; i < 4; i++) {
+    if (!current || current === document.body) break;
+    let prev = current.previousElementSibling;
+    while (prev) {
+      const text = prev.textContent?.trim();
+      if (text && text.length > 2) return text;
+      prev = prev.previousElementSibling;
+    }
+    current = current.parentElement;
   }
   return '';
 }
@@ -148,17 +167,36 @@ const FIELD_SELECTOR =
 // CustomQuestionsService) — checked by normalized label text, so the same
 // "How many years of experience with Python?" question is recognized
 // across different job boards and companies.
+// "35-40k" is a fine human answer and an invalid one for a numeric input
+// (confirmed live on Michael Page: "Seules des valeurs numériques sont
+// autorisées"). Takes the FIRST number of the answer, expands a k suffix.
+export function numericFromAnswer(answer: string): string | null {
+  const match = answer.replace(/\s/g, '').match(/(\d+(?:[.,]\d+)?)(k)?/i);
+  if (!match) return null;
+  let value = parseFloat(match[1].replace(',', '.'));
+  if (match[2]) value *= 1000;
+  return String(Math.round(value));
+}
+
 export async function fillKnownFields(page: Page, knownAnswers: Map<string, string>): Promise<void> {
   if (!knownAnswers.size) return;
 
+  // Visible fields only, and a hard budget for the whole pass: confirmed
+  // live on a career site's search page (Safran) that hidden filter inputs
+  // matching a known label ("Ville") each burned a 3s hover timeout, and
+  // the pass ran past 30s -- on every loop step.
+  const deadline = Date.now() + 20000;
   const handles = await page.locator(FIELD_SELECTOR).elementHandles();
   for (const handle of handles) {
+    if (Date.now() > deadline) break;
+    if (!(await handle.isVisible().catch(() => false))) continue;
     await fillIfKnown(handle, knownAnswers).catch(() => {});
   }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function fillIfKnown(handle: ElementHandle<any>, knownAnswers: Map<string, string>): Promise<void> {
+  // (answer may be normalised below for numeric inputs)
   const type = await handle.evaluate((el) => el.type || '');
   if (type === 'password') return;
 
@@ -184,29 +222,53 @@ async function fillIfKnown(handle: ElementHandle<any>, knownAnswers: Map<string,
   const label = await handle.evaluate(extractLabel);
   if (!label || KNOWN_FIELD_LABEL_EXCLUDE.test(label)) return;
 
-  const answer = knownAnswers.get(normalizeLabel(label));
+  let answer = knownAnswers.get(normalizeLabel(label));
   if (!answer) return;
 
   const tag = await handle.evaluate((el) => el.tagName.toLowerCase());
 
   if (tag === 'select') {
-    await handle.selectOption({ label: answer }).catch(() => handle.selectOption(answer).catch(() => {}));
+    await handle.selectOption({ label: answer }, { timeout: 3000 }).catch(() => handle.selectOption(answer, { timeout: 3000 }).catch(() => {}));
   } else if (type === 'checkbox') {
     // Any truthy stored answer checks it -- a single checkbox has no
     // "options" to match against, unlike a radio group.
     await handle.evaluate((el) => { if (!el.checked) el.click(); });
   } else {
+    // Confirmed live on a Lever form ("Twitter URL": "N/AN/AN/AN/A"): this
+    // runs on every loop step and .type() APPENDS, so a field filled on
+    // step 0 got the same answer stacked onto it on every later step. A
+    // field that already holds anything is left alone, and a stored
+    // answer that isn't a URL never goes into a URL field (the site
+    // rejects it and the form can't validate).
+    const current = await handle.evaluate((el) => (el.value || '').trim());
+    if (current) return;
+    if (type === 'number' || (await handle.evaluate((el) => (el.getAttribute('inputmode') || '') === 'numeric'))) {
+      const numeric = numericFromAnswer(answer);
+      if (!numeric) return;
+      answer = numeric;
+    }
+    const isUrlField = type === 'url' || /\burl\b|\blien\b|\blink\b|twitter|linkedin|github|portfolio|website|site web/i.test(label) || /^x$/i.test(label.trim());
+    if (isUrlField && !/^https?:\/\//i.test(answer.trim())) return;
     // Same "type it, don't just set the value" reasoning as
     // ats-common.ts's humanFill (a Locator-only API this ElementHandle-based
     // function can't call directly) -- .fill() here skips real keystroke
     // events and mouse movement entirely.
     try {
-      await handle.hover();
-      await handle.click();
-      await handle.type(answer, { delay: 35 + Math.random() * 70 });
+      // Bounded: Playwright's default is 30s PER action, and a known field
+      // that happens to be covered or off-screen (a sticky "Paramètres
+      // cookies" badge, a collapsed section) made each of these wait the
+      // full 30s before the fallback -- several such fields ate a whole
+      // attempt's budget with nothing in the log to show for it.
+      await handle.hover({ timeout: 3000 });
+      await handle.click({ timeout: 3000 });
+      await handle.type(answer, { delay: 35 + Math.random() * 70, timeout: 3000 });
     } catch {
-      await handle.fill(answer).catch(() => {});
+      await handle.fill(answer, { timeout: 3000 }).catch(() => {});
     }
+    // Whatever an autocomplete/mask widget did with the keystrokes, the
+    // field must end up holding the answer.
+    const typed = await handle.evaluate((el) => (el.value || '').trim()).catch(() => null);
+    if (typed !== null && typed !== answer.trim()) await handle.fill(answer, { timeout: 3000 }).catch(() => {});
   }
 }
 

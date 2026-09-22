@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, fillIdentityFields, uploadCv, humanClick, humanFill } from './ats-common';
+import { dismissCookieBanner, SESSION_CHECKS, resolveExternalApplyUrl, fillIdentityFields, uploadCv, humanClick, humanFill, findCvFileInput, hasSecurityCheck, tryClickTurnstile } from './ats-common';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
 
@@ -26,6 +26,36 @@ export class IndeedApplier implements JobApplier {
 
     await page.goto(ctx.application.sourceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await dismissCookieBanner(page);
+
+    // Confirmed live: Indeed answered a job URL with Cloudflare's
+    // "Vérification supplémentaire requise" page and this applier reported
+    // "no apply button" -- true, but useless. One real-mouse click on the
+    // Turnstile box, then an honest note if it's still there.
+    if (await hasSecurityCheck(page)) {
+      await ctx.appendLog?.('Indeed affiche une vérification de sécurité (Cloudflare) — tentative de validation...');
+      const passed = await tryClickTurnstile(page);
+      if (!passed || (await hasSecurityCheck(page))) {
+        return {
+          success: false,
+          note: 'Indeed a affiché une vérification de sécurité Cloudflare sur cette offre — à relancer plus tard ou à finaliser manuellement.',
+        };
+      }
+      await page.waitForTimeout(2000);
+    }
+
+    // Indeed renders its apply CTA client-side, after domcontentloaded --
+    // every check below used to run immediately and, on a slow render, all
+    // three missed and reported "no apply button" while the attempt's own
+    // end-of-run screenshot showed "Continuer pour postuler" sitting right
+    // there (confirmed on 6 of 10 real Indeed failures). Wait for ANY
+    // apply-shaped control first; the specific checks then decide which
+    // kind it is.
+    await page
+      .locator('a, button')
+      .filter({ hasText: /postuler|apply/i })
+      .first()
+      .waitFor({ state: 'visible', timeout: 10000 })
+      .catch(() => {});
 
     let applyButton = page
       .getByRole('button', { name: /apply( now)?|postuler( maintenant| dès maintenant)?/i })
@@ -81,8 +111,8 @@ export class IndeedApplier implements JobApplier {
     // setInputFiles works on a hidden input; gating on visibility silently
     // skipped the upload whenever Indeed hides the real input behind a
     // styled button, same issue found and fixed across every applier here.
-    const fileInput = target.locator('input[type="file"]').first();
-    if (await fileInput.count().catch(() => 0)) {
+    const fileInput = await findCvFileInput(target);
+    if (fileInput) {
       await uploadCv(fileInput, ctx).catch(() => {});
       await target.waitForTimeout(1500);
     }

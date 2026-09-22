@@ -69,7 +69,37 @@ function detectAtsKey(url: string): string | null {
 // have no entry here and are never second-guessed.
 const SOURCE_OWN_DOMAIN: Partial<Record<string, RegExp>> = {
   france_travail: /(^|\.)francetravail\.fr$/i,
+  // Confirmed live (Webnet): a WTTJ offer whose apply URL was pre-resolved
+  // to taleez.com was still handed to the WTTJ applier, which then had
+  // nothing to do on a foreign page but hand the same URL back.
+  welcome_to_the_jungle: /(^|\.)welcometothejungle\.com$/i,
+  hellowork: /(^|\.)hellowork\.com$/i,
+  apec: /(^|\.)apec\.fr$/i,
+  indeed: /(^|\.)indeed\.com$/i,
+  linkedin: /(^|\.)linkedin\.com$/i,
 };
+
+// A redirect that lands on one of the account-based platforms (confirmed
+// live: an Adzuna ad bouncing to an apec.fr offer) belongs to that
+// platform's own applier, with that platform's stored session -- not to
+// the generic fallback, which has neither the session nor the flow.
+const PLATFORM_BY_HOST: { pattern: RegExp; platform: string }[] = [
+  { pattern: /(^|\.)apec\.fr$/i, platform: 'apec' },
+  { pattern: /(^|\.)hellowork\.com$/i, platform: 'hellowork' },
+  { pattern: /(^|\.)welcometothejungle\.com$/i, platform: 'welcome_to_the_jungle' },
+  { pattern: /(^|\.)francetravail\.fr$/i, platform: 'france_travail' },
+  { pattern: /(^|\.)indeed\.com$/i, platform: 'indeed' },
+  { pattern: /(^|\.)linkedin\.com$/i, platform: 'linkedin' },
+];
+
+function platformForHost(url: string): string | null {
+  try {
+    const host = new URL(url).hostname;
+    return PLATFORM_BY_HOST.find((entry) => entry.pattern.test(host))?.platform || null;
+  } catch {
+    return null;
+  }
+}
 
 function matchesOwnDomain(source: string, sourceUrl: string): boolean {
   const pattern = SOURCE_OWN_DOMAIN[source];
@@ -175,10 +205,16 @@ export class AutoApplyService {
   // in-platform apply flow) — deliberately never falls back to a
   // source-keyed applier the way getApplier() does: that source's applier
   // is exactly what just gave up on this URL, so retrying it would loop.
-  private getApplierForResolvedUrl(url: string, atsEnabled: boolean): { applier: JobApplier; platformKey: string } {
+  private getApplierForResolvedUrl(url: string, atsEnabled: boolean, excludePlatform?: string): { applier: JobApplier; platformKey: string } {
     if (atsEnabled) {
       const atsKey = detectAtsKey(url);
       if (atsKey && this.atsAppliers[atsKey]) return { applier: this.atsAppliers[atsKey], platformKey: atsKey };
+    }
+    // Never the platform applier that just handed this URL off (it would
+    // loop), but any OTHER account-based platform owns its own domain.
+    const platform = platformForHost(url);
+    if (platform && platform !== excludePlatform && this.appliers[platform]) {
+      return { applier: this.appliers[platform], platformKey: platform };
     }
     return { applier: this.genericFallback, platformKey: 'external' };
   }
@@ -232,6 +268,8 @@ export class AutoApplyService {
       Number(maxAiCallsRaw) >= 0 ? Number(maxAiCallsRaw) : DEFAULT_MAX_AI_CALLS_PER_ATTEMPT;
     let applied = 0;
     let needsReview = 0;
+    const expiredPlatforms = new Set<string>();
+    const wafBlockedPlatforms = new Set<string>();
 
     for (let i = 0; i < applicationIds.length; i++) {
       if (isCancelled?.()) {
@@ -246,6 +284,35 @@ export class AutoApplyService {
       if (!application) continue;
 
       const source = application.jobOffer?.source || 'unknown';
+
+      if (wafBlockedPlatforms.has(source)) {
+        needsReview++;
+        await this.prisma.application.update({
+          where: { id: applicationId },
+          data: {
+            status: 'needs_review',
+            autoApplyNote: `${source} a refusé l'accès (blocage WAF/403) plus tôt dans cette série — reportée, à relancer plus tard.`,
+          },
+        });
+        await appendLog(`Candidature reportée pour ${application.jobTitle} chez ${application.company} : ${source} bloque l'accès (403) pour le moment.`);
+        continue;
+      }
+
+      if (expiredPlatforms.has(source)) {
+        needsReview++;
+        await this.prisma.application.update({
+          where: { id: applicationId },
+          data: {
+            status: 'needs_review',
+            autoApplyNote: `Session ${source} expirée — ignorée pour cette série. Reconnectez-vous depuis la page Comptes.`,
+          },
+        });
+        await appendLog(
+          `Candidature ignorée pour ${application.jobTitle} chez ${application.company} : la session ${source} est expirée.`,
+        );
+        continue;
+      }
+
       const configuredLimit = params.sourceDailyLimits?.[source];
       const dailyLimit =
         configuredLimit !== undefined && configuredLimit > 0
@@ -292,6 +359,16 @@ export class AutoApplyService {
           await appendLog(`Auto-apply réussi: ${application.jobTitle} chez ${application.company}`);
         } else {
           needsReview++;
+          if (result.blockedByWaf) {
+            wafBlockedPlatforms.add(source);
+            await appendLog(`⚠️ ${source} refuse l'accès (403) : les autres offres ${source} de cette série sont reportées pour ne pas aggraver le blocage.`);
+          }
+          if (result.sessionExpired) {
+            expiredPlatforms.add(source);
+            await appendLog(
+              `⚠️ Session ${source} expirée : toutes les autres offres ${source} de cette série seront ignorées pour protéger votre compte.`,
+            );
+          }
           await this.prisma.application.update({
             where: { id: applicationId },
             data: { status: 'needs_review', autoApplyNote: result.note },
@@ -414,13 +491,19 @@ export class AutoApplyService {
     // anything about *why* apply() is stuck — it just stops waiting on it
     // after the same budget and reports a failure either way, so the run()
     // loop is guaranteed to move on to the next candidature regardless.
-    const APPLY_TIMEOUT_MS = 120_000;
+    // Per HOP, not per attempt (see armWatchdog): a source-platform offer
+    // that redirects to an employer ATS is two full page flows -- confirmed
+    // live on France Travail -> Direct Emploi, where the 120s shared budget
+    // ran out with the second form half-filled (a dozen fields, selects,
+    // a CV upload and the AI planning rounds each take real seconds), and
+    // the redirected form is also the one with the most to do.
+    const APPLY_TIMEOUT_MS = 150_000;
     const TIMEOUT_NOTE = `Tentative interrompue après ${APPLY_TIMEOUT_MS / 1000}s sans réponse — à vérifier manuellement.`;
     // Set synchronously, before context.close() is even called -- lets the
     // race below tell "we deliberately killed this" apart from a genuine,
     // unrelated crash (see the .catch() on `pending`).
     let timedOut = false;
-    const timeoutHandle = setTimeout(() => {
+    const onWatchdogFired = () => {
       this.logger.warn(`Auto-apply attempt for ${application.id} exceeded ${APPLY_TIMEOUT_MS / 1000}s — forcing it to stop.`);
       timedOut = true;
       // Screenshotted BEFORE closing, not after -- confirmed live that a
@@ -438,7 +521,13 @@ export class AutoApplyService {
       timeoutScreenshot.finally(() => {
         context.close().catch(() => {});
       });
-    }, APPLY_TIMEOUT_MS);
+    };
+    let timeoutHandle = setTimeout(onWatchdogFired, APPLY_TIMEOUT_MS);
+    // Re-arms the watchdog with a fresh budget for the next hop.
+    const armWatchdog = () => {
+      clearTimeout(timeoutHandle);
+      timeoutHandle = setTimeout(onWatchdogFired, APPLY_TIMEOUT_MS);
+    };
 
     // Set once the race times out — a browser that's unresponsive enough to
     // stall apply() this way is presumed unresponsive for anything else
@@ -448,8 +537,17 @@ export class AutoApplyService {
     // page again instead of finding out the hard way one call at a time.
     let unresponsive = false;
 
-    const raceForResult = (pending: Promise<ApplyResult>): Promise<ApplyResult> =>
-      Promise.race([
+    // The second timer used to be a bare setTimeout inside a Promise that
+    // was never cleared: it fired 120s after EVERY attempt started, long
+    // after most had finished, logging a bogus "timed out at the
+    // orchestrator level" for each one (confirmed live: seven in a row on
+    // attempts that took under a minute) and, worse, flipping
+    // `unresponsive` to true while a redirect hop was still running --
+    // which then skipped that hop's screenshot and session save. Cleared
+    // as soon as the real result settles.
+    const raceForResult = (pending: Promise<ApplyResult>): Promise<ApplyResult> => {
+      let orchestratorTimer: NodeJS.Timeout | undefined;
+      return Promise.race([
         // The "normal" half of the two-layer timeout above: once
         // context.close() has fired, whatever Playwright call is still in
         // flight inside `pending` is EXPECTED to reject with a raw,
@@ -470,13 +568,14 @@ export class AutoApplyService {
           throw err;
         }),
         new Promise<ApplyResult>((resolve) => {
-          setTimeout(() => {
+          orchestratorTimer = setTimeout(() => {
             this.logger.warn(`Auto-apply attempt for ${application.id} timed out at the orchestrator level — abandoning it.`);
             unresponsive = true;
             resolve({ success: false, note: TIMEOUT_NOTE });
-          }, APPLY_TIMEOUT_MS);
+          }, APPLY_TIMEOUT_MS + 5_000);
         }),
-      ]);
+      ]).finally(() => clearTimeout(orchestratorTimer));
+    };
 
     // Bounds a cleanup step that itself touches the (possibly dead)
     // browser/context — used in the finally block below so a hung close()
@@ -487,6 +586,18 @@ export class AutoApplyService {
 
     try {
       const page = await context.newPage();
+      // Confirmed live on a Michael Page apply flow ("Postuler avec mon
+      // CV"): that button opens the browser's native file picker. Left
+      // unanswered, the picker sat open and every later action on the
+      // page stalled until the 150s watchdog. Any file chooser opened on
+      // any tab of this attempt gets the CV, which is also exactly what a
+      // person would pick there.
+      const answerFileChooser = (p: Page) =>
+        p.on('filechooser', (chooser) => {
+          chooser.setFiles({ name: cvFileName, mimeType: 'application/pdf', buffer: pdfBuffer }).catch(() => {});
+        });
+      answerFileChooser(page);
+      context.on('page', answerFileChooser);
       cdpSession = await this.startScreencast(context, page, application.id);
       let finalUrl = effectiveSourceUrl;
       let finalPlatformKey = platformKey;
@@ -508,6 +619,11 @@ export class AutoApplyService {
             userId,
             fields.map((f) => ({ ...f, platform: finalPlatformKey, sourceUrl: finalUrl })),
           ),
+        saveAnsweredFields: (fields) =>
+          this.customQuestions.recordAnswered(
+            userId,
+            fields.map((f) => ({ ...f, platform: finalPlatformKey, sourceUrl: finalUrl })),
+          ),
         appendLog,
         credential: decryptedCred ? { email: decryptedCred.email, password: decryptedCred.password } : null,
         onSessionUpdated: async (newSession: string) => {
@@ -521,13 +637,47 @@ export class AutoApplyService {
       // posting (LinkedIn/Indeed/HelloWork only discover this after
       // visiting the page) — one more hop to whichever applier actually
       // owns the resolved URL, instead of giving up on what the
-      // source-keyed applier reported. Never chases a second redirect: only
-      // those three appliers ever set this field, and neither the ATS
-      // appliers nor the generic fallback do, so this can't loop.
-      if (!result.success && result.redirectToExternalUrl) {
+      // source-keyed applier reported. Up to TWO hops: an aggregator
+      // (Adzuna) lands on another board (HelloWork, Indeed...) whose own
+      // apply then redirects to the employer's ATS -- confirmed live. A URL
+      // already visited in this attempt ends the chain, so it can't loop.
+      // Only URLs already followed as hops count as "visited": the starting
+      // URL itself must stay eligible, since an applier can legitimately
+      // hand back the very page it was given (confirmed live: the WTTJ
+      // applier on a pre-resolved taleez.com URL) for another applier.
+      const visitedHops = new Set<string>();
+      for (let hop = 0; hop < 2 && !result.success && result.redirectToExternalUrl; hop++) {
+        if (visitedHops.has(result.redirectToExternalUrl)) break;
+        visitedHops.add(result.redirectToExternalUrl);
         finalUrl = result.redirectToExternalUrl;
-        const redirected = this.getApplierForResolvedUrl(finalUrl, atsEnabled);
+        const redirected = this.getApplierForResolvedUrl(finalUrl, atsEnabled, finalPlatformKey);
         finalPlatformKey = redirected.platformKey;
+        // The hop lands on another account-based platform: give the context
+        // that platform's stored session, so its applier runs logged in.
+        const hopPlatform = redirected.applier.credentialPlatform as SupportedPlatform | null;
+        if (hopPlatform && hopPlatform !== platform) {
+          try {
+            const hopCred = await this.credentials.getDecrypted(userId, hopPlatform);
+            const hopState = hopCred.sessionState ? JSON.parse(hopCred.sessionState) : null;
+            const hopCookies = Array.isArray(hopState) ? hopState : Array.isArray(hopState?.cookies) ? hopState.cookies : [];
+            if (hopCookies.length) {
+              await context.addCookies(hopCookies).catch(() => {});
+              await appendLog(`Session ${hopPlatform} chargée pour cette redirection.`);
+            }
+          } catch {
+            // No stored session for that platform: its applier reports the login wall itself.
+          }
+        }
+        // Logged here, once, for every source: the run log otherwise jumps
+        // straight from "en cours" to the verdict with no trace of WHERE the
+        // attempt actually spent its time (confirmed live on a HelloWork ->
+        // recruiter-site hop that timed out with a screenshot of the wrong tab).
+        let redirectHost = finalUrl;
+        try {
+          redirectHost = new URL(finalUrl).hostname;
+        } catch {}
+        await appendLog(`Redirection vers ${redirectHost} (${redirected.platformKey})...`);
+        armWatchdog();
         result = await raceForResult(redirected.applier.apply(page, {
           application: {
             id: application.id,
@@ -546,8 +696,23 @@ export class AutoApplyService {
               userId,
               fields.map((f) => ({ ...f, platform: finalPlatformKey, sourceUrl: finalUrl })),
             ),
+          saveAnsweredFields: (fields) =>
+            this.customQuestions.recordAnswered(
+              userId,
+              fields.map((f) => ({ ...f, platform: finalPlatformKey, sourceUrl: finalUrl })),
+            ),
           appendLog,
         }));
+      }
+
+      // A redirect the hop budget didn't allow following is still an
+      // honest outcome, not an "undefined" note.
+      if (!result.success && result.redirectToExternalUrl && !result.note) {
+        let host = result.redirectToExternalUrl;
+        try {
+          host = new URL(result.redirectToExternalUrl).hostname;
+        } catch {}
+        result = { ...result, note: `Redirection supplémentaire vers ${host} non suivie (limite de sauts atteinte) — à finaliser manuellement.` };
       }
 
       // Every one of these touches the same page/context the timed-out
@@ -615,6 +780,24 @@ export class AutoApplyService {
       // instead (see digest.service.ts).
 
       return result;
+    } catch (error) {
+      // The screenshot above only runs if execution REACHES it. An applier
+      // that throws (a selector that never appeared, a navigation error, a
+      // redirect loop, anything) rethrows out of raceForResult straight to
+      // the finally below, which closes the context -- and the run() loop
+      // then records `needs_review` with an error note and NO screenshot.
+      // Confirmed live: every crashed attempt showed up as "à vérifier"
+      // with nothing to look at, which is the one case a screenshot matters
+      // most. Captured here, before the close, from whichever tab is last
+      // (same choice the timeout handler makes -- picks up a finalPage
+      // opened in a new tab). Skipped when the browser already proved
+      // unresponsive: the timeout path took its own bounded screenshot,
+      // and a second attempt on a dead browser would just hang.
+      if (!unresponsive && !timedOut) {
+        const lastPage = context.pages().at(-1);
+        if (lastPage) await this.captureScreenshot(lastPage, application.id, 5000);
+      }
+      throw error;
     } finally {
       clearTimeout(timeoutHandle);
       // Bounded the same way as everything above — a hung close() on a

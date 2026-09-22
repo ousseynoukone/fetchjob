@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Page } from 'playwright';
 import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
-import { dismissCookieBanner, fillIdentityFields, uploadCv, humanClick, humanFill } from './ats-common';
+import { dismissCookieBanner, fillIdentityFields, uploadCv, humanClick, humanFill, findCvFileInput } from './ats-common';
 import { fillKnownFields } from './form-fields';
 import { runFormLoop } from './ai-form-loop';
 import { AiService } from '../../ai/ai.service';
@@ -35,8 +35,8 @@ export class GreenhouseApplier implements JobApplier {
     // setInputFiles works on a hidden input; gating on visibility silently
     // skipped the upload whenever Greenhouse hides the real input behind
     // its own styled button, same issue found and fixed across every applier.
-    const fileInput = page.locator('input[type="file"]').first();
-    if (await fileInput.count().catch(() => 0)) {
+    const fileInput = await findCvFileInput(page);
+    if (fileInput) {
       await uploadCv(fileInput, ctx).catch(() => {});
     }
 

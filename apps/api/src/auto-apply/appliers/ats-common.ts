@@ -58,15 +58,197 @@ async function jitter(minMs: number, maxMs: number): Promise<void> {
 // two choke points already cover the large majority of real interactions;
 // a handful of special-cased fields (e.g. LinkedIn's own password auto-
 // login field) still use a plain fill, a smaller, lower-frequency surface.
+// Above this, humanFill pastes instead of typing key by key (see there).
+// ~200 chars is roughly the upper bound of anything a person would plausibly
+// type into a form field by hand rather than paste.
+const PASTE_THRESHOLD_CHARS = 200;
+
+// An upload control with no reachable <input type=file> (confirmed live on
+// Michael Page's "Joindre votre CV" box, required and left empty): clicking
+// it opens the browser's file chooser, which the orchestrator answers with
+// the CV for every attempt (see auto-apply.service.ts). Returns true when
+// something was clicked.
+export async function clickCvUploadControl(page: Page): Promise<boolean> {
+  const control = page
+    .locator('button, a, label, div[role="button"], span[role="button"], [class*="upload" i], [class*="dropzone" i]')
+    .filter({ hasText: /joindre (votre|mon|un) cv|importe[rz] (votre|mon|un) cv|t[ée]l[ée]charge[rz] (votre|mon|un) cv|ajouter (votre|mon|un) cv|d[ée]poser (votre|mon|un) cv|attach (your |a )?(cv|resume)|upload (your |a )?(cv|resume)|choisir un fichier|s[ée]lect(ionner)?\.? (un )?fichier/i })
+    .filter({ visible: true })
+    .first();
+  if (!(await control.isVisible().catch(() => false))) return false;
+  const text = (await control.innerText().catch(() => '')).trim();
+  if (text.length > 60) return false;
+  await humanClick(page, control).catch(() => control.click({ timeout: 3000 }).catch(() => {}));
+  await page.waitForTimeout(1500);
+  return true;
+}
+
+// Mandatory consent boxes ("J'ai pris connaissance de la Politique de
+// protection des données", "J'accepte les CGU"...) are ticked
+// deterministically, before anything else: confirmed live on JCDecaux's
+// ATS, where the CV-import and form buttons stay disabled until the box is
+// checked, so nothing downstream could even start. Marketing/newsletter
+// opt-ins are never touched.
+const CONSENT_TEXT =
+  /j'accepte|j'ai pris connaissance|je reconnais|je certifie|j'autorise|conditions g[ée]n[ée]rales|politique de (confidentialit[ée]|protection)|donn[ée]es personnelles|traitement de mes donn[ée]es|rgpd|i (agree|accept|acknowledge|have read)|privacy (policy|notice)|data protection|terms (and|&) conditions|consent to the/i;
+const OPT_IN_TEXT = /newsletter|offres? (similaires|d'emploi par)|marketing|communications? commerciale|alerte|actualit[ée]s|promotion|partenaires/i;
+
+export async function tickConsentCheckboxes(page: Page): Promise<number> {
+  let ticked = 0;
+  const boxes = page.locator('input[type="checkbox"]');
+  const count = await boxes.count().catch(() => 0);
+  for (let i = 0; i < Math.min(count, 20); i++) {
+    const box = boxes.nth(i);
+    const info = await box
+      .evaluate((el: any) => {
+        const r = el.getBoundingClientRect();
+        const label = el.labels?.[0]?.textContent || el.closest('label')?.textContent || el.getAttribute('aria-label') || '';
+        const container = el.closest('div, li, p, td, fieldset')?.textContent || '';
+        return { checked: !!el.checked, visible: r.width > 0 && r.height > 0, text: `${label} ${container}`.replace(/\s+/g, ' ').slice(0, 400) };
+      })
+      .catch(() => null);
+    if (!info || info.checked || !info.visible) continue;
+    if (!CONSENT_TEXT.test(info.text) || OPT_IN_TEXT.test(info.text)) continue;
+    await humanClick(page, box).catch(() => box.check({ timeout: 3000 }).catch(() => {}));
+    if (await box.isChecked().catch(() => false)) ticked++;
+  }
+  return ticked;
+}
+
+// Cuts long text at a sentence/paragraph boundary under `limit`.
+export function truncateAtBoundary(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  const slice = text.slice(0, limit);
+  const cut = Math.max(slice.lastIndexOf('\n\n'), slice.lastIndexOf('. '), slice.lastIndexOf('! '), slice.lastIndexOf('? '));
+  return (cut > limit * 0.5 ? slice.slice(0, cut + 1) : slice).trim();
+}
+
 export async function humanFill(locator: Locator, value: string): Promise<void> {
   if (!value) return;
+  // Confirmed live on a Lila ATS form: a 1 300-char cover letter went into
+  // "informations complémentaires" (max 1 000) and the whole form stayed
+  // invalid. A field's own maxlength is the one limit that is always right.
+  const maxLength = await locator.evaluate((e: any) => (typeof e.maxLength === 'number' && e.maxLength > 0 ? e.maxLength : 0)).catch(() => 0);
+  if (maxLength && value.length > maxLength) value = truncateAtBoundary(value, maxLength);
   try {
     await locator.hover({ timeout: 3000 });
     await locator.click({ timeout: 3000 });
-    await locator.pressSequentially(value, { delay: 35 + Math.random() * 70 });
+    // REPLACE semantics, like the .fill() this superseded -- pressSequentially
+    // alone types at the caret and APPENDS to whatever's already there.
+    // Confirmed live on a real WTTJ application: the AI form loop retried a
+    // rejected field three times, and each pass stacked its value onto the
+    // previous one ("Ousseynou KoneOusseynou KoneOusseynou Kone"), so the
+    // form could never validate. Select-all + Backspace are real key events,
+    // consistent with the rest of this function's reason for existing.
+    const existing = await locator.inputValue({ timeout: 1000 }).catch(() => null);
+    // Already holds exactly this value (a previous step, or the site's own
+    // prefill): nothing to type. Typing it again is how a field ends up
+    // doubled.
+    if (existing === value) return;
+    // Confirmed live on a Direct Emploi form (postal code "9345093450"):
+    // select-all + Backspace is not guaranteed to empty a field -- a site
+    // that hooks keydown, a masked input, or an inputValue() read that
+    // timed out (so the old `if (existing)` skipped the clear entirely)
+    // all leave the previous text in place, and the keystrokes below then
+    // append to it. Clear unconditionally, check the result, and fall back
+    // to a direct clear when the key events didn't take.
+    await locator.press('Control+a').catch(() => {});
+    await locator.press('Backspace').catch(() => {});
+    const afterClear = await locator.inputValue({ timeout: 1000 }).catch(() => null);
+    if (afterClear) await locator.fill('').catch(() => {});
+    // Per-key typing is only realistic for short values. A ~1500-char cover
+    // letter at 35-105ms per key is 50-160 seconds -- longer than the whole
+    // attempt's 120s budget, and six appliers pass exactly that through
+    // here. No person types a cover letter into a form either; they paste
+    // it, which is one input event carrying the whole text -- precisely what
+    // fill() emits. Short values (names, emails, a URL) keep the keystroke
+    // cadence; long ones get a paste.
+    // Confirmed live on HelloWork's phone widget (an intl-tel-input style
+    // field with a fixed "+33" prefix that re-renders on every keystroke):
+    // per-key typing got 6 characters in and then ate the attempt's whole
+    // 150s budget, one stalled key press at a time. A phone/number widget
+    // gets its value as one input event (what a paste is), and any other
+    // field that stops accepting keystrokes falls back to the same instead
+    // of waiting Playwright's default 30s on each remaining key.
+    const inputType = await locator.evaluate((e: any) => (e.type || '').toLowerCase()).catch(() => '');
+    if (value.length > PASTE_THRESHOLD_CHARS || inputType === 'tel') {
+      await locator.fill(value);
+    } else {
+      try {
+        await locator.pressSequentially(value, { delay: 35 + Math.random() * 70, timeout: 3000 });
+      } catch {
+        await locator.fill(value);
+      }
+      // Confirmed live on Adzuna's location box ("Ile-de-France,
+      // FranIle-de-Francece"): an autocomplete widget moved the caret
+      // mid-typing and the keystrokes landed in the middle of its own
+      // suggestion. Whatever the widget did, the field must end up holding
+      // the value -- one replacing input event when it doesn't.
+      const typed = await locator.inputValue({ timeout: 1000 }).catch(() => null);
+      if (typed !== null && typed.trim() !== value.trim()) await locator.fill(value).catch(() => {});
+    }
   } catch {
     await locator.fill(value).catch(() => {});
   }
+}
+
+// A phone field that already shows the country code ("+33" as a fixed
+// prefix, a "France (+33)" selector next to it, or a "6 12 34 56 78"
+// placeholder) expects the NATIONAL number without its leading 0 --
+// "+33 0630..." is what HelloWork's widget was left with. Read the field's
+// surroundings and strip the 0 only in that case.
+// Phone widgets are the single most hostile input seen live (HelloWork's:
+// a fixed "+33" prefix, a keystroke filter that silently drops characters,
+// "Certains caractères ne sont pas acceptés" for a perfectly normal
+// number). One value + one typing strategy is not enough: each candidate
+// format is set as a single input event, then the field is READ BACK and
+// the surrounding error text checked, and the first format the widget
+// keeps wins. Order: national without the leading 0 when a country prefix
+// is shown, then the plain 10-digit form, then E.164.
+export async function fillPhoneRobustly(locator: Locator, phone: string, exclude: string[] = []): Promise<void> {
+  const digits = phone.replace(/[^\d+]/g, '');
+  const national10 = digits.replace(/^\+33/, '0').replace(/^33(?=\d{9}$)/, '0');
+  const national9 = national10.replace(/^0/, '');
+  const preferNational9 = (await phoneValueForField(locator, phone)) === national9;
+  const candidates = [...new Set(preferNational9 ? [national9, national10, `+33${national9}`] : [national10, national9, `+33${national9}`])].filter(
+    (c) => !exclude.includes(c),
+  );
+  for (const candidate of candidates) {
+    await locator.click({ timeout: 3000 }).catch(() => {});
+    await locator.fill('').catch(() => {});
+    await locator.fill(candidate).catch(() => {});
+    await locator.press('Tab').catch(() => {});
+    await locator.page().waitForTimeout(400);
+    const value = (await locator.inputValue({ timeout: 1000 }).catch(() => '')) || '';
+    const kept = value.replace(/\D/g, '');
+    // Confirmed live (Direct Emploi): a widget that prepends its own "0"
+    // turned the 10-digit form into "00630062429" -- 11 digits, which the
+    // old ">= 9 digits" test happily accepted. Only the three shapes of a
+    // valid French number are.
+    const acceptable = new Set([national10, national9, `33${national9}`]);
+    if (!acceptable.has(kept)) continue;
+    const errorNearby = await locator
+      .evaluate((el: any) => {
+        const box = el.closest('div, fieldset, li') || el.parentElement;
+        const text = (box?.textContent || '').toLowerCase();
+        return /non valide|invalide|pas accept|incorrect|invalid|format/.test(text);
+      })
+      .catch(() => false);
+    if (!errorNearby) return;
+  }
+}
+
+export async function phoneValueForField(locator: Locator, phone: string): Promise<string> {
+  const digits = phone.replace(/[^\d+]/g, '');
+  const hasCountryPrefix = await locator
+    .evaluate((el: any) => {
+      const own = `${el.value || ''} ${el.getAttribute('placeholder') || ''}`;
+      const around = el.closest('div, fieldset, label, li')?.textContent || '';
+      const prev = el.previousElementSibling?.textContent || '';
+      return /\+33|\(33\)|\bFR\b/.test(`${own} ${around.slice(0, 120)} ${prev}`) || /^\s*[1-9] \d\d /.test(el.getAttribute('placeholder') || '');
+    })
+    .catch(() => false);
+  if (!hasCountryPrefix) return phone;
+  return digits.replace(/^\+33/, '').replace(/^0/, '');
 }
 
 // Throws if the final click itself fails (same contract as Playwright's own
@@ -122,6 +304,44 @@ export async function uploadCv(fileInput: Locator, ctx: { cvPdfPath: string; cvF
   await fileInput.setInputFiles({ name: ctx.cvFileName, mimeType: 'application/pdf', buffer });
 }
 
+const IMAGE_FILE_INPUT_TEXT = /photo|image|avatar|picture|portrait|logo|selfie/i;
+const CV_FILE_INPUT_TEXT = /\bcv\b|r[ée]sum[ée]|curriculum|resume/i;
+
+// The file input the CV belongs in -- NOT simply the first one on the page.
+// Confirmed live on two Welcome to the Jungle applications: the form's
+// first <input type=file> is the optional "Photo de profil", the PDF went
+// in there ("Format non pris en charge. Vous pouvez télécharger : gif,
+// jpeg, png, svg"), the real CV field stayed empty and the submission
+// never validated. Skips any input that only accepts images or is
+// labelled as a photo, prefers one explicitly labelled CV/résumé or
+// accepting PDF/Word, and otherwise takes the first remaining one.
+export async function findCvFileInput(scope: Page | Locator): Promise<Locator | null> {
+  const inputs = scope.locator('input[type="file"]');
+  const count = await inputs.count().catch(() => 0);
+  let fallback: Locator | null = null;
+  for (let i = 0; i < count; i++) {
+    const input = inputs.nth(i);
+    const meta = await input
+      .evaluate((el: any) => {
+        const id = el.getAttribute('id');
+        const forLabel = id ? (document.querySelector(`label[for="${(globalThis as any).CSS?.escape ? (globalThis as any).CSS.escape(id) : id}"]`)?.textContent || '') : '';
+        const wrapping = el.closest('label')?.textContent || '';
+        const container = el.closest('div, fieldset, section, li')?.textContent || '';
+        return {
+          accept: (el.getAttribute('accept') || '').toLowerCase(),
+          text: `${el.getAttribute('name') || ''} ${id || ''} ${el.getAttribute('aria-label') || ''} ${forLabel} ${wrapping} ${container.slice(0, 200)}`,
+        };
+      })
+      .catch(() => null);
+    if (!meta) continue;
+    const imageOnly = !!meta.accept && meta.accept.split(',').every((t) => /image|\.(png|jpe?g|gif|svg|webp)$/.test(t.trim()));
+    if (imageOnly || (IMAGE_FILE_INPUT_TEXT.test(meta.text) && !CV_FILE_INPUT_TEXT.test(meta.text))) continue;
+    if (CV_FILE_INPUT_TEXT.test(meta.text) || /pdf|doc|msword|officedocument/.test(meta.accept)) return input;
+    if (!fallback) fallback = input;
+  }
+  return fallback;
+}
+
 const IDENTITY_PATTERNS = {
   first: /first ?name|pr[ée]nom/i,
   last: /last ?name|^nom\b|nom de famille/i,
@@ -149,7 +369,7 @@ type IdentityRole = keyof typeof IDENTITY_PATTERNS;
 // classifies it by matching label+placeholder+input-type against bilingual
 // patterns. Tags each match with a temporary attribute so Node-side code
 // can address the exact element without needing to reconstruct a selector.
-async function scanIdentityFields(page: Page): Promise<{ role: IdentityRole; idx: number; tag: string }[]> {
+async function scanIdentityFields(page: Page): Promise<{ role: IdentityRole; idx: number; tag: string; selector: string | null }[]> {
   return page.evaluate((patterns: Record<IdentityRole, { source: string; flags: string }>) => {
     const doc: any = document;
     const compiled = Object.fromEntries(
@@ -196,7 +416,7 @@ async function scanIdentityFields(page: Page): Promise<{ role: IdentityRole; idx
       return '';
     };
 
-    const matches: { role: IdentityRole; idx: number; tag: string }[] = [];
+    const matches: { role: IdentityRole; idx: number; tag: string; selector: string | null }[] = [];
     const existingIdxs = Array.from(doc.querySelectorAll('[data-identity-idx]')).map(
       (e: any) => Number(e.getAttribute('data-identity-idx')) || 0,
     );
@@ -222,6 +442,12 @@ async function scanIdentityFields(page: Page): Promise<{ role: IdentityRole; idx
         const value = (el.value || '').trim();
         if (value) continue; // already filled — don't overwrite
       }
+      // Confirmed live on a Figaro Classifieds form ("KoneKoneKoneKoneKone"):
+      // a widget whose .value never reflects what it displays looks empty on
+      // every loop step, so this ran again and again and the name stacked up
+      // five times. A field this attempt already filled is done, whatever
+      // its .value says.
+      if (el.hasAttribute('data-identity-filled')) continue;
 
       const type = (el.type || '').toLowerCase();
       const label = extractLabel(el);
@@ -242,14 +468,23 @@ async function scanIdentityFields(page: Page): Promise<{ role: IdentityRole; idx
       else if (compiled.rqth.test(haystack)) role = 'rqth';
       else if (compiled.workAuth.test(haystack)) role = 'workAuth';
       else if (compiled.availability.test(haystack)) role = 'availability';
+      // `full` before `last`: "Nom complet" also matches the last-name
+      // pattern (^nom) and was getting just "Kone" -- confirmed live.
+      else if (compiled.full.test(haystack)) role = 'full';
       else if (compiled.first.test(haystack)) role = 'first';
       else if (compiled.last.test(haystack)) role = 'last';
-      else if (compiled.full.test(haystack)) role = 'full';
       if (!role) continue;
 
       const tagIdx = idx++;
       el.setAttribute('data-identity-idx', String(tagIdx));
-      matches.push({ role, idx: tagIdx, tag });
+      // A stable selector alongside the tag: React/Angular forms
+      // (SmartRecruiters, confirmed live on "Confirmez votre e-mail") can
+      // re-render the input between this scan and the fill, and a re-created
+      // node no longer carries the tag attribute -- the fill then finds
+      // nothing and silently skips.
+      const esc = (globalThis as any).CSS?.escape;
+      const selector = id ? `#${esc ? esc(id) : id}` : name ? `${tag}[name="${name.replace(/"/g, '\\"')}"]` : null;
+      matches.push({ role, idx: tagIdx, tag, selector });
     }
 
     return matches;
@@ -320,17 +555,37 @@ export async function fillIdentityFields(
     availability: 'Immédiate',
   };
 
+  // A server-side "phone invalid" verdict only shows after a submit
+  // (confirmed live on a WP Job Manager form: "Téléphone: Veuillez saisir
+  // un numéro" for "+33 0630062429"). The field is no longer empty, so the
+  // scan below would leave it alone; re-fill it with the NEXT format instead.
+  const bodyText = await page.locator('body').innerText({ timeout: 2000 }).catch(() => '');
+  if (/t[ée]l[ée]phone[^.\n]{0,60}(saisir|invalide|valide|incorrect|obligatoire|requis)|(invalid|enter a valid) phone/i.test(bodyText) && cv.phone) {
+    const phoneFields = page.locator('input[type="tel"], input[name*="phone" i], input[id*="phone" i], input[name*="tel" i], input[id*="tel" i]');
+    const count = await phoneFields.count().catch(() => 0);
+    for (let i = 0; i < count; i++) {
+      const field = phoneFields.nth(i);
+      if (!(await field.isVisible().catch(() => false))) continue;
+      const current = (await field.inputValue().catch(() => '')).replace(/\s+/g, '');
+      await fillPhoneRobustly(field, cv.phone, [current, current.replace(/^\+33/, '0')]);
+      await field.evaluate((el: any) => el.setAttribute('data-identity-filled', '1')).catch(() => {});
+    }
+  }
+
   for (let attempt = 0; attempt < 2; attempt++) {
     const matches = await scanIdentityFields(page).catch(() => []);
     for (const m of matches) {
       const value = values[m.role];
       if (!value) continue;
-      const locator = page.locator(`[data-identity-idx="${m.idx}"]`).first();
+      const tagged = page.locator(`[data-identity-idx="${m.idx}"]`).first();
+      const locator = (await tagged.count().catch(() => 0)) > 0 || !m.selector ? tagged : page.locator(m.selector).first();
       if (m.tag === 'select') {
         await selectOptionRobustly(locator, m.role, value);
       } else {
-        await humanFill(locator, value);
+        if (m.role === 'phone') await fillPhoneRobustly(locator, value);
+        else await humanFill(locator, value);
       }
+      await locator.evaluate((el: any) => el.setAttribute('data-identity-filled', '1')).catch(() => {});
     }
 
     // Auto-select Monsieur for any Civilité radio buttons if unselected
@@ -368,8 +623,13 @@ export async function fillIdentityFields(
 // consent modal's button reads "Accepter & Fermer" — not matched by any
 // earlier alternative here (closest was `^accepter$`, an exact-text match),
 // so the modal sat there un-dismissed through the whole rest of the attempt.
+// Confirmed live on handicap-job.com (a "Bienvenue dans Handicap-Job"
+// consent modal with "Gérer les options" / "Autoriser"): the wording is
+// not always some form of "accepter" -- "autoriser", "OK", "j'ai compris"
+// and "continuer" all appear on real career-site CMPs, and a banner that
+// isn't recognised stays on top of the form for the entire attempt.
 const COOKIE_ACCEPT_TEXT =
-  /tout accepter|accepter tout|accepter les cookies|^accepter$|accepter (&|et) fermer|j'accepte|accept all|accept cookies|^accept$|i agree/i;
+  /tout accepter|accepter tout|accepter les cookies|^accepter$|accepter (&|et) (fermer|continuer)|j'accepte|^autoriser$|tout autoriser|autoriser tou(s|t)( les cookies)?|autoriser (&|et) (fermer|continuer)|^ok$|^ok pour moi$|^d'accord$|j'ai compris|^compris$|^continuer$|accept all|accept cookies|^accept$|accept (&|and) (close|continue)|allow all|^allow$|i agree|^agree$|^got it$/i;
 
 export async function dismissCookieBanner(page: Page): Promise<void> {
   // Confirmed live via a real production screenshot on France Travail: a
@@ -385,10 +645,18 @@ export async function dismissCookieBanner(page: Page): Promise<void> {
   // the attempt. Checks every match instead of stopping at the first.
   // Check common CMP consent buttons (Didomi, OneTrust, Axeptio, France Travail)
   const explicitCmp = page
-    .locator('#didomi-notice-agree-button, #onetrust-accept-btn-handler, #pe-cookies-accept, #pe-cookies-refuse, #axeptio_btn_acceptAll')
+    .locator(
+      '#didomi-notice-agree-button, #onetrust-accept-btn-handler, #pe-cookies-accept, #pe-cookies-refuse, #axeptio_btn_acceptAll, ' +
+        '#tarteaucitronPersonalize2, .tarteaucitronAllow, #CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll, ' +
+        '.qc-cmp2-summary-buttons button[mode="primary"], button[data-cky-tag="accept-button"], .cc-btn.cc-allow, #cookiescript_accept',
+    )
     .first();
   if (await explicitCmp.isVisible().catch(() => false)) {
-    await explicitCmp.click().catch(() => {});
+    // Same human-like path as every other click here -- a consent button
+    // is the very first thing clicked on a page, exactly where a bare
+    // .click() with no mouse trajectory stands out.
+    await humanClick(page, explicitCmp).catch(() => explicitCmp.click().catch(() => {}));
+    await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
     await page.waitForTimeout(500);
     return;
   }
@@ -411,6 +679,39 @@ export async function dismissCookieBanner(page: Page): Promise<void> {
         acceptButton = candidate;
         break;
       }
+    }
+  }
+  // Confirmed live on talents-handicap.com: "Refuser" / "Accepter" are not
+  // <button>s at all, so getByRole('button') never saw them and the modal
+  // sat over the page for the whole attempt. Any clickable element whose
+  // own text is the accept wording counts.
+  if (!acceptButton) {
+    const looseMatches = await page
+      .locator('a, div[onclick], span[onclick], [role="button"], input[type="button"], input[type="submit"], button')
+      .filter({ hasText: COOKIE_ACCEPT_TEXT })
+      .all()
+      .catch(() => []);
+    for (const candidate of looseMatches) {
+      const text = (await candidate.innerText().catch(() => '')).trim();
+      if (text.length > 40 || !COOKIE_ACCEPT_TEXT.test(text)) continue;
+      if (await candidate.isVisible().catch(() => false)) {
+        acceptButton = candidate;
+        break;
+      }
+    }
+  }
+  // Some CMPs (Sourcepoint, some Didomi/Quantcast setups) render the whole
+  // dialog inside an iframe, where page-level locators never look.
+  if (!acceptButton) {
+    for (const frame of page.frames()) {
+      if (frame === page.mainFrame()) continue;
+      for (const candidate of await frame.getByRole('button', { name: COOKIE_ACCEPT_TEXT }).all().catch(() => [])) {
+        if (await candidate.isVisible().catch(() => false)) {
+          acceptButton = candidate;
+          break;
+        }
+      }
+      if (acceptButton) break;
     }
   }
 
@@ -462,15 +763,47 @@ export async function dismissCookieBanner(page: Page): Promise<void> {
 // URL-only check misses it entirely. Checked after every login attempt,
 // across every account-based applier; on a hit, the applier must abandon
 // and report `needs_review`, never try to work around it.
-const SECURITY_CHECK_TEXT = /échec de la vérification|browser check failed|verify you are human|unusual activity|friendlycaptcha|hcaptcha|recaptcha|datadome|cloudflare|security check|vérification supplémentaire|prouvez que vous êtes humain|validate you are human|vérification de sécurité en cours|vérifiez que vous êtes humain/i;
+// "why have i been blocked" / "you have been blocked": Cloudflare's hard
+// block page (seen live on Safran's ATS through WTTJ) -- not a challenge
+// that can be passed, but still a security wall, and the note should say
+// so rather than "no form found".
+const SECURITY_CHECK_TEXT = /échec de la vérification|browser check failed|verify you are human|unusual activity|security check|vérification supplémentaire|prouvez que vous êtes humain|validate you are human|vérification de sécurité en cours|vérifiez que vous êtes humain|why have i been blocked|you have been blocked|attention required!? \| cloudflare|access denied \| /i;
 
 export async function hasSecurityCheck(page: Page): Promise<boolean> {
-  if (SECURITY_CHECK_TEXT.test(page.url())) return true;
-  for (const frame of page.frames()) {
-    if (/captcha|datadome/i.test(frame.url())) return true;
+  const checkOnce = async () => {
+    if (SECURITY_CHECK_TEXT.test(page.url())) {
+      console.log('SECURITY CHECK TRIGGERED BY URL:', page.url());
+      return true;
+    }
+    if (/datadome/i.test(page.url())) {
+      console.log('SECURITY CHECK TRIGGERED BY DATADOME URL:', page.url());
+      return true;
+    }
+    for (const frame of page.frames()) {
+      // Background telemetry iframes often contain 'datadome' or 'captcha' without actually blocking the user.
+      // We rely on the body text check below to see if the user is actually being challenged.
+    }
+    const bodyText = await page.locator('body').innerText({ timeout: 1000 }).catch(() => '');
+    const match = bodyText.match(SECURITY_CHECK_TEXT);
+    if (match) {
+      console.log('SECURITY CHECK TRIGGERED BY BODY TEXT:', match[0]);
+      return true;
+    }
+    return false;
+  };
+
+  let hasCheck = await checkOnce();
+  if (!hasCheck) return false;
+
+  // Transient checks (Cloudflare "Just a moment...", Datadome interstitial) 
+  // often clear automatically after 3-8 seconds for stealth browsers.
+  // Poll before declaring it blocked.
+  for (let i = 0; i < 6; i++) {
+    await page.waitForTimeout(2000);
+    hasCheck = await checkOnce();
+    if (!hasCheck) return false;
   }
-  const bodyText = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
-  return SECURITY_CHECK_TEXT.test(bodyText);
+  return true;
 }
 
 export interface SessionCheck {
@@ -513,10 +846,22 @@ export const SESSION_CHECKS: Record<string, SessionCheck> = {
       // page is genuinely a THIRD state, not proof of either login or
       // logout, but treating it as "still not logged in" is the only safe
       // choice -- there is no usable, complete session to save from it.
-      if (page.url().includes('/login') || page.url().includes('/uas/login') || page.url().includes('/checkpoint/')) {
+      if (/\/login|\/uas\/login|\/checkpoint\/|\/signup|\/authwall|\/start\/join/i.test(page.url())) {
         return true;
       }
       if (await page.locator('#username').isVisible().catch(() => false)) return true;
+      // Confirmed live from an apply-time screenshot: a dead li_at cookie
+      // sends a job URL to LinkedIn's full-page SIGNUP ("Inscrivez-vous sur
+      // LinkedIn, c'est gratuit" / "Déjà inscrit(e) ? S'identifier") --
+      // neither the login form nor the feed, and none of the checks here
+      // matched it, so the applier reported "no apply button" and the
+      // orchestrator then saved that logged-out state as a healthy session.
+      const signupHeading = await page
+        .getByText(/inscrivez[- ]vous sur linkedin|join linkedin|nouveau sur linkedin|new to linkedin|d[ée]j[àa] inscrit|already on linkedin/i)
+        .first()
+        .isVisible()
+        .catch(() => false);
+      if (signupHeading) return true;
 
       // If top nav or profile avatar is visible, user is authenticated
       const hasNav = await page.locator('.global-nav__me, #global-nav, .feed-identity-module, [data-control-name="nav.settings"]').first().isVisible().catch(() => false);
@@ -531,8 +876,19 @@ export const SESSION_CHECKS: Record<string, SessionCheck> = {
   },
   indeed: {
     homeUrl: 'https://myjobs.indeed.com/',
-    isLoginWallVisible: async (page) =>
-      page.locator('#login-email-input, input[name="__email"]').first().isVisible().catch(() => false),
+    isLoginWallVisible: async (page) => {
+      // Confirmed live: when Indeed recognises the account it skips the
+      // email form and shows "Nous sommes ravis de vous revoir" with only a
+      // "Continuer avec Google" button -- no email input at all -- and the
+      // old input-only check read that as "logged in" and saved the session
+      // before the person had even signed in. Every Indeed auth screen
+      // (email, password, one-time code, this welcome-back page) lives on
+      // secure.indeed.com, and the Google/Apple SSO detours on their own
+      // domains; a real session lands on myjobs.indeed.com. The URL is the
+      // reliable signal; the input is only a fallback.
+      if (/secure\.indeed\.com|accounts\.google\.com|appleid\.apple\.com/i.test(page.url())) return true;
+      return page.locator('#login-email-input, input[name="__email"]').first().isVisible().catch(() => false);
+    },
   },
   hellowork: {
     homeUrl: 'https://www.hellowork.com/fr-fr/candidat/mon-espace.html',
@@ -667,8 +1023,14 @@ export async function hasAlreadyAppliedIndicator(page: Page): Promise<boolean> {
 // there" -- checked as a fallback right before an applier gives up and
 // reports the generic "no apply button found", so the campaign log/UI can
 // tell a stale posting apart from a real detection gap worth investigating.
+// The second half is the "landed on a search page instead of the posting"
+// case: confirmed live on an Atos career site (WTTJ redirect) whose
+// job URL now answers "Il n'y a actuellement aucun poste vacant
+// correspondant" over its own search form -- which the generic applier
+// then filled in. Search-results wording is only read as "gone" when no
+// application form is on the page (see hasJobClosedIndicator's callers).
 const JOB_CLOSED_TEXT =
-  /no longer accepting applications|n'accepte plus de candidatures|ne recrute plus|cette offre n'est plus disponible|this job (is no longer available|has expired)|offre expirée|candidatures closes/i;
+  /no longer accepting applications|n'accepte plus de candidatures|ne recrute plus|cette offre n'est plus disponible|this job (is no longer available|has expired)|offre expirée|candidatures closes|aucun poste vacant correspondant|cette offre (d'emploi )?n'existe plus|l'offre que vous recherchez n'existe (plus|pas)|poste (pourvu|déjà pourvu)|position has been filled|job (posting )?(not found|no longer exists|has been closed)|this (job|position) is closed|we're sorry.{0,40}(no longer|not available)/i;
 
 export async function hasJobClosedIndicator(page: Page): Promise<boolean> {
   const bodyText = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
@@ -722,12 +1084,27 @@ export async function resolveExternalApplyUrl(page: Page, clickable: Locator, ow
 
   if (popup) {
     await popup.waitForLoadState('domcontentloaded').catch(() => {});
+    // Confirmed live (Indeed -> talents-handicap.com): the first URL the
+    // popup reports is an intermediate hop of a redirect chain, and the
+    // attempt then "applied" on the employer's HOMEPAGE. Give the chain a
+    // bounded moment to settle and re-read; if it still ends on a bare
+    // domain root, that's not a job page.
+    await popup.waitForLoadState('load', { timeout: 8000 }).catch(() => {});
+    // Confirmed live on Indeed ("Continuer pour postuler"): the popup
+    // first lands on the platform's OWN redirector (indeed.com/applystart)
+    // and only then hops to the employer -- read at the wrong moment, the
+    // hop looked like "never left the platform". Poll until it does.
+    for (let i = 0; i < 10 && (ownDomain.test(popup.url()) || popup.url() === 'about:blank'); i++) {
+      await popup.waitForTimeout(1000);
+    }
     const url = popup.url();
     await popup.close().catch(() => {});
-    return url && !ownDomain.test(url) ? url : null;
+    if (!url || ownDomain.test(url) || url === 'about:blank') return null;
+    return url;
   }
 
-  await page.waitForTimeout(1500);
+  // Same-tab case: give a redirector hop the same chance.
+  for (let i = 0; i < 4 && ownDomain.test(page.url()); i++) await page.waitForTimeout(1000);
   const url = page.url();
   return !ownDomain.test(url) ? url : null;
 }
@@ -765,10 +1142,24 @@ export async function findWttjApplyButton(page: Page): Promise<Locator | null> {
   return null;
 }
 
+// The server-rendered "Postuler" link on a WTTJ job page reads
+// href="/fr/authenticate/signin" for EVERY offer; only client-side
+// hydration swaps in the employer's real ATS URL (plus an "ExternalLink"
+// icon) on an external one. Confirmed live: an external FERCHAU offer read
+// as on-site 2s after domcontentloaded, got clicked as if native, and WTTJ
+// answered with its "Avez-vous postulé à ce job ?" tracker modal while the
+// real form opened in a tab nobody was driving. Waits for the network to
+// settle (bounded) so the link is read in its final state.
+export async function waitForWttjHydration(page: Page): Promise<void> {
+  await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
+  await page.waitForTimeout(500);
+}
+
 export async function resolveWelcomeToTheJungleApplyUrl(page: Page, jobPageUrl: string): Promise<string | null> {
   await page.goto(jobPageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await dismissCookieBanner(page);
   await page.waitForTimeout(2000); // same WAF-challenge/SPA-hydration delay as the scraper's enrichment step
+  await waitForWttjHydration(page);
   const applyButton = await findWttjApplyButton(page);
   if (!applyButton) return null;
   return resolveExternalApplyUrl(page, applyButton, /welcometothejungle\.com/i);
@@ -954,6 +1345,33 @@ export async function handleUniversalEmailOtp(
  * (Arkose Labs, FunCaptcha, SmartRecruiters security challenge, etc.).
  * Drags the handle from left to right across the track.
  */
+// Cloudflare Turnstile ("Vérifiez que vous êtes humain" checkbox), seen
+// live on Indeed through the host Chrome. The widget lives in a
+// cross-origin iframe behind a closed shadow root, so no locator reaches
+// the checkbox itself -- but a real mouse click on the box's left edge is
+// exactly what a person does, and a genuine Chrome usually passes on that.
+// Returns true when the challenge is gone afterwards. Never loops.
+export async function tryClickTurnstile(page: Page): Promise<boolean> {
+  const frameEl = page.locator('iframe[src*="challenges.cloudflare.com"], iframe[title*="Turnstile" i], iframe[title*="Cloudflare" i]').first();
+  if (!(await frameEl.isVisible().catch(() => false))) return false;
+  const box = await frameEl.boundingBox().catch(() => null);
+  if (!box) return false;
+  const x = box.x + 28 + Math.random() * 6;
+  const y = box.y + box.height / 2 + (Math.random() * 6 - 3);
+  await page.mouse.move(x - 60 - Math.random() * 40, y - 30 - Math.random() * 20).catch(() => {});
+  await page.waitForTimeout(120 + Math.random() * 150);
+  await page.mouse.move(x, y, { steps: 10 }).catch(() => {});
+  await page.waitForTimeout(80 + Math.random() * 120);
+  await page.mouse.click(x, y).catch(() => {});
+  for (let i = 0; i < 8; i++) {
+    await page.waitForTimeout(1000);
+    const stillThere = await frameEl.isVisible().catch(() => false);
+    const bodyText = await page.locator('body').innerText({ timeout: 1000 }).catch(() => '');
+    if (!stillThere && !SECURITY_CHECK_TEXT.test(bodyText)) return true;
+  }
+  return false;
+}
+
 export async function trySolveSlideChallenge(page: Page): Promise<boolean> {
   try {
     let slideNotice: Locator | null = null;
@@ -1027,20 +1445,41 @@ export async function trySolveSlideChallenge(page: Page): Promise<boolean> {
     const startX = handleBox.x + handleBox.width / 2;
     const startY = handleBox.y + handleBox.height / 2;
 
-    // Simulate natural human drag with easing and jitter
-    await page.mouse.move(startX, startY);
+    // Move to the handle with a human-like approach rather than a teleport
+    await page.mouse.move(startX - 20 - Math.random() * 30, startY - 10 - Math.random() * 20);
+    await page.waitForTimeout(100 + Math.random() * 150);
+    await page.mouse.move(startX, startY, { steps: 5 + Math.floor(Math.random() * 5) });
+    await page.waitForTimeout(100 + Math.random() * 200); // Pause before pressing
+    
     await page.mouse.down();
-    const steps = 25;
+    await page.waitForTimeout(50 + Math.random() * 100); // Hold for a moment
+
+    // Target X is the destination, but humans often overshoot slightly and correct
+    const targetX = startX + dragDistance;
+    const overshootX = targetX + (Math.random() * 10 + 5); 
+
+    const steps = 30 + Math.floor(Math.random() * 10);
     for (let i = 1; i <= steps; i++) {
       const progress = i / steps;
-      const easeProgress = Math.sin((progress * Math.PI) / 2);
-      const currentX = startX + dragDistance * easeProgress;
-      const jitterY = startY + (Math.random() * 4 - 2);
-      await page.mouse.move(currentX, jitterY, { steps: 2 });
-      await page.waitForTimeout(15 + Math.floor(Math.random() * 20));
+      // Use an ease-in-out or custom easing to simulate acceleration then deceleration
+      const easeProgress = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+      
+      let currentX = startX + (overshootX - startX) * easeProgress;
+      
+      // If we are at the very end, correct the overshoot backwards
+      if (i > steps - 5) {
+          const correctionProgress = (i - (steps - 5)) / 5;
+          currentX = overshootX - (overshootX - targetX) * correctionProgress;
+      }
+
+      const jitterY = startY + (Math.random() * 6 - 3); // Slightly more vertical jitter
+      await page.mouse.move(currentX, jitterY, { steps: 1 });
+      await page.waitForTimeout(10 + Math.floor(Math.random() * 25)); // Variable speed
     }
+    
+    await page.waitForTimeout(100 + Math.random() * 150); // Pause at the end of the slide
     await page.mouse.up();
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(3000);
 
     const stillChallenged = await slideNotice.isVisible().catch(() => false);
     return !stillChallenged;
