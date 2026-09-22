@@ -62,6 +62,12 @@ async function bootstrap() {
       }
     },
     credentials: true,
+    // The API and the web app are on different ports, so the browser hides
+    // every response header from the frontend unless it is listed here. The
+    // PDF endpoints already name their file in Content-Disposition, and
+    // without this the download code cannot read it and has to invent a name
+    // of its own.
+    exposedHeaders: ['Content-Disposition'],
   });
 
   // Global validation pipe

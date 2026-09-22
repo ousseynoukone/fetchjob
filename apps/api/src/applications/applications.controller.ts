@@ -3,6 +3,7 @@ import { Controller, Get, Patch, Post, Delete, Param, Query, Body, Res, NotFound
 import type { Response } from 'express';
 import { ApplicationsService } from './applications.service';
 import { PdfService } from '../pdf/pdf.service';
+import { buildCvFileName } from '../common/cv-file-name';
 import { UpdateStatusDto } from './dto/update-status.dto';
 import { AddManualOfferDto } from './dto/add-manual.dto';
 
@@ -66,7 +67,7 @@ export class ApplicationsController {
 
     res.set({
       'Content-Type': 'application/pdf',
-      'Content-Disposition': 'inline; filename="CV OUSSEYNOU KONE.pdf"',
+      'Content-Disposition': `inline; filename="${buildCvFileName(cv.fullName)}"`,
       'Content-Length': pdf.length,
     });
     res.send(pdf);

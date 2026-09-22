@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { PrismaService } from '../common/prisma.service';
 import { SettingsService } from '../common/settings.service';
+import { buildCvFileName } from '../common/cv-file-name';
 import { CvService } from '../cv/cv.service';
 import { PdfService } from '../pdf/pdf.service';
 import { PlatformCredentialsService } from '../platform-credentials/platform-credentials.service';
@@ -37,14 +38,6 @@ import type { Page, BrowserContext, CDPSession } from 'playwright';
 // Used when the "autoApplyMaxAiCalls" setting is unset or invalid — same
 // fallback-constant pattern as DigestService's DEFAULT_INTERVAL_HOURS.
 const DEFAULT_MAX_AI_CALLS_PER_ATTEMPT = 3;
-
-// Only strips characters that would actually break a filename on disk or in
-// an upload — keeps the name itself fully intact and readable.
-function sanitizeCvFileName(fullName: string): string {
-  const firstOnly = (fullName || '').split(' ')[0];
-  const cleaned = (firstOnly || '').trim().replace(/[\\/:*?"<>|]+/g, '').replace(/\s+/g, ' ').trim();
-  return cleaned || 'CV';
-}
 
 const ATS_HOST_PATTERNS: { pattern: RegExp; key: string }[] = [
   { pattern: /(^|\.)greenhouse\.io$/i, key: 'greenhouse' },
@@ -470,7 +463,7 @@ export class AutoApplyService {
     // candidate's own name instead.
     const cvPdfPath = join(tmpdir(), `findurjob-auto-apply-${application.id}.pdf`);
     await writeFile(cvPdfPath, pdfBuffer);
-    const cvFileName = `${sanitizeCvFileName(cv.fullName)} - CV.pdf`;
+    const cvFileName = buildCvFileName(cv.fullName);
 
     const context = await this.browserSession.createContext(sessionState, platformKey);
     let cdpSession: CDPSession | null = null;

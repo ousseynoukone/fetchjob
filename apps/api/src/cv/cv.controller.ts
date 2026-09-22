@@ -2,6 +2,7 @@ import { Controller, Get, Put, Post, Delete, Body, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { CvService } from './cv.service';
 import { PdfService } from '../pdf/pdf.service';
+import { buildCvFileName } from '../common/cv-file-name';
 import { UpdateCvDto } from './dto/update-cv.dto';
 
 @Controller('cv')
@@ -49,7 +50,7 @@ export class CvController {
 
     res.set({
       'Content-Type': 'application/pdf',
-      'Content-Disposition': 'inline; filename="CV OUSSEYNOU KONE.pdf"',
+      'Content-Disposition': `inline; filename="${buildCvFileName(cv.fullName)}"`,
       'Content-Length': pdf.length,
     });
     res.send(pdf);

@@ -36,6 +36,14 @@ function formatDateTime(iso?: string) {
   });
 }
 
+// The API already names these files (see buildCvFileName) — honour it rather
+// than inventing a name here. Falls back only if the header is unreadable.
+function fileNameFromResponse(response: { headers?: Record<string, unknown> }, fallback: string): string {
+  const header = String(response.headers?.['content-disposition'] ?? '');
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(header);
+  return match ? decodeURIComponent(match[1].trim()) : fallback;
+}
+
 const TABS = ['Offre', 'CV adapté', 'Lettre de motivation', 'Analyse IA', 'Matching'];
 
 const STATUS_LABEL: Record<string, string> = {
@@ -95,7 +103,7 @@ export default function ApplicationDetail({ id }: { id: string }) {
       const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/pdf' }));
       const link = document.createElement('a');
       link.href = url;
-      link.download = `cv-${current?.company || 'candidature'}.pdf`;
+      link.download = fileNameFromResponse(response, 'CV.pdf');
       link.click();
       window.URL.revokeObjectURL(url);
     } finally {
@@ -110,7 +118,7 @@ export default function ApplicationDetail({ id }: { id: string }) {
       const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/pdf' }));
       const link = document.createElement('a');
       link.href = url;
-      link.download = `lettre-${current?.company || 'candidature'}.pdf`;
+      link.download = fileNameFromResponse(response, 'lettre-de-motivation.pdf');
       link.click();
       window.URL.revokeObjectURL(url);
     } finally {
