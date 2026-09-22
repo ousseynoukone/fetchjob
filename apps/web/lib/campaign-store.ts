@@ -20,6 +20,7 @@ export interface Campaign {
   sourceDailyLimits: Record<string, number>;
   scheduleEnabled: boolean;
   scheduleHour: number | null;
+  runsPerDay: number;
   autoApplyAts: boolean;
   autoApplyMinDelaySeconds: number;
   autoApplyMaxDelaySeconds: number;

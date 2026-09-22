@@ -17,6 +17,7 @@ import {
   mapWithConcurrency as stealthMapWithConcurrency,
 } from './stealth-browser';
 import { SettingsService } from '../common/settings.service';
+import { locationWithinRegion } from '../common/location-region';
 import { blockHeavyResources } from '../auto-apply/appliers/ats-common';
 import { scrapeLinkedInWithStealth, ProxyRotator } from './linkedin-stealth';
 
@@ -266,25 +267,102 @@ function stripHtml(html: string): string {
 
 const STOPWORDS = new Set(['pour', 'avec', 'dans', 'les', 'des', 'developpeur', 'developpeuse', 'and', 'the', 'for', 'with']);
 
-// Arbeitnow/Jobicy/The Muse's free public APIs don't support real free-text
-// search — they return a plain list. Filter locally by requiring EVERY
-// significant keyword token to appear in the title/description/tags.
-// Confirmed live: this used to require only ONE token (`.some`), and for a
-// multi-word search like "Développeur Full Stack Java" that token set is
-// ["full", "stack", "java"] once the "developpeur" stopword is stripped --
-// "full" alone is common enough in ordinary English job-listing boilerplate
-// ("Full-Time", "full benefits") that it matched completely unrelated roles
-// (Account Executive, Data Center Specialist, Controls Engineer) on sources
-// with rich free-text descriptions. Requiring every token together is much
-// closer to what the search phrase actually means.
-function matchesKeywords(haystack: string, keywords: string): boolean {
-  const normalizedHaystack = normalizeLocation(haystack);
-  const tokens = normalizeLocation(keywords)
+// The same technology is spelled several ways across boards ("Full Stack",
+// "Full-Stack", "fullstack"; "Node.js", "NodeJS", "Node JS"). Collapsed to
+// one canonical form on BOTH sides of every comparison, so a search for
+// "Développeur Fullstack" still finds a posting titled "Full Stack Engineer"
+// — which it did not before, since "full stack" contains no "fullstack".
+const TECH_SPELLING_VARIANTS: [RegExp, string][] = [
+  [/\bfull\s+stack\b/g, 'fullstack'],
+  [/\bnode\s+js\b/g, 'nodejs'],
+  [/\breact\s+js\b/g, 'reactjs'],
+  [/\bnext\s+js\b/g, 'nextjs'],
+  [/\bvue\s+js\b/g, 'vuejs'],
+];
+
+// Separators (including the dot in "Node.js") become spaces first, so the
+// variant rules above see "node js" and can collapse it.
+function normalizeForSearch(text: string): string {
+  let out = text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(DIACRITICS_REGEX, '')
+    .replace(/[-'’_./,()]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  for (const [pattern, canonical] of TECH_SPELLING_VARIANTS) {
+    out = out.replace(pattern, canonical);
+  }
+  return out;
+}
+
+function searchTokens(keywords: string): string[] {
+  return normalizeForSearch(keywords)
     .split(' ')
     .filter((t) => t.length >= 3 && !STOPWORDS.has(t));
+}
 
+// Whole-word match, not substring: `.includes('java')` used to match
+// "JavaScript", and `.includes('react')` matched "reactive"/"reaction",
+// which quietly turned a Java search into a JavaScript search.
+function containsWord(normalizedHaystack: string, token: string): boolean {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`).test(normalizedHaystack);
+}
+
+// Arbeitnow/Jobicy/The Muse's free public APIs don't support real free-text
+// search (and Remotive's own `search` param is too loose to trust), so the
+// real filtering happens here: at least one significant token has to be in
+// the job's TITLE.
+//
+// It used to match against title AND description, and only needed ONE token
+// to appear anywhere in that blob. Since "developpeur" is a stopword, the
+// tokens for "Développeur Full Stack Java" were ["full", "stack", "java"],
+// and "full" alone matches the "Full-Time" in ordinary English listing
+// boilerplate — which is how a live run answered that search with Account
+// Executive, Data Center Specialist and Client Finance Analyst roles.
+//
+// Matching the title only (rather than also demanding every token appear
+// somewhere in the body) is deliberate: the body condition rejects nothing
+// the title condition doesn't already reject, and it would throw away
+// legitimate postings like "Développeur React / Front-end" for a "Full Stack
+// React" search just because the exact word "fullstack" is absent.
+function matchesJobTitle(title: string, keywords: string): boolean {
+  const tokens = searchTokens(keywords);
   if (!tokens.length) return true;
-  return tokens.every((token) => normalizedHaystack.includes(token));
+
+  const normalizedTitle = normalizeForSearch(title);
+  return tokens.some((token) => containsWord(normalizedTitle, token));
+}
+
+// Location stays deliberately permissive — ANY token is enough. "Ile-de-France"
+// tokenizes to ["ile", "france"], and a posting located "Paris, France" would
+// fail an all-tokens rule for no good reason.
+function matchesLocationLoosely(haystack: string, location: string): boolean {
+  const tokens = searchTokens(location);
+  if (!tokens.length) return true;
+  const normalized = normalizeForSearch(haystack);
+  return tokens.some((token) => containsWord(normalized, token));
+}
+
+// Remotive/Jobicy/The Muse are global remote boards: most of what they list
+// is US- or APAC-only and cannot be taken from Paris, yet only Arbeitnow was
+// checking location at all — hence the USA-based ICON plc and Precision
+// Medicine Group roles in a run scoped to Ile-de-France. An unreadable or
+// absent location is kept rather than guessed away.
+//
+// "remote" deliberately does NOT qualify on its own. The Muse writes a
+// US- or India-based listing as "Bangalore, India / Flexible / Remote", and
+// accepting the word "remote" let exactly those through ("Java Developer"
+// in Bangalore, "Senior Full Stack Engineer - Mexico"). Remote-from-anywhere
+// postings say so explicitly — "Worldwide", "Anywhere", "EMEA", "Europe" —
+// and those still match.
+const REACHABLE_REMOTE_LOCATION =
+  /(^|[^a-z])(anywhere|worldwide|global|emea|europe|european|eu|france|french|paris|ile de france)([^a-z]|$)/;
+
+function isReachableRemoteLocation(rawLocation: string | undefined | null): boolean {
+  if (!rawLocation || !rawLocation.trim()) return true;
+  return REACHABLE_REMOTE_LOCATION.test(normalizeForSearch(rawLocation));
 }
 
 @Injectable()
@@ -293,7 +371,25 @@ export class ScrapingService {
   /** Round-robin proxy pool from LINKEDIN_PROXIES env var (newline-separated URLs). */
   private readonly proxyRotator = ProxyRotator.fromEnv('LINKEDIN_PROXIES');
 
+  // Arbeitnow and The Muse have no search parameter, so the exact same pages
+  // are fetched once per search query — five identical round-trips per
+  // source per run, now three pages deep. Held briefly so a single run hits
+  // each page once instead of fifteen times, which also keeps these free,
+  // unauthenticated APIs from rate-limiting us.
+  private readonly feedCache = new Map<string, { at: number; data: any }>();
+  private static readonly FEED_CACHE_TTL_MS = 5 * 60 * 1000;
+
   constructor(private settings: SettingsService) {}
+
+  private async cachedFeedFetch(url: string, params?: Record<string, unknown>): Promise<any> {
+    const key = `${url}|${JSON.stringify(params ?? {})}`;
+    const cached = this.feedCache.get(key);
+    if (cached && Date.now() - cached.at < ScrapingService.FEED_CACHE_TTL_MS) return cached.data;
+
+    const response = await axios.get(url, params ? { params } : undefined);
+    this.feedCache.set(key, { at: Date.now(), data: response.data });
+    return response.data;
+  }
 
   async fetchOffers(source: string, params: SearchParams): Promise<ScrapedOffer[]> {
     try {
@@ -1103,13 +1199,19 @@ export class ScrapingService {
       params: { search: params.keywords },
     });
 
-    // Confirmed live: Remotive's own `search` param is loose enough that a
-    // query like "Développeur Fullstack" still surfaced completely
-    // unrelated roles (Inside Sales Contractor, Kundenservice Mobilfunk
-    // Inbound...) with no local re-check to catch it, unlike the other
-    // free-API sources below. Same AND-based re-filter as a safety net.
+    // Verified live against the real endpoint: the `search` param has no
+    // effect whatsoever — "Développeur Fullstack", "flutter", "java
+    // developer" and "node.js" all return the same 18 rows, in the same
+    // order. It is still sent in case that ever changes, but this source
+    // is effectively an unfiltered feed and the local filter below is the
+    // only thing standing between it and results like "Kundenservice
+    // Mobilfunk Inbound" landing in a fullstack-developer campaign.
     const offers = (response.data?.jobs || [])
-      .filter((offer: any) => matchesKeywords(`${offer.title} ${offer.description || ''}`, params.keywords))
+      .filter(
+        (offer: any) =>
+          matchesJobTitle(offer.title || '', params.keywords) &&
+          isReachableRemoteLocation(offer.candidate_required_location),
+      )
       .slice(0, 20);
 
     return offers.map((offer: any) => ({
@@ -1127,17 +1229,35 @@ export class ScrapingService {
     }));
   }
 
-  // Public, no-key job board API. No free-text search — fetch the recent
-  // listing and filter locally against the campaign's keywords/location.
+  // Public, no-key job board API. It genuinely has no search parameter of
+  // any kind, so the whole feed is pulled and filtered here. Three pages,
+  // not one: confirmed live that page 1 carries 57 France-based postings and
+  // page 2 another 64 — including "Experienced / Senior Fullstack Engineer"
+  // in Paris, which a single-page fetch could never have seen. Page 3 runs
+  // dry (100 rows, none in France), so that is where this stops.
   private async fetchArbeitnowOffers(params: SearchParams): Promise<ScrapedOffer[]> {
-    const response = await axios.get('https://www.arbeitnow.com/api/job-board-api');
-    const offers = (response.data?.data || []) as any[];
+    const pages = await Promise.all(
+      [1, 2, 3].map((page) =>
+        this.cachedFeedFetch(`https://www.arbeitnow.com/api/job-board-api?page=${page}`).catch(() => null),
+      ),
+    );
+    const offers = pages.flatMap((page) => (page?.data || []) as any[]);
 
     return offers
       .filter((offer) => {
-        const haystack = `${offer.title} ${offer.description || ''} ${(offer.tags || []).join(' ')}`;
-        const keywordMatch = matchesKeywords(haystack, params.keywords);
-        const locationMatch = !params.location || offer.remote || matchesKeywords(offer.location || '', params.location);
+        const keywordMatch = matchesJobTitle(offer.title || '', params.keywords);
+        // Confirmed live: Arbeitnow does surface real Paris postings
+        // ("Senior Full-stack Engineer" / "Full-Stack Engineer", Paris), and
+        // a bare token comparison threw them away — "Paris" contains neither
+        // "ile" nor "france". locationWithinRegion knows the region's
+        // communes and is what the rest of the pipeline already uses; the
+        // token fallback keeps this working for a campaign configured to any
+        // other region, which that helper deliberately can't answer for.
+        const locationMatch =
+          !params.location ||
+          offer.remote ||
+          locationWithinRegion(offer.location || '', params.location) === 'yes' ||
+          matchesLocationLoosely(offer.location || '', params.location);
         return keywordMatch && locationMatch;
       })
       .slice(0, 20)
@@ -1155,18 +1275,31 @@ export class ScrapingService {
       }));
   }
 
-  // Public, no-key remote-jobs API. `tag` filtering is fuzzy on their end,
-  // so still re-check locally like Arbeitnow above.
+  // Public, no-key remote-jobs API — and unlike the other three, its search
+  // parameters genuinely work. Verified live: `tag=java` returns Java roles,
+  // `tag=react` React roles, `tag=fullstack` fullstack roles, and `geo`
+  // narrows by region. This used to send nothing but `count=50`, i.e. it
+  // pulled fifty arbitrary remote jobs ("GSI Partner Business Manager",
+  // "Psycholoog") and left the local filter to throw almost all of them
+  // away — the search was never actually performed.
   private async fetchJobicyOffers(params: SearchParams): Promise<ScrapedOffer[]> {
+    const tokens = searchTokens(params.keywords);
+    // Last token: for "Développeur Full Stack Java" the tokens are
+    // ["fullstack", "java"] and the technology is the more selective half.
+    // The trailing "js" is dropped because Jobicy tags the base name —
+    // verified live: tag=nodejs returns 3 jobs, tag=node returns 50.
+    const rawTag = tokens.length ? tokens[tokens.length - 1] : undefined;
+    const tag = rawTag && /^(.+?)js$/.test(rawTag) && rawTag.length > 5 ? rawTag.replace(/js$/, '') : rawTag;
+    const geo = params.location && /france/.test(normalizeForSearch(params.location)) ? 'france' : undefined;
+
     const response = await axios.get('https://jobicy.com/api/v2/remote-jobs', {
-      params: { count: 50 },
+      params: { count: 50, tag, geo },
     });
     const offers = (response.data?.jobs || []) as any[];
 
     return offers
       .filter((offer) => {
-        const haystack = `${offer.jobTitle} ${offer.jobExcerpt || ''} ${(offer.jobIndustry || []).join(' ')}`;
-        return matchesKeywords(haystack, params.keywords);
+        return matchesJobTitle(offer.jobTitle || '', params.keywords) && isReachableRemoteLocation(offer.jobGeo);
       })
       .slice(0, 20)
       .map((offer) => ({
@@ -1183,17 +1316,31 @@ export class ScrapingService {
       }));
   }
 
-  // Public, no-key jobs API. Supports a real `location` param (unlike the
-  // two above), keywords are still filtered locally since there's no
-  // free-text search param.
+  // Public, no-key jobs API with no free-text search, but `category` and
+  // `location` both genuinely narrow the corpus — verified live: unfiltered
+  // it offers 412,982 jobs, "Software Engineering" + "Paris, France" brings
+  // that to 1,303. What it does NOT do is rank them, so page 0 comes back
+  // full of "Flexible / Remote" US postings either way (which is what made
+  // the params look inert at first). Hence: send both filters AND read
+  // several pages, then let the local title/location check do the choosing.
   private async fetchTheMuseOffers(params: SearchParams): Promise<ScrapedOffer[]> {
-    const response = await axios.get('https://www.themuse.com/api/public/jobs', {
-      params: { page: 0, location: params.location || undefined },
-    });
-    const offers = (response.data?.results || []) as any[];
+    const pages = await Promise.all(
+      [0, 1, 2].map((page) =>
+        this.cachedFeedFetch('https://www.themuse.com/api/public/jobs', {
+          page,
+          category: 'Software Engineering',
+          location: params.location || undefined,
+        }).catch(() => null),
+      ),
+    );
+    const offers = pages.flatMap((page) => (page?.results || []) as any[]);
 
     return offers
-      .filter((offer) => matchesKeywords(`${offer.name} ${offer.contents || ''}`, params.keywords))
+      .filter(
+        (offer) =>
+          matchesJobTitle(offer.name || '', params.keywords) &&
+          isReachableRemoteLocation((offer.locations || []).map((l: any) => l.name).join(', ')),
+      )
       .slice(0, 20)
       .map((offer) => ({
         externalId: String(offer.id),

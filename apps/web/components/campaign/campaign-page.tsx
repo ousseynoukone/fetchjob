@@ -53,6 +53,7 @@ export default function CampaignPage() {
     sourceDailyLimits: {} as Record<string, number>,
     scheduleEnabled: false,
     scheduleHour: 8,
+    runsPerDay: 1,
     autoApplyAts: true,
     autoApplyMinDelaySeconds: 45,
     autoApplyMaxDelaySeconds: 150,
@@ -85,6 +86,7 @@ export default function CampaignPage() {
       sourceDailyLimits: campaign.sourceDailyLimits || {},
       scheduleEnabled: campaign.scheduleEnabled ?? false,
       scheduleHour: campaign.scheduleHour ?? 8,
+      runsPerDay: campaign.runsPerDay ?? 1,
       autoApplyAts: campaign.autoApplyAts ?? true,
       autoApplyMinDelaySeconds: campaign.autoApplyMinDelaySeconds ?? 45,
       autoApplyMaxDelaySeconds: campaign.autoApplyMaxDelaySeconds ?? 150,
@@ -154,6 +156,7 @@ export default function CampaignPage() {
       sourceDailyLimits: form.sourceDailyLimits,
       scheduleEnabled: form.scheduleEnabled,
       scheduleHour: Number(form.scheduleHour),
+      runsPerDay: Number(form.runsPerDay),
       autoApplyAts: form.autoApplyAts,
       autoApplyMinDelaySeconds: Number(form.autoApplyMinDelaySeconds),
       autoApplyMaxDelaySeconds: Number(form.autoApplyMaxDelaySeconds),
@@ -306,7 +309,7 @@ export default function CampaignPage() {
                 <div className="mt-3 space-y-2">
                   <div className="flex items-center justify-between">
                     <p className="text-xs text-base-content/50 font-medium">
-                      Limites quotidiennes par plateforme :
+                      Limites de candidatures envoyées par plateforme :
                     </p>
                     {Object.keys(form.sourceDailyLimits).length > 0 && (
                       <button
@@ -389,7 +392,7 @@ export default function CampaignPage() {
                   onChange={(e) => setForm((f) => ({ ...f, minMatchScore: Number(e.target.value) }))}
                 />
               </Field>
-              <Field label="Limite par défaut / jour / plateforme">
+              <Field label="Limite par défaut / plateforme (envois confirmés)">
                 <input
                   type="number"
                   min={1}
@@ -438,7 +441,20 @@ export default function CampaignPage() {
                     checked={form.scheduleEnabled}
                     onChange={(e) => setForm((f) => ({ ...f, scheduleEnabled: e.target.checked }))}
                   />
-                  <span className="text-sm">Lancer automatiquement chaque jour à</span>
+                  <span className="text-sm">Lancer automatiquement</span>
+                  <select
+                    className="select select-bordered select-sm"
+                    value={form.runsPerDay}
+                    disabled={!form.scheduleEnabled}
+                    onChange={(e) => setForm((f) => ({ ...f, runsPerDay: Number(e.target.value) }))}
+                  >
+                    {[1, 2, 3, 4, 6, 8, 12, 24].map((n) => (
+                      <option key={n} value={n}>
+                        {n === 1 ? '1 fois' : `${n} fois`} / jour
+                      </option>
+                    ))}
+                  </select>
+                  <span className="text-sm">à partir de</span>
                   <select
                     className="select select-bordered select-sm"
                     value={form.scheduleHour}
@@ -452,6 +468,15 @@ export default function CampaignPage() {
                     ))}
                   </select>
                 </div>
+                {form.scheduleEnabled && form.runsPerDay > 1 && (
+                  <p className="text-[11px] text-base-content/40 mt-1.5">
+                    Lancements répartis sur 24h :{' '}
+                    {Array.from({ length: form.runsPerDay }, (_, i) =>
+                      String(((form.scheduleHour ?? 0) + i * Math.max(1, Math.floor(24 / form.runsPerDay))) % 24).padStart(2, '0'),
+                    ).join('h, ')}
+                    h
+                  </p>
+                )}
               </Field>
             )}
 

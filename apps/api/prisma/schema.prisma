@@ -226,7 +226,10 @@ model Campaign {
   // Daily cron trigger, in addition to the manual POST /campagne/run — only
   // meaningful alongside actionMode 'auto_apply' for a fully unattended flow.
   scheduleEnabled Boolean @default(false)
-  scheduleHour    Int? // 0-23, server local time
+  scheduleHour    Int? // 0-23, server local time — the hour of the FIRST run of the day
+  // How many times a day the schedule fires. Runs are spread evenly over the
+  // 24h from scheduleHour (2/day starting at 8 => 08:00 and 20:00).
+  runsPerDay      Int     @default(1)
 
   totalOffersScanned        Int @default(0)
   totalOffersFiltered       Int @default(0)

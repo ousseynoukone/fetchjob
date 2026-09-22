@@ -173,9 +173,16 @@ export class MatchingService {
     // periods) computed to 3, failed `< 3`, and the whole penalty switched
     // off -- a "Lead Developer" posting scored a full 68 with "lead" right
     // there in the configured list, cleared the threshold, and got sent.
+    // The flag is still reported (the run log names it as the reason an
+    // offer scored low, and callers may want to show it), but it no longer
+    // touches the score. It used to multiply by 0.15 -- an 85% cut that no
+    // realistic offer survives, so a "senior"/"lead"/"confirmé" in the title
+    // was an outright rejection wearing a score's clothing, applied on top
+    // of the campaign's own excludeKeywords list, which is the explicit,
+    // user-visible place to decide that a title is unwanted.
     const seniorityRegex = buildSeniorityRegex(seniorityKeywords);
     const seniorityMismatch = !!seniorityRegex && seniorityRegex.test(normalize(offer.title));
-    const score = Math.round(seniorityMismatch ? rawScore * 0.15 : rawScore);
+    const score = Math.round(rawScore);
 
     const combinedMatched = [...new Set([...matchedSkills, ...matchedTargets])];
     const combinedMatchedNorm = new Set(combinedMatched.map((s) => normalize(s)));

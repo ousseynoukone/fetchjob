@@ -33,6 +33,13 @@ function isWithinIdf(source: string, offerLocation: string | undefined, campaign
   return locationWithinRegion(offerLocation, campaignLocation) === 'yes';
 }
 
+// How many candidatures to prepare per source relative to what the campaign
+// may still send from it. Preparing costs AI credits (adapted CV + cover
+// letter), so it isn't unbounded — but attempts that come back "à vérifier"
+// don't count as sent, so preparing exactly the sendable number would leave
+// a run with nothing in reserve the moment one attempt fails.
+const PREPARE_HEADROOM = 3;
+
 const DEFAULT_CAMPAIGN = {
   jobTitle: '',
   location: '',
@@ -418,53 +425,24 @@ export class CampaignService implements OnModuleInit {
 
 
 
-  // How many candidatures have already been prepared today for each source,
-  // across every run — a manual "Lancer" on top of the scheduled run must
-  // not let a source blow past its own daily limit just because the count
-  // Count how many candidatures are CONFIRMED submitted today (status: 'applied')
-  // for each source. "À vérifier" (needs_review) or failed attempts do NOT count:
-  // the daily quota strictly tracks confirmed successful applications.
-  private async confirmedTodayBySource(campaignId: string): Promise<Map<string, number>> {
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-
-    const rows = await this.prisma.application.findMany({
-      where: {
-        campaignId,
-        status: 'applied',
-        appliedAt: { gte: startOfDay },
-      },
-      select: { jobOffer: { select: { source: true } } },
-    });
-
-    const counts = new Map<string, number>();
-    for (const row of rows) {
-      counts.set(row.jobOffer.source, (counts.get(row.jobOffer.source) || 0) + 1);
-    }
-    return counts;
-  }
-
-  // Each source's own remaining budget for today — completely independent
-  // of every other source. Limits are strictly determined by the user's
-  // configuration (either sourceDailyLimits per platform or maxApplicationsPerDay).
-  // No automated circuit breaker or probe penalty overrides user preferences.
-  private async computeSourceBudgets(
-    campaign: { id: string; maxApplicationsPerDay: number; sourceDailyLimits: unknown },
+  // How many applications each source may send during ONE launch: simply the
+  // number configured for it, since every launch starts its own count. It is
+  // deliberately not reduced by what previous launches sent — a limit that
+  // accumulated over a campaign's life would eventually stop it sending
+  // anything at all, which is not what a per-launch limit means.
+  private computeSourceBudgets(
+    campaign: { maxApplicationsPerDay: number; sourceDailyLimits: unknown },
     sources: string[],
-  ): Promise<Map<string, number>> {
-    const confirmedToday = await this.confirmedTodayBySource(campaign.id);
+  ): Map<string, number> {
     const overrides = (campaign.sourceDailyLimits || {}) as Record<string, number>;
-
-    const remaining = new Map<string, number>();
+    const limits = new Map<string, number>();
 
     for (const source of sources) {
       const configuredLimit = Number(overrides[source]);
-      const dailyLimit = configuredLimit > 0 ? configuredLimit : campaign.maxApplicationsPerDay;
-      const alreadyConfirmed = confirmedToday.get(source) || 0;
-      remaining.set(source, Math.max(0, dailyLimit - alreadyConfirmed));
+      limits.set(source, configuredLimit > 0 ? configuredLimit : campaign.maxApplicationsPerDay);
     }
 
-    return remaining;
+    return limits;
   }
 
   private async executeRun(campaign: any, runId: string, userId: string) {
@@ -490,9 +468,8 @@ export class CampaignService implements OnModuleInit {
       // Each keyword is run as its own separate search query (never ANDed
       // together — a query built from the full list would match nothing).
       // Capped at 50 as a safety net against an accidentally huge keyword
-      // list; the loop below already stops searching a given source once
-      // its own daily budget runs out, so this cap is about guarding
-      // against degenerate input, not API-call budget.
+      // list. Nothing else limits how many searches a run performs: the
+      // configured limit applies to sending, not to searching.
       const searchQueries = targetKeywords.length
         ? targetKeywords.slice(0, 50)
         : campaign.jobTitle
@@ -505,11 +482,19 @@ export class CampaignService implements OnModuleInit {
         return;
       }
 
-      // Each source's daily limit is its own — see computeSourceBudgets.
-      // There is no shared/global cap across sources: daily limits are strictly
-      // determined by what the user configured in the UI.
-      const sourceBudgets = await this.computeSourceBudgets(campaign, campaign.sources as string[]);
+      // Each source's limit is its own — see computeSourceBudgets. There is
+      // no shared/global cap across sources, and the number is strictly what
+      // the user configured in the UI. It caps SENDING, not searching.
+      const sendBudgets = this.computeSourceBudgets(campaign, campaign.sources as string[]);
       const preparedPerSource = new Map<string, number>();
+      const pooledCandidates: {
+        jobOffer: { id: string; title: string; company: string; location: string | null; url: string; description: string; applyMode: string };
+        score: number;
+        matchedSkills: string[];
+        missingSkills: string[];
+        jobKey: string;
+        source: string;
+      }[] = [];
       let cancelled = false;
 
       // Query-outer, source-inner: each query is tried across every source
@@ -523,9 +508,12 @@ export class CampaignService implements OnModuleInit {
             break queries;
           }
 
-          const sourceBudget = sourceBudgets.get(source) ?? campaign.maxApplicationsPerDay;
-          if ((preparedPerSource.get(source) || 0) >= sourceBudget) continue;
-
+          // No budget check here, by design: the limit is about how many
+          // applications actually get SENT, so it belongs to the auto-apply
+          // step, not to searching. Gating the search on it meant the first
+          // keyword consumed every source's allowance and the remaining
+          // keywords were never searched anywhere -- a five-keyword campaign
+          // only ever looked for the first one.
           await this.appendLog(runId, `Recherche "${query}" sur ${source}...`);
 
           const offers = await this.scraping.fetchOffers(source, {
@@ -548,8 +536,12 @@ export class CampaignService implements OnModuleInit {
           // reached. So: screen (filter, enrich, match) a bounded number of
           // offers first, then prepare the best of them -- internal first,
           // then unknown, external last, by score within each group.
-          const remainingBudget = sourceBudget - (preparedPerSource.get(source) || 0);
-          const screeningCap = Math.max(remainingBudget * 3, remainingBudget + 5);
+          // Bounds how many offers get enriched (each enrichment is a detail-
+          // page fetch) and scored per search, purely as a cost guard. It is
+          // NOT a budget: nothing here limits how many candidatures a search
+          // may yield, and every candidate found goes into the run-wide pool
+          // that the preparation pass below draws from.
+          const screeningCap = 25;
           const candidates: {
             jobOffer: { id: string; title: string; company: string; location: string | null; url: string; description: string; applyMode: string };
             score: number;
@@ -705,68 +697,83 @@ export class CampaignService implements OnModuleInit {
             candidateKeys.add(jobKey);
           }
 
-          candidates.sort(
-            (a, b) =>
-              APPLY_MODE_RANK[a.jobOffer.applyMode as ApplyMode] - APPLY_MODE_RANK[b.jobOffer.applyMode as ApplyMode] ||
-              b.score - a.score,
-          );
-          const skippedForBudget = candidates.length - Math.min(candidates.length, remainingBudget);
-          if (skippedForBudget > 0) {
+          if (candidates.length) {
             const byMode = (mode: ApplyMode) => candidates.filter((c) => c.jobOffer.applyMode === mode).length;
             await this.appendLog(
               runId,
-              `${candidates.length} offre(s) retenue(s) sur ${source} (${byMode('internal')} interne(s), ${byMode('unknown')} indéterminée(s), ${byMode('external')} externe(s)) — les ${remainingBudget} meilleure(s) préparée(s), internes d'abord.`,
+              `${candidates.length} offre(s) retenue(s) sur ${source} pour "${query}" (${byMode('internal')} interne(s), ${byMode('unknown')} indéterminée(s), ${byMode('external')} externe(s)).`,
             );
           }
+          for (const candidate of candidates) {
+            pooledCandidates.push({ ...candidate, source });
+          }
+        }
+      }
 
-          for (const { jobOffer, score, matchedSkills, missingSkills, jobKey } of candidates) {
-            if (this.cancelledCampaigns.has(campaign.id)) {
-              cancelled = true;
-              break queries;
-            }
-            if ((preparedPerSource.get(source) || 0) >= sourceBudget) break;
-            if (seenJobKeys.has(jobKey)) continue;
+      // One preparation pass over everything every keyword found, instead of
+      // preparing greedily inside the search loop. That ordering is what let
+      // the first keyword's results take all of a source's allowance before
+      // the other keywords had even been searched; pooling first means the
+      // best offers win on their own merit (in-platform applications first,
+      // then by score) no matter which keyword surfaced them.
+      pooledCandidates.sort(
+        (a, b) =>
+          APPLY_MODE_RANK[a.jobOffer.applyMode as ApplyMode] - APPLY_MODE_RANK[b.jobOffer.applyMode as ApplyMode] ||
+          b.score - a.score,
+      );
 
-            const application = await this.prisma.application.create({
-              data: {
-                userId,
-                campaignId: campaign.id,
-                campaignRunId: runId,
-                jobOfferId: jobOffer.id,
-                jobTitle: jobOffer.title,
-                company: jobOffer.company,
-                location: jobOffer.location,
-                sourceUrl: jobOffer.url,
-                matchScore: score,
-                matchedSkills,
-                missingSkills,
-              },
-            });
+      for (const { jobOffer, score, matchedSkills, missingSkills, jobKey, source } of pooledCandidates) {
+        if (this.cancelledCampaigns.has(campaign.id)) {
+          cancelled = true;
+          break;
+        }
+        if (seenJobKeys.has(jobKey)) continue;
+        // Preparing is what costs AI credits (adapted CV + cover letter), so
+        // it stays bounded — but by how many applications this campaign may
+        // still SEND from this source, with room to spare for the ones that
+        // come back "à vérifier" rather than confirmed. Searching above is
+        // not bounded by anything.
+        const sendable = sendBudgets.get(source) ?? campaign.maxApplicationsPerDay;
+        if ((preparedPerSource.get(source) || 0) >= sendable * PREPARE_HEADROOM) continue;
 
-            seenJobKeys.add(jobKey);
-            applicationsPrepared++;
-            preparedPerSource.set(source, (preparedPerSource.get(source) || 0) + 1);
-            createdApplicationIds.push(application.id);
-            const modeLabel =
-              jobOffer.applyMode === 'internal' ? 'candidature interne' : jobOffer.applyMode === 'external' ? 'redirection externe' : 'mode indéterminé';
+        const application = await this.prisma.application.create({
+          data: {
+            userId,
+            campaignId: campaign.id,
+            campaignRunId: runId,
+            jobOfferId: jobOffer.id,
+            jobTitle: jobOffer.title,
+            company: jobOffer.company,
+            location: jobOffer.location,
+            sourceUrl: jobOffer.url,
+            matchScore: score,
+            matchedSkills,
+            missingSkills,
+          },
+        });
+
+        seenJobKeys.add(jobKey);
+        applicationsPrepared++;
+        preparedPerSource.set(source, (preparedPerSource.get(source) || 0) + 1);
+        createdApplicationIds.push(application.id);
+        const modeLabel =
+          jobOffer.applyMode === 'internal' ? 'candidature interne' : jobOffer.applyMode === 'external' ? 'redirection externe' : 'mode indéterminé';
+        await this.appendLog(
+          runId,
+          `Candidature préparée: ${jobOffer.title} chez ${jobOffer.company} (score ${score}, ${modeLabel})`,
+        );
+
+        try {
+          const { failures, errorMessage } = await this.prep.prepareMaterials(application.id, cv, jobOffer, userId);
+          if (failures.length) {
             await this.appendLog(
               runId,
-              `Candidature préparée: ${jobOffer.title} chez ${jobOffer.company} (score ${score}, ${modeLabel})`,
+              `Préparation IA partielle (échec: ${failures.join(', ')})${errorMessage ? ` — ${errorMessage}` : ''}`,
             );
-
-            try {
-              const { failures, errorMessage } = await this.prep.prepareMaterials(application.id, cv, jobOffer, userId);
-              if (failures.length) {
-                await this.appendLog(
-                  runId,
-                  `Préparation IA partielle (échec: ${failures.join(', ')})${errorMessage ? ` — ${errorMessage}` : ''}`,
-                );
-              }
-            } catch (prepError: any) {
-              // Don't let one candidature's AI prep failure abort the whole run.
-              this.logger.warn(`prepareMaterials crashed for ${application.id}: ${prepError.message}`);
-            }
           }
+        } catch (prepError: any) {
+          // Don't let one candidature's AI prep failure abort the whole run.
+          this.logger.warn(`prepareMaterials crashed for ${application.id}: ${prepError.message}`);
         }
       }
 
@@ -775,10 +782,6 @@ export class CampaignService implements OnModuleInit {
         await this.finishRun(campaign.id, runId, { offersScanned, offersFiltered, applicationsPrepared }, 'paused');
         return;
       }
-
-      // Count applications already CONFIRMED today per source (status: 'applied' only).
-      // "À vérifier" (needs_review) or failed attempts do NOT count against the limit.
-      const confirmedToday = await this.confirmedTodayBySource(campaign.id);
 
       // Query candidate applications in 'to_apply' (newly created + pending)
       const pendingApps = await this.prisma.application.findMany({
@@ -816,15 +819,12 @@ export class CampaignService implements OnModuleInit {
       for (const app of sortedApps) {
         const source = app.jobOffer?.source || 'unknown';
         const configuredLimit = Number(overrides[source]);
-        const dailyLimit = configuredLimit > 0 ? configuredLimit : campaign.maxApplicationsPerDay;
-        const alreadyConfirmed = confirmedToday.get(source) || 0;
+        const sourceLimit = configuredLimit > 0 ? configuredLimit : campaign.maxApplicationsPerDay;
 
-        if (alreadyConfirmed >= dailyLimit) continue; // daily quota of confirmed applications already reached
-
-        // Queue enough candidates so that if one fails into 'needs_review' (à vérifier),
-        // the runner can keep trying until the confirmed quota is achieved.
-        const remainingNeeded = dailyLimit - alreadyConfirmed;
-        const maxCandidatesToQueue = Math.max(remainingNeeded * 2, remainingNeeded + 2);
+        // Queue more than the limit on purpose: an attempt that ends up "à
+        // vérifier" is not a confirmed send and doesn't consume a slot, so
+        // the runner needs spares to reach the limit within this launch.
+        const maxCandidatesToQueue = Math.max(sourceLimit * 2, sourceLimit + 2);
         const selected = selectedBySource.get(source) || 0;
 
         if (selected < maxCandidatesToQueue) {
@@ -836,10 +836,9 @@ export class CampaignService implements OnModuleInit {
       if (campaign.actionMode === 'auto_apply' && toApplyIds.length) {
         const summaryParts: string[] = [];
         for (const [source, count] of selectedBySource.entries()) {
-          const confirmed = confirmedToday.get(source) || 0;
           const configuredLimit = Number(overrides[source]);
           const limit = configuredLimit > 0 ? configuredLimit : campaign.maxApplicationsPerDay;
-          summaryParts.push(`${count} sur ${source} (${confirmed}/${limit} confirmée(s) aujourd'hui)`);
+          summaryParts.push(`${count} sur ${source} (max ${limit} confirmée(s) sur ce lancement)`);
         }
         await this.appendLog(
           runId,

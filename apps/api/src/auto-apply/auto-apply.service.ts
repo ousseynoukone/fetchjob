@@ -279,6 +279,12 @@ export class AutoApplyService {
     let needsReview = 0;
     const expiredPlatforms = new Set<string>();
     const wafBlockedPlatforms = new Set<string>();
+    // Confirmed sends per source for THIS launch. The limit is per launch, so
+    // it is counted in memory here rather than queried from the DB: an
+    // application prepared by an earlier run but sent during this one still
+    // carries that earlier run's id, so no `campaignRunId` filter could count
+    // "sent during this launch" correctly.
+    const confirmedThisRun = new Map<string, number>();
 
     for (let i = 0; i < applicationIds.length; i++) {
       if (isCancelled?.()) {
@@ -323,31 +329,18 @@ export class AutoApplyService {
       }
 
       const configuredLimit = params.sourceDailyLimits?.[source];
-      const dailyLimit =
+      const limit =
         configuredLimit !== undefined && configuredLimit > 0
           ? configuredLimit
           : (params.maxApplicationsPerDay || 0);
 
-      if (dailyLimit > 0) {
-        const startOfDay = new Date();
-        startOfDay.setHours(0, 0, 0, 0);
-        // Only confirmed applications (status: 'applied') count against the limit.
-        // If an offer is 'needs_review' (à vérifier), it does NOT count.
-        const confirmedToday = await this.prisma.application.count({
-          where: {
-            campaignId: application.campaignId,
-            status: 'applied',
-            appliedAt: { gte: startOfDay },
-            jobOffer: { source },
-          },
-        });
-
-        if (confirmedToday >= dailyLimit) {
-          await appendLog(
-            `Quota quotidien de candidatures confirmées atteint pour ${source} (${confirmedToday}/${dailyLimit} confirmées sans doute). Offre ignorée pour aujourd'hui.`,
-          );
-          continue;
-        }
+      // The limit counts confirmed sends for this launch, and only confirmed
+      // ones: an attempt left "à vérifier" (needs_review) consumes nothing.
+      if (limit > 0 && (confirmedThisRun.get(source) || 0) >= limit) {
+        await appendLog(
+          `Limite de candidatures confirmées atteinte pour ${source} sur ce lancement (${limit}/${limit}). Offre ignorée.`,
+        );
+        continue;
       }
 
       try {
@@ -355,6 +348,7 @@ export class AutoApplyService {
         const result = await this.applyToOne(userId, application, atsEnabled, knownAnswers, maxAiCallsPerAttempt, appendLog);
         if (result.success) {
           applied++;
+          confirmedThisRun.set(source, (confirmedThisRun.get(source) || 0) + 1);
           await this.prisma.$transaction([
             this.prisma.application.update({
               where: { id: applicationId },

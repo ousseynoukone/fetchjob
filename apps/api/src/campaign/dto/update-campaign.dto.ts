@@ -71,6 +71,12 @@ export class UpdateCampaignDto {
   @IsOptional()
   scheduleHour?: number;
 
+  @IsInt()
+  @Min(1)
+  @Max(24)
+  @IsOptional()
+  runsPerDay?: number;
+
   @IsBoolean()
   @IsOptional()
   autoApplyAts?: boolean;
