@@ -14,6 +14,7 @@ export interface JobOffer {
   source: string;
   postedAt?: string;
   scrapedAt?: string;
+  applyMode?: 'internal' | 'external' | 'unknown';
 }
 
 export interface Application {

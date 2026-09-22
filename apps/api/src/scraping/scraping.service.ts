@@ -97,6 +97,15 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T)
   return results;
 }
 
+// See JobOffer.applyMode in schema.prisma. Set per source wherever the
+// signal is cheap to read: the listing/API for LinkedIn, France Travail,
+// Indeed and the aggregators; the detail page (already fetched for the
+// description) for HelloWork, WTTJ and Indeed. APEC's search API exposes
+// nothing usable, so it stays "unknown".
+export type ApplyMode = 'internal' | 'external' | 'unknown';
+
+export const APPLY_MODE_RANK: Record<ApplyMode, number> = { internal: 0, unknown: 1, external: 2 };
+
 export interface ScrapedOffer {
   externalId: string;
   source: string;
@@ -108,6 +117,7 @@ export interface ScrapedOffer {
   contractType?: string;
   salary?: string;
   postedAt?: Date;
+  applyMode?: ApplyMode;
 }
 
 export interface SearchParams {
@@ -342,10 +352,21 @@ export class ScrapingService {
         headers: { 'User-Agent': DETAIL_PAGE_USER_AGENT, 'Accept-Language': 'fr-FR,fr;q=0.9' },
         timeout: 10000,
       });
+      // Confirmed live on real offers: the header CTA (data-cy=
+      // "applyButtonHeader") reads "Postuler" for HelloWork's own form and
+      // "Postuler sur le site du partenaire" when it redirects to the
+      // employer's ATS.
+      const applyLabel = cheerio.load(response.data)('[data-cy="applyButtonHeader"]').first().text().trim();
+      const applyMode: ApplyMode = !applyLabel
+        ? 'unknown'
+        : /sur le site/i.test(applyLabel)
+          ? 'external'
+          : 'internal';
       const jobPosting = extractJobPostingJsonLd(response.data);
-      if (!jobPosting?.description) return offer;
+      if (!jobPosting?.description) return { ...offer, applyMode };
       return {
         ...offer,
+        applyMode,
         description: stripHtml(jobPosting.description),
         postedAt: offer.postedAt || (jobPosting.datePosted ? new Date(jobPosting.datePosted) : undefined),
       };
@@ -380,10 +401,26 @@ export class ScrapingService {
       await page.goto(offer.url, { waitUntil: 'domcontentloaded', timeout: 20000 });
       // Give WAF challenge JS + SPA hydration time to resolve
       await page.waitForTimeout(2500);
+      // The server-rendered apply link reads "/fr/authenticate/signin" for
+      // EVERY offer; only hydration swaps in an external ATS URL. Confirmed
+      // live: an external FERCHAU offer was stored as "internal" because the
+      // HTML was read before that swap. Bounded network-idle wait first.
+      await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
       const html = await page.content();
+      // Confirmed live across 8 real job pages: the header "Postuler" is an
+      // <a data-testid="job_header-button-apply">; its href is on-site
+      // (/fr/authenticate/signin or .../apply) for WTTJ's own form and an
+      // absolute employer-ATS URL (taleez, smartrecruiters, contactrh...)
+      // with target=_blank when it redirects.
+      const applyHref = cheerio.load(html)('a[data-testid="job_header-button-apply"]').first().attr('href') || '';
+      const applyMode: ApplyMode = !applyHref
+        ? 'unknown'
+        : /^https?:\/\//i.test(applyHref) && !/welcometothejungle\.com/i.test(applyHref)
+          ? 'external'
+          : 'internal';
       const jobPosting = extractJobPostingJsonLd(html);
-      if (!jobPosting?.description) return offer;
-      return { ...offer, description: stripHtml(jobPosting.description) };
+      if (!jobPosting?.description) return { ...offer, applyMode };
+      return { ...offer, applyMode, description: stripHtml(jobPosting.description) };
     } catch (error: any) {
       this.logger.warn(`Welcome to the Jungle detail fetch failed for ${offer.url}: ${error.message}`);
       return offer;
@@ -424,6 +461,9 @@ export class ScrapingService {
       description: o.description,
       url: o.url,
       postedAt: o.postedAt,
+      // The search is restricted to Easy Apply postings (f_AL, see
+      // linkedin-stealth.ts), so every hit is an in-platform candidature.
+      applyMode: 'internal' as const,
     }));
   }
 
@@ -590,14 +630,20 @@ export class ScrapingService {
           seen.add(jk);
 
           const titleEl = card.find('h2.jobTitle span, h3.jobTitle span, .jobTitle span, [data-testid="job-title"]').first();
-          const title = titleEl.text().trim();
+          const title = decodeHtmlEntities(titleEl.text().trim());
           if (!title) return;
 
-          const company = card.find('[data-testid="company-name"], .companyName').first().text().trim() || 'Entreprise non précisée';
+          const company = decodeHtmlEntities(card.find('[data-testid="company-name"], .companyName').first().text().trim()) || 'Entreprise non précisée';
           const location = card.find('[data-testid="text-location"], .companyLocation').first().text().trim() || undefined;
           let snippet = card.find('.job-snippet, [data-testid="job-snippet"], ul').first().text().trim();
           snippet = snippet.replace(/\.mosaic[^{]+{[^}]+}/g, '').trim();
           const salary = card.find('[data-testid="attribute_snippet_testid"], .salary-snippet-container').first().text().trim() || undefined;
+          // The card carries a "Candidature simplifiée" (Indeed Apply)
+          // label when the form is Indeed's own; its absence alone doesn't
+          // prove an external redirect, so the detail page settles the rest.
+          const hasIndeedApplyLabel =
+            card.find('.iaLabel, [data-testid="indeedApply"], [data-testid="indeed-apply-badge"]').length > 0 ||
+            /candidature simplifi/i.test(card.text());
 
           offers.push({
             externalId: jk,
@@ -608,6 +654,7 @@ export class ScrapingService {
             description: snippet || `${title} chez ${company}${location ? ` (${location})` : ''}`,
             salary,
             url: `https://fr.indeed.com/viewjob?jk=${jk}`,
+            applyMode: hasIndeedApplyLabel ? 'internal' : 'unknown',
           });
         });
 
@@ -638,9 +685,21 @@ export class ScrapingService {
       });
 
       const html = await page.content();
+      // Same selectors indeed.applier.ts decides with at apply time: the
+      // Indeed Apply widget means an in-platform form, the "Postuler sur le
+      // site de l'entreprise" link container means a redirect.
+      const $ = cheerio.load(html);
+      const applyMode: ApplyMode =
+        offer.applyMode === 'internal' ||
+        $('#indeedApplyButton, [data-testid="indeedApplyButton-test"], [data-testid="indeed-apply-widget"]').length > 0
+          ? 'internal'
+          : $('#applyButtonLinkContainer, #viewJobButtonLinkContainer').length > 0 ||
+              /postuler sur le site/i.test($('button, a').filter((_, el) => /postuler/i.test($(el).text())).text())
+            ? 'external'
+            : 'unknown';
       const jobPosting = extractJobPostingJsonLd(html);
       if (jobPosting?.description) {
-        return { ...offer, description: stripHtml(jobPosting.description) };
+        return { ...offer, applyMode, description: stripHtml(jobPosting.description) };
       }
 
       const text = await page
@@ -648,7 +707,7 @@ export class ScrapingService {
         .first()
         .innerText()
         .catch(() => '');
-      return text.trim() ? { ...offer, description: text.trim() } : offer;
+      return text.trim() ? { ...offer, applyMode, description: text.trim() } : { ...offer, applyMode };
     } catch (error: any) {
       this.logger.warn(`Indeed detail fetch failed for jk=${offer.externalId}: ${error.message}`);
       return offer;
@@ -772,6 +831,10 @@ export class ScrapingService {
     // real, auto-appliable ATS) -- sorted after the native ones instead, so
     // a budget-capped run spends its quota on native offers first.
     const isNativeApply = (offer: any): boolean => {
+      // origine "2" = partner posting: France Travail hands the candidate
+      // to the partner's own site (confirmed live: a "native" Collective.work
+      // offer redirected there and needed an account).
+      if (String(offer.origineOffre?.origine || '') === '2' || (offer.origineOffre?.partenaires || []).length > 0) return false;
       const applyUrl = offer.contact?.urlPostulation || offer.contact?.coordonnees1 || '';
       if (!/^https?:\/\//i.test(applyUrl)) return true;
       try {
@@ -784,6 +847,7 @@ export class ScrapingService {
     const sorted = [...allResults].sort((a, b) => Number(isNativeApply(b)) - Number(isNativeApply(a)));
 
     return sorted.map((offer: any) => ({
+      applyMode: (isNativeApply(offer) ? 'internal' : 'external') as ApplyMode,
       externalId: offer.id,
       source: 'france_travail',
       title: offer.intitule,
@@ -913,8 +977,13 @@ export class ScrapingService {
     // guessed at, same reasoning as France Travail's mapping just above.
     const types = new Set(params.contractTypes || []);
     const contractParams: Record<string, number> = {};
-    if (types.has('CDI')) contractParams.permanent = 1;
-    if (types.has('CDD')) contractParams.contract = 1;
+    // Confirmed live against the API with the stored credentials: `permanent`
+    // and `contract` are mutually exclusive filters -- either one alone is
+    // a 200, both together is an HTML "Uh oh, something isn't right" 400,
+    // which is exactly what a campaign with CDI+CDD selected sent on every
+    // query (Adzuna returned 0 offers all run). Both selected = no filter.
+    if (types.has('CDI') && !types.has('CDD')) contractParams.permanent = 1;
+    if (types.has('CDD') && !types.has('CDI')) contractParams.contract = 1;
 
     // Adzuna paginates via the page number baked into the URL path itself
     // (/search/1, /search/2, ...), not a query param -- every call before
@@ -944,7 +1013,10 @@ export class ScrapingService {
       if (pageResults.length < RESULTS_PER_PAGE) break;
     }
 
+    // Adzuna is an aggregator: `redirect_url` always leaves for the
+    // original posting, there is no on-platform apply at all.
     return allResults.map((offer: any) => ({
+      applyMode: 'external' as const,
       externalId: String(offer.id),
       source: 'adzuna',
       title: offer.title,
@@ -1029,6 +1101,7 @@ export class ScrapingService {
     return offers.map((offer: any) => ({
       externalId: String(offer.id),
       source: 'remotive',
+      applyMode: 'external' as const,
       title: offer.title,
       company: offer.company_name || 'Entreprise non précisée',
       location: offer.candidate_required_location,
@@ -1057,6 +1130,7 @@ export class ScrapingService {
       .map((offer) => ({
         externalId: offer.slug,
         source: 'arbeitnow',
+      applyMode: 'external' as const,
         title: offer.title,
         company: offer.company_name || 'Entreprise non précisée',
         location: offer.location || (offer.remote ? 'Remote' : undefined),
@@ -1084,6 +1158,7 @@ export class ScrapingService {
       .map((offer) => ({
         externalId: String(offer.id),
         source: 'jobicy',
+      applyMode: 'external' as const,
         title: offer.jobTitle,
         company: offer.companyName || 'Entreprise non précisée',
         location: offer.jobGeo || 'Remote',
@@ -1109,6 +1184,7 @@ export class ScrapingService {
       .map((offer) => ({
         externalId: String(offer.id),
         source: 'the_muse',
+      applyMode: 'external' as const,
         title: offer.name,
         company: offer.company?.name || 'Entreprise non précisée',
         location: (offer.locations || []).map((l: any) => l.name).join(', '),

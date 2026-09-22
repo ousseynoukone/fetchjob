@@ -162,6 +162,16 @@ export default function ApplicationDetail({ id }: { id: string }) {
                 <span className="capitalize badge badge-ghost badge-sm">
                   {current.jobOffer?.source?.replace('_', ' ')}
                 </span>
+                {current.jobOffer?.applyMode === 'internal' && (
+                  <span className="badge badge-success badge-outline badge-sm" title="La candidature se fait directement sur la plateforme">
+                    Candidature interne
+                  </span>
+                )}
+                {current.jobOffer?.applyMode === 'external' && (
+                  <span className="badge badge-warning badge-outline badge-sm" title="La plateforme redirige vers le site du recruteur">
+                    Redirection externe
+                  </span>
+                )}
               </div>
               <div className="flex flex-wrap items-center gap-4 text-xs text-base-content/40 mt-2">
                 {formatDateTime(current.jobOffer?.postedAt) && (
@@ -234,7 +244,14 @@ export default function ApplicationDetail({ id }: { id: string }) {
           )}
 
           {current.screenshotTakenAt && (
-            <details className="mt-5" open={current.status === 'needs_review'}>
+            // Always open, success or failure -- it used to expand only for
+            // needs_review, so a successfully sent candidature hid its
+            // screenshot behind a collapsed one-line summary that read as
+            // "no capture". The screenshot is the only record of what the
+            // page actually showed at the moment of the attempt, which
+            // matters just as much for confirming a success as for
+            // diagnosing a failure.
+            <details className="mt-5" open>
               <summary className="cursor-pointer text-sm text-base-content/60 hover:text-base-content">
                 Capture de la tentative ({formatDateTime(current.screenshotTakenAt)})
               </summary>

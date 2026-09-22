@@ -290,6 +290,12 @@ model JobOffer {
   url          String
   contractType String?
   salary       String?
+  // How the candidature is sent: "internal" = on the platform itself
+  // (LinkedIn Candidature simplifiée, HelloWork/WTTJ/Indeed/France Travail
+  // native form), "external" = the platform redirects to the employer's
+  // own ATS, "unknown" = the source gave no signal at scrape time.
+  // Campaign runs prepare and apply to internal offers first.
+  applyMode String @default("unknown")
 
   postedAt  DateTime?
   scrapedAt DateTime  @default(now())

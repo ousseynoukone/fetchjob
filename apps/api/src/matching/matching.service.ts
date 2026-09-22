@@ -51,18 +51,6 @@ function buildSeniorityRegex(keywords: string[]): RegExp | null {
   return new RegExp(`\\b(${parts.join('|')})\\b`, 'i');
 }
 
-const YEAR_REGEX = /\b(19|20)\d{2}\b/g;
-
-// `period` is free text (e.g. "2022 - 2024", "Sept. 2023 – Présent"), so
-// years of experience can only be estimated: earliest year mentioned across
-// every experience, compared to now. Good enough to separate "just starting
-// out" from "several years in" without requiring structured dates on the CV.
-function estimateYearsOfExperience(experiences?: { period?: string }[]): number {
-  const years = (experiences || []).flatMap((e) => (e.period || '').match(YEAR_REGEX) || []).map(Number);
-  if (!years.length) return 0;
-  return Math.max(0, new Date().getFullYear() - Math.min(...years));
-}
-
 function wordOverlap(a: string, b: string): number {
   const setA = new Set(normalize(a).match(/[a-z0-9]{3,}/g) || []);
   const setB = new Set(normalize(b).match(/[a-z0-9]{3,}/g) || []);
@@ -163,14 +151,20 @@ export class MatchingService {
         weights.location * locationMatch +
         weights.keyword * keywordCoverage);
 
-    // A candidate still early in their career gets flooded with "Senior" /
-    // "Tech Lead" / "Staff" postings that happen to share the right stack —
-    // heavily discount those rather than let stack overlap alone rank them
-    // as a good match. Candidates with 3+ estimated years are assumed
-    // experienced enough that a senior title isn't a mismatch.
-    const candidateYears = estimateYearsOfExperience(cv.experiences);
+    // "Senior" / "Tech Lead" / "Staff" postings that happen to share the
+    // right stack would otherwise rank as good matches on stack overlap
+    // alone -- heavily discounted instead. The keyword list is the person's
+    // own explicit statement of what to avoid (configured in the UI), so it
+    // applies whenever it matches. This used to ALSO be gated on an
+    // estimated years-of-experience (`< 3`, from the earliest year on the
+    // CV vs now) -- a hidden guess that silently overrode the explicit
+    // config. Confirmed live: a CV whose earliest listed year sat exactly
+    // 3 years back (with ~2 years of actual work across three short
+    // periods) computed to 3, failed `< 3`, and the whole penalty switched
+    // off -- a "Lead Developer" posting scored a full 68 with "lead" right
+    // there in the configured list, cleared the threshold, and got sent.
     const seniorityRegex = buildSeniorityRegex(seniorityKeywords);
-    const seniorityMismatch = candidateYears < 3 && !!seniorityRegex && seniorityRegex.test(normalize(offer.title));
+    const seniorityMismatch = !!seniorityRegex && seniorityRegex.test(normalize(offer.title));
     const score = Math.round(seniorityMismatch ? rawScore * 0.15 : rawScore);
 
     const combinedMatched = [...new Set([...matchedSkills, ...matchedTargets])];

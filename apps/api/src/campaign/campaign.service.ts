@@ -3,7 +3,7 @@ import { Subject, Observable } from 'rxjs';
 import { PrismaService } from '../common/prisma.service';
 import { LocalUserService } from '../common/local-user.service';
 import { CvService } from '../cv/cv.service';
-import { ScrapingService } from '../scraping/scraping.service';
+import { ScrapingService, APPLY_MODE_RANK, ApplyMode } from '../scraping/scraping.service';
 import { MatchingService } from '../matching/matching.service';
 import { ApplicationPrepService } from '../applications/application-prep.service';
 import { AutoApplyService } from '../auto-apply/auto-apply.service';
@@ -537,12 +537,34 @@ export class CampaignService implements OnModuleInit {
           offersScanned += offers.length;
           await this.appendLog(runId, `${offers.length} offre(s) trouvée(s) sur ${source} pour "${query}"`);
 
+          // Two passes, not prepare-as-you-go. Offers that apply ON the
+          // platform (JobOffer.applyMode "internal") are preferred over
+          // ones that redirect to an employer ATS -- the in-platform flows
+          // are the ones this app's appliers actually complete, and the
+          // scrapers only learn the mode for HelloWork/WTTJ/Indeed from
+          // the detail page fetched right here. Preparing in listing order
+          // let a handful of external offers at the top of the results
+          // eat the source's whole budget before any internal one was
+          // reached. So: screen (filter, enrich, match) a bounded number of
+          // offers first, then prepare the best of them -- internal first,
+          // then unknown, external last, by score within each group.
+          const remainingBudget = sourceBudget - (preparedPerSource.get(source) || 0);
+          const screeningCap = Math.max(remainingBudget * 3, remainingBudget + 5);
+          const candidates: {
+            jobOffer: { id: string; title: string; company: string; location: string | null; url: string; description: string; applyMode: string };
+            score: number;
+            matchedSkills: string[];
+            missingSkills: string[];
+            jobKey: string;
+          }[] = [];
+          const candidateKeys = new Set<string>();
+
           for (const rawOffer of offers) {
             if (this.cancelledCampaigns.has(campaign.id)) {
               cancelled = true;
               break queries;
             }
-            if ((preparedPerSource.get(source) || 0) >= sourceBudget) break;
+            if (candidates.length >= screeningCap) break;
 
             if (!isWithinIdf(rawOffer.source, rawOffer.location, campaign.location)) {
               offersFiltered++;
@@ -595,9 +617,13 @@ export class CampaignService implements OnModuleInit {
             // discarded anyway.
             const offer = await this.scraping.enrichDescription(rawOffer);
 
+            const applyMode: ApplyMode = offer.applyMode || 'unknown';
             const jobOffer = await this.prisma.jobOffer.upsert({
               where: { source_externalId: { source: offer.source, externalId: offer.externalId } },
-              update: {},
+              // A row scraped before the mode was tracked (or by a pass
+              // that couldn't tell) picks it up on the next sighting; a
+              // known mode is never downgraded back to unknown.
+              update: applyMode === 'unknown' ? {} : { applyMode },
               create: {
                 externalId: offer.externalId,
                 source: offer.source,
@@ -609,6 +635,7 @@ export class CampaignService implements OnModuleInit {
                 contractType: offer.contractType,
                 salary: offer.salary,
                 postedAt: offer.postedAt,
+                applyMode,
               },
             });
 
@@ -629,7 +656,7 @@ export class CampaignService implements OnModuleInit {
             }
 
             const jobKey = jobDedupeKey(jobOffer.title, jobOffer.company);
-            if (seenJobKeys.has(jobKey)) {
+            if (seenJobKeys.has(jobKey) || candidateKeys.has(jobKey)) {
               offersFiltered++;
               await this.appendLog(
                 runId,
@@ -668,6 +695,38 @@ export class CampaignService implements OnModuleInit {
               continue;
             }
 
+            candidates.push({
+              jobOffer,
+              score: result.score,
+              matchedSkills: result.matchedSkills,
+              missingSkills: result.missingSkills,
+              jobKey,
+            });
+            candidateKeys.add(jobKey);
+          }
+
+          candidates.sort(
+            (a, b) =>
+              APPLY_MODE_RANK[a.jobOffer.applyMode as ApplyMode] - APPLY_MODE_RANK[b.jobOffer.applyMode as ApplyMode] ||
+              b.score - a.score,
+          );
+          const skippedForBudget = candidates.length - Math.min(candidates.length, remainingBudget);
+          if (skippedForBudget > 0) {
+            const byMode = (mode: ApplyMode) => candidates.filter((c) => c.jobOffer.applyMode === mode).length;
+            await this.appendLog(
+              runId,
+              `${candidates.length} offre(s) retenue(s) sur ${source} (${byMode('internal')} interne(s), ${byMode('unknown')} indéterminée(s), ${byMode('external')} externe(s)) — les ${remainingBudget} meilleure(s) préparée(s), internes d'abord.`,
+            );
+          }
+
+          for (const { jobOffer, score, matchedSkills, missingSkills, jobKey } of candidates) {
+            if (this.cancelledCampaigns.has(campaign.id)) {
+              cancelled = true;
+              break queries;
+            }
+            if ((preparedPerSource.get(source) || 0) >= sourceBudget) break;
+            if (seenJobKeys.has(jobKey)) continue;
+
             const application = await this.prisma.application.create({
               data: {
                 userId,
@@ -678,9 +737,9 @@ export class CampaignService implements OnModuleInit {
                 company: jobOffer.company,
                 location: jobOffer.location,
                 sourceUrl: jobOffer.url,
-                matchScore: result.score,
-                matchedSkills: result.matchedSkills,
-                missingSkills: result.missingSkills,
+                matchScore: score,
+                matchedSkills,
+                missingSkills,
               },
             });
 
@@ -688,9 +747,11 @@ export class CampaignService implements OnModuleInit {
             applicationsPrepared++;
             preparedPerSource.set(source, (preparedPerSource.get(source) || 0) + 1);
             createdApplicationIds.push(application.id);
+            const modeLabel =
+              jobOffer.applyMode === 'internal' ? 'candidature interne' : jobOffer.applyMode === 'external' ? 'redirection externe' : 'mode indéterminé';
             await this.appendLog(
               runId,
-              `Candidature préparée: ${jobOffer.title} chez ${jobOffer.company} (score ${result.score})`,
+              `Candidature préparée: ${jobOffer.title} chez ${jobOffer.company} (score ${score}, ${modeLabel})`,
             );
 
             try {
@@ -725,12 +786,21 @@ export class CampaignService implements OnModuleInit {
           campaignId: campaign.id,
           status: 'to_apply',
         },
-        include: { jobOffer: { select: { source: true } } },
+        include: { jobOffer: { select: { source: true, applyMode: true } } },
         orderBy: [
           { matchScore: 'desc' },
           { createdAt: 'desc' },
         ],
       });
+      // Same preference as the preparation pass: an in-platform
+      // candidature is queued before one that redirects to an external ATS,
+      // whatever their scores -- the queue is capped per source, and the
+      // internal ones are the ones that actually get sent.
+      pendingApps.sort(
+        (a, b) =>
+          APPLY_MODE_RANK[(a.jobOffer?.applyMode || 'unknown') as ApplyMode] -
+          APPLY_MODE_RANK[(b.jobOffer?.applyMode || 'unknown') as ApplyMode],
+      );
 
       const overrides = (campaign.sourceDailyLimits || {}) as Record<string, number>;
       const selectedBySource = new Map<string, number>();
