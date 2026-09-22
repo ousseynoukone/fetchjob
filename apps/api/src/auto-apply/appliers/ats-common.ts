@@ -169,6 +169,22 @@ export async function humanFill(locator: Locator, value: string): Promise<void> 
     // gets its value as one input event (what a paste is), and any other
     // field that stops accepting keystrokes falls back to the same instead
     // of waiting Playwright's default 30s on each remaining key.
+    // Keystrokes go to whatever the PAGE considers focused, not to this
+    // locator -- so a site that restores focus asynchronously after a click
+    // gets the first characters of this value typed into the field that was
+    // focused before. Confirmed live on alphea-conseil.com: the email field
+    // came out as "ousseynou781227@gmail.com" + "Mad", and on the retry the
+    // city field as "Ile de Saint Denis" + "ousseynou7" -- each field holding
+    // the start of the NEXT field's value, which made the form invalid and
+    // cost the whole candidature. Nothing is typed until the element really
+    // is the active one.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const isFocused = await locator.evaluate((e: any) => e === e.ownerDocument.activeElement).catch(() => false);
+      if (isFocused) break;
+      await locator.focus({ timeout: 1000 }).catch(() => {});
+      await locator.page().waitForTimeout(100);
+    }
+
     const inputType = await locator.evaluate((e: any) => (e.type || '').toLowerCase()).catch(() => '');
     if (value.length > PASTE_THRESHOLD_CHARS || inputType === 'tel') {
       await locator.fill(value);
