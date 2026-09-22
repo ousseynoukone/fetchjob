@@ -33,6 +33,7 @@ const PLATFORM_LABELS: Record<SupportedPlatform, string> = {
   welcome_to_the_jungle: 'Welcome to the Jungle',
   apec: 'APEC',
   gmail: 'Gmail',
+  free_work: 'Free-Work',
 };
 
 type Status = 'connecting' | 'active' | 'done' | 'error';

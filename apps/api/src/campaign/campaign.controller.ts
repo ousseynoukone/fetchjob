@@ -1,4 +1,4 @@
-import { Controller, Get, Put, Post, Body, Sse, MessageEvent } from '@nestjs/common';
+import { Controller, Get, Put, Post, Body, Param, Sse, MessageEvent } from '@nestjs/common';
 import { Observable, map } from 'rxjs';
 import { CampaignService } from './campaign.service';
 import { AutoApplyService } from '../auto-apply/auto-apply.service';
@@ -38,6 +38,14 @@ export class CampaignController {
   @Post('retry-failed')
   async retryFailed() {
     return this.campaignService.retryFailed();
+  }
+
+  // Targeted re-attempt of a single candidature -- the service method
+  // already existed (used internally) but had no route; useful to verify a
+  // specific fix without retrying every other "à vérifier" candidature too.
+  @Post('retry-one/:applicationId')
+  async retryOneCandidature(@Param('applicationId') applicationId: string) {
+    return this.campaignService.retryOne(applicationId);
   }
 
   @Get('logs')

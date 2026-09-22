@@ -123,6 +123,17 @@ export const REMOTE_LOGIN_URLS: Record<SupportedPlatform, string> = {
   welcome_to_the_jungle: 'https://www.welcometothejungle.com/fr/signin',
   apec: 'https://www.apec.fr/candidat/mon-espace.html',
   gmail: 'https://accounts.google.com/ServiceLogin?service=mail&continue=https://mail.google.com/mail/',
+  // No account needed to apply (see freework.applier.ts) -- listed only so
+  // the Comptes page can still store a fallback email/password for the
+  // rare offer that does show a login wall. Confirmed live: the previous
+  // URL here (.../tech-it/candidate/login) was a genuine 404 on
+  // free-work.com's own side -- the person landed on that error page and
+  // the login-wall check (only "is a password field visible") read the
+  // absent field as "already logged in", saving that broken page's cookies
+  // as if they were a real session. /fr/resume redirects cleanly to
+  // /fr/login?redirect=/fr/resume when logged out (verified 200) and lands
+  // straight back on the résumé page once actually logged in.
+  free_work: 'https://www.free-work.com/fr/resume',
 };
 
 // Generic enough to match every platform's own login form without needing a

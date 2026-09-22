@@ -50,6 +50,7 @@ const PLATFORM_LABELS: Record<SupportedPlatform, string> = {
   welcome_to_the_jungle: 'Welcome to the Jungle',
   apec: 'APEC',
   gmail: 'Gmail',
+  free_work: 'Free-Work',
 };
 
 // Only LinkedIn's applier ever attempts an automatic email/password login
@@ -69,6 +70,7 @@ const AUTO_LOGIN_PLATFORMS = new Set<SupportedPlatform>([
   'welcome_to_the_jungle',
   'apec',
   'gmail',
+  'free_work',
 ]);
 
 const PLATFORM_NOTES: Partial<Record<SupportedPlatform, string>> = {
@@ -78,6 +80,7 @@ const PLATFORM_NOTES: Partial<Record<SupportedPlatform, string>> = {
   welcome_to_the_jungle: "Beaucoup d'annonces renvoient vers l'outil de recrutement de l'employeur : l'envoi automatique ne couvre que celles hébergées directement par Welcome to the Jungle.",
   apec: "Connexion et reconnexion 100% automatiques avec votre adresse email et mot de passe.",
   gmail: "Permet de relever automatiquement les codes de sécurité (ex: code à 8 chiffres de France Travail). Vous pouvez vous connecter via le navigateur intégré, ou renseigner un mot de passe d'application Google (généré sur myaccount.google.com/apppasswords).",
+  free_work: "La plupart des offres Free-Work se postulent sans compte — ce compte ne sert que de secours pour les offres publiées par une agence partenaire, qui exigent une connexion. Connexion automatique tentée avec l'email/mot de passe, pas encore fiable à 100% sur ce site précis.",
 };
 
 // Gmail supports both remote login browser and entering a Google App Password directly
@@ -645,6 +648,7 @@ export default function SettingsPage() {
                 <PlatformCredentialRow platform="welcome_to_the_jungle" />
                 <PlatformCredentialRow platform="apec" />
                 <PlatformCredentialRow platform="gmail" />
+                <PlatformCredentialRow platform="free_work" />
               </div>
             </div>
 

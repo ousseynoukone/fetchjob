@@ -983,6 +983,29 @@ export const SESSION_CHECKS: Record<string, SessionCheck> = {
     homeUrl: 'https://www.apec.fr/candidat/mon-espace.html',
     isLoginWallVisible: async (page) => page.locator('#emailid').first().isVisible().catch(() => false),
   },
+  free_work: {
+    // /fr/resume is the candidate's own résumé page -- logged out, it's
+    // where "Se connecter" (see freework.applier.ts's login form,
+    // confirmed live via screenshot: a visible input[type=password]) shows
+    // up instead of the résumé itself.
+    //
+    // Confirmed live the hard way: a stale/wrong REMOTE_LOGIN_URLS entry
+    // sent a real remote-login attempt to a genuine 404 on free-work.com's
+    // own side (a branded error page, not a browser-level error
+    // isBrowserErrorPage would have caught) -- no password field there
+    // either, so "not on the login wall" fired after two clean reads and
+    // that error page's cookies got saved as a working session. A password
+    // field being absent is never enough on its own; the URL must also
+    // still be on the résumé page, not bounced to /login or an error page.
+    homeUrl: 'https://www.free-work.com/fr/resume',
+    isLoginWallVisible: async (page) => {
+      if (/\/login(\?|$)/i.test(page.url())) return true;
+      if (await page.locator('input[type="password"]:visible').first().isVisible().catch(() => false)) return true;
+      const bodyText = await page.locator('body').innerText({ timeout: 2000 }).catch(() => '');
+      if (/404|server error|page (introuvable|non trouv[ée]e)/i.test(bodyText)) return true;
+      return !/\/fr\/resume/i.test(page.url());
+    },
+  },
   // Not used for continuous auto-polling the way every other platform's
   // check is (see remote-login.service.ts's MANUAL_CONFIRM_PLATFORMS) --
   // Google's own login is a multi-step flow (identifier -> password -> 2FA)
@@ -1030,7 +1053,7 @@ export async function hasAlreadyAppliedIndicator(page: Page): Promise<boolean> {
 // then filled in. Search-results wording is only read as "gone" when no
 // application form is on the page (see hasJobClosedIndicator's callers).
 const JOB_CLOSED_TEXT =
-  /no longer accepting applications|n'accepte plus de candidatures|ne recrute plus|cette offre n'est plus disponible|this job (is no longer available|has expired)|offre expirée|candidatures closes|aucun poste vacant correspondant|cette offre (d'emploi )?n'existe plus|l'offre que vous recherchez n'existe (plus|pas)|poste (pourvu|déjà pourvu)|position has been filled|job (posting )?(not found|no longer exists|has been closed)|this (job|position) is closed|we're sorry.{0,40}(no longer|not available)/i;
+  /no longer accepting applications|n'accepte plus de candidatures|ne recrute plus|offre n'est plus disponible|this job (is no longer available|has expired)|offre expirée|candidatures closes|aucun poste vacant correspondant|cette offre (d'emploi )?n'existe plus|l'offre que vous recherchez n'existe (plus|pas)|poste (a été |a été déjà )?pourvu|n'est plus d'actualité|position has been filled|job (posting )?(not found|no longer exists|has been closed)|this (job|position) is closed|we're sorry.{0,40}(no longer|not available)/i;
 
 export async function hasJobClosedIndicator(page: Page): Promise<boolean> {
   const bodyText = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
@@ -1094,12 +1117,29 @@ export async function resolveExternalApplyUrl(page: Page, clickable: Locator, ow
     // first lands on the platform's OWN redirector (indeed.com/applystart)
     // and only then hops to the employer -- read at the wrong moment, the
     // hop looked like "never left the platform". Poll until it does.
+    const isBareRoot = (u: string) => {
+      try {
+        const p = new URL(u);
+        return p.pathname === '/' || p.pathname === '';
+      } catch {
+        return false;
+      }
+    };
     for (let i = 0; i < 10 && (ownDomain.test(popup.url()) || popup.url() === 'about:blank'); i++) {
+      await popup.waitForTimeout(1000);
+    }
+    // Confirmed live (Indeed -> free-work.com): leaving Indeed's domain was
+    // enough to stop the loop above even though the chain had only reached
+    // the employer's bare homepage so far, one hop short of the real job
+    // page -- the applier then dutifully "applied" on that homepage's
+    // "Postuler" (there wasn't one). Give a bare root the same bounded
+    // chance to keep hopping that an on-Indeed intermediate URL already got.
+    for (let i = 0; i < 6 && isBareRoot(popup.url()); i++) {
       await popup.waitForTimeout(1000);
     }
     const url = popup.url();
     await popup.close().catch(() => {});
-    if (!url || ownDomain.test(url) || url === 'about:blank') return null;
+    if (!url || ownDomain.test(url) || url === 'about:blank' || isBareRoot(url)) return null;
     return url;
   }
 

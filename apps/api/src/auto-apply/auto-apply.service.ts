@@ -20,6 +20,7 @@ import { GreenhouseApplier } from './appliers/greenhouse.applier';
 import { LeverApplier } from './appliers/lever.applier';
 import { WorkdayApplier } from './appliers/workday.applier';
 import { SmartRecruitersApplier } from './appliers/smartrecruiters.applier';
+import { FreeWorkApplier } from './appliers/freework.applier';
 import { GenericApplier } from './appliers/generic.applier';
 import { JobApplier, ApplyResult } from './appliers/applier.interface';
 import { scanInvalidFields } from './appliers/form-fields';
@@ -50,6 +51,12 @@ const ATS_HOST_PATTERNS: { pattern: RegExp; key: string }[] = [
   { pattern: /(^|\.)lever\.co$/i, key: 'lever' },
   { pattern: /myworkdayjobs\.com$/i, key: 'workday' },
   { pattern: /(^|\.)smartrecruiters\.com$/i, key: 'smartrecruiters' },
+  // Confirmed live via a real recorded application: a normal, no-account
+  // apply flow (see freework.applier.ts) -- routed by URL like the other
+  // ATS-by-domain entries above, so an Adzuna/Indeed/France Travail listing
+  // that happens to link here gets the real, working flow instead of the
+  // generic fallback's guess (which used to misread it as account-only).
+  { pattern: /(^|\.)free-work\.com$/i, key: 'free_work' },
 ];
 
 function detectAtsKey(url: string): string | null {
@@ -159,6 +166,7 @@ export class AutoApplyService {
     lever: LeverApplier,
     workday: WorkdayApplier,
     smartRecruiters: SmartRecruitersApplier,
+    freeWork: FreeWorkApplier,
     private genericFallback: GenericApplier,
   ) {
     this.appliers = {
@@ -174,6 +182,7 @@ export class AutoApplyService {
       lever,
       workday,
       smartrecruiters: smartRecruiters,
+      free_work: freeWork,
     };
   }
 
@@ -359,14 +368,15 @@ export class AutoApplyService {
           await appendLog(`Auto-apply réussi: ${application.jobTitle} chez ${application.company}`);
         } else {
           needsReview++;
+          const failedPlatform = (result as { actualPlatform?: string }).actualPlatform || source;
           if (result.blockedByWaf) {
-            wafBlockedPlatforms.add(source);
-            await appendLog(`⚠️ ${source} refuse l'accès (403) : les autres offres ${source} de cette série sont reportées pour ne pas aggraver le blocage.`);
+            wafBlockedPlatforms.add(failedPlatform);
+            await appendLog(`⚠️ ${failedPlatform} refuse l'accès (403) : les autres offres ${failedPlatform} de cette série sont reportées pour ne pas aggraver le blocage.`);
           }
           if (result.sessionExpired) {
-            expiredPlatforms.add(source);
+            expiredPlatforms.add(failedPlatform);
             await appendLog(
-              `⚠️ Session ${source} expirée : toutes les autres offres ${source} de cette série seront ignorées pour protéger votre compte.`,
+              `⚠️ Session ${failedPlatform} expirée : toutes les autres offres ${failedPlatform} de cette série seront ignorées pour protéger votre compte.`,
             );
           }
           await this.prisma.application.update({
@@ -655,9 +665,17 @@ export class AutoApplyService {
         // The hop lands on another account-based platform: give the context
         // that platform's stored session, so its applier runs logged in.
         const hopPlatform = redirected.applier.credentialPlatform as SupportedPlatform | null;
+        // Confirmed live (Free-Work via an Indeed hop): only cookies were
+        // ever carried over here, never the plain email/password -- so an
+        // applier that needs to log in INLINE mid-attempt (no stored
+        // session yet, e.g. a first-ever run) always saw ctx.credential as
+        // null/undefined and could never use a credential the person had
+        // genuinely saved for that platform.
+        let hopCredential: { email: string; password?: string | null } | null = null;
         if (hopPlatform && hopPlatform !== platform) {
           try {
             const hopCred = await this.credentials.getDecrypted(userId, hopPlatform);
+            hopCredential = { email: hopCred.email, password: hopCred.password };
             const hopState = hopCred.sessionState ? JSON.parse(hopCred.sessionState) : null;
             const hopCookies = Array.isArray(hopState) ? hopState : Array.isArray(hopState?.cookies) ? hopState.cookies : [];
             if (hopCookies.length) {
@@ -665,7 +683,7 @@ export class AutoApplyService {
               await appendLog(`Session ${hopPlatform} chargée pour cette redirection.`);
             }
           } catch {
-            // No stored session for that platform: its applier reports the login wall itself.
+            // No stored credential/session for that platform: its applier reports the login wall itself.
           }
         }
         // Logged here, once, for every source: the run log otherwise jumps
@@ -702,6 +720,7 @@ export class AutoApplyService {
               fields.map((f) => ({ ...f, platform: finalPlatformKey, sourceUrl: finalUrl })),
             ),
           appendLog,
+          credential: hopCredential,
         }));
       }
 
@@ -779,7 +798,14 @@ export class AutoApplyService {
       // directly off the Application table and sends a periodic summary
       // instead (see digest.service.ts).
 
-      return result;
+      // finalPlatformKey, not the offer's original `source`: confirmed live
+      // on an Indeed -> Free-Work hop, a Free-Work login failure came back
+      // as `sessionExpired` and the run loop misattributed it to Indeed,
+      // marking every OTHER Indeed offer in the same series as skippable
+      // to "protect the account" -- an account that was never actually
+      // touched. The circuit-breaker below needs to know which platform's
+      // applier actually produced the verdict.
+      return { ...result, actualPlatform: finalPlatformKey };
     } catch (error) {
       // The screenshot above only runs if execution REACHES it. An applier
       // that throws (a selector that never appeared, a navigation error, a

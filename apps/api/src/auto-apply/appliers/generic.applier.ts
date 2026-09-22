@@ -41,7 +41,11 @@ const SUCCESS_URL = /thank-?you|confirmation|success|merci|candidature-envoyee|a
 // Freelance.com): the job page looks open, but "Postuler" only ever leads
 // to sign-up / Google sign-in. No session exists for them here, so the
 // honest outcome is immediate: named as such, nothing typed anywhere.
-const ACCOUNT_ONLY_BOARDS = /efinancialcareers\.|free-work\.|collective\.work|freelance\.com|malt\.(fr|com)|jobteaser\.|jobijoba\.|choosemycompany\.|talents-handicap\./i;
+// free-work.com is deliberately NOT here any more: confirmed via a real
+// recorded application that it needs no account at all (see
+// freework.applier.ts, routed there directly by URL before this ever
+// runs) -- an earlier reading of one of its pages was wrong.
+const ACCOUNT_ONLY_BOARDS = /efinancialcareers\.|collective\.work|freelance\.com|malt\.(fr|com)|jobteaser\.|jobijoba\.|choosemycompany\.|talents-handicap\./i;
 
 // Job boards that only ever link OUT to the real posting (see apply()).
 const AGGREGATOR_OUTBOUND_LINKS: { name: string; host: RegExp; selector: string }[] = [

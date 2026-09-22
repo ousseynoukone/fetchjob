@@ -5,6 +5,16 @@ import { fillKnownFields, scanInvalidFields, normalizeLabel } from './form-field
 import { buildFormSnapshot, applyFormPlan, formatFieldsForPrompt, formatButtonsForPrompt, buildCandidateBrief } from './ai-form-snapshot';
 import { humanClick, hasSecurityCheck, trySolveSlideChallenge, fillIdentityFields, resolveExternalApplyUrl, hasJobClosedIndicator, tickConsentCheckboxes, clickCvUploadControl, findCvFileInput, uploadCv } from './ats-common';
 
+// A generic career-site form can offer "Apply with LinkedIn/Google/..." as
+// one of its own buttons; a step the model reads as "next"/"continue" can
+// click straight through it and land on that provider's real login/signup
+// page. None of these is ever a form this applier can complete headless.
+// Same LinkedIn login/signup path fragments SESSION_CHECKS.linkedin already
+// treats as its own login wall, reused here for the "not even on LinkedIn's
+// own applier" case.
+const THIRD_PARTY_AUTH_HOST =
+  /linkedin\.com\/(login|uas\/login|checkpoint\/|signup|authwall|start\/join)|accounts\.google\.com|appleid\.apple\.com|(^|\/\/)([\w-]+\.)?facebook\.com\/login|login\.microsoftonline\.com/i;
+
 export interface FormLoopOptions {
   maxSteps?: number;
   // Fast path: today's known button text per platform, tried first on every
@@ -120,6 +130,19 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
     // a client-side redirect the applier's initial check ran before.
     if (await hasJobClosedIndicator(page)) {
       return { success: false, note: "L'offre n'est plus disponible sur le site du recruteur (expirée ou pourvue) — à ignorer." };
+    }
+
+    // A step's own "Postuler avec LinkedIn / Google / ..." button can carry
+    // the page away to that provider's real sign-up/login screen mid-loop
+    // (confirmed live: a SOFTEAM offer ended the attempt on LinkedIn's own
+    // "Inscrivez-vous, c'est gratuit" page after a step the model read as
+    // "next"). None of these are ever a fillable application form here --
+    // there is no OAuth session to complete them with.
+    if (THIRD_PARTY_AUTH_HOST.test(page.url())) {
+      return {
+        success: false,
+        note: `Le formulaire a été remplacé par une page de connexion tierce (${new URL(page.url()).hostname}) — candidature à finaliser manuellement.`,
+      };
     }
 
     // Check if an external redirect button appeared (e.g. "Postuler sur le site du recruteur")
@@ -313,6 +336,16 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
           if (!matched) continue;
           f.value = matched;
         }
+        // Same reasoning as the select guard above, for a URL-named field
+        // (X/Twitter, LinkedIn, GitHub, portfolio...): confirmed live, the
+        // model answered a one-letter "X" label with "Oui" -- rejected at
+        // fill time by the URL guard in applyFormPlan, but still cached
+        // here as the "known answer", so every later occurrence of that
+        // same question kept silently failing the same way instead of
+        // ever getting a real chance to answer it (or surface it to the
+        // person to answer once themselves).
+        const isUrlLabel = /\burl\b|\blien\b|\blink\b|twitter|linkedin|github|gitlab|portfolio|site web|website/i.test(regularField.label) || /^x$|^x \(twitter\)$/i.test(regularField.label.trim());
+        if (isUrlLabel && !/^https?:\/\//i.test(f.value.trim())) continue;
         answeredEntries.push({
           questionText: regularField.label,
           answer: f.value,

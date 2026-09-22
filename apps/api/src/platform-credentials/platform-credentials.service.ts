@@ -64,9 +64,32 @@ export class PlatformCredentialsService {
     // A cookie-only session has no real email to show -- same placeholder
     // remote-login.service.ts already uses when nothing was captured.
     const emailEncrypted = this.crypto.encrypt(dto.email?.trim() || '(session importée)');
+
+    // Confirmed live the hard way: saving just an email/password correction
+    // (e.g. fixing a typo'd password) used to always write
+    // `storageState: dto.sessionState ?? null` -- silently wiping out a
+    // real, just-established session's cookies whenever this call didn't
+    // ALSO carry them, which it normally never does when it's only the
+    // password being edited. Falls back to whatever storageState the
+    // existing row already had instead of nulling it out.
+    let existingStorageState: string | null = null;
+    if (!dto.sessionState) {
+      const existing = await this.prisma.platformCredential.findUnique({
+        where: { userId_platform: { userId, platform: dto.platform } },
+      });
+      if (existing?.sessionStateEncrypted) {
+        try {
+          const parsed = JSON.parse(this.crypto.decrypt(existing.sessionStateEncrypted));
+          if (parsed && typeof parsed === 'object' && 'storageState' in parsed) {
+            existingStorageState = parsed.storageState ?? null;
+          }
+        } catch {}
+      }
+    }
+
     const payload = JSON.stringify({
       password: dto.password ?? null,
-      storageState: dto.sessionState ?? null,
+      storageState: dto.sessionState ?? existingStorageState,
     });
     const sessionStateEncrypted = this.crypto.encrypt(payload);
 

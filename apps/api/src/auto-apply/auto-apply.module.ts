@@ -17,6 +17,7 @@ import { GreenhouseApplier } from './appliers/greenhouse.applier';
 import { LeverApplier } from './appliers/lever.applier';
 import { WorkdayApplier } from './appliers/workday.applier';
 import { SmartRecruitersApplier } from './appliers/smartrecruiters.applier';
+import { FreeWorkApplier } from './appliers/freework.applier';
 import { GenericApplier } from './appliers/generic.applier';
 
 @Module({
@@ -34,6 +35,7 @@ import { GenericApplier } from './appliers/generic.applier';
     LeverApplier,
     WorkdayApplier,
     SmartRecruitersApplier,
+    FreeWorkApplier,
     GenericApplier,
   ],
   exports: [AutoApplyService, BrowserSessionService],

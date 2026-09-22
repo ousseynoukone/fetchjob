@@ -267,9 +267,16 @@ function stripHtml(html: string): string {
 const STOPWORDS = new Set(['pour', 'avec', 'dans', 'les', 'des', 'developpeur', 'developpeuse', 'and', 'the', 'for', 'with']);
 
 // Arbeitnow/Jobicy/The Muse's free public APIs don't support real free-text
-// search — they return a plain list. Filter locally by requiring at least
-// one significant keyword token to appear in the title/description/tags,
-// same "best-effort, don't over-filter" spirit as the IDF location check.
+// search — they return a plain list. Filter locally by requiring EVERY
+// significant keyword token to appear in the title/description/tags.
+// Confirmed live: this used to require only ONE token (`.some`), and for a
+// multi-word search like "Développeur Full Stack Java" that token set is
+// ["full", "stack", "java"] once the "developpeur" stopword is stripped --
+// "full" alone is common enough in ordinary English job-listing boilerplate
+// ("Full-Time", "full benefits") that it matched completely unrelated roles
+// (Account Executive, Data Center Specialist, Controls Engineer) on sources
+// with rich free-text descriptions. Requiring every token together is much
+// closer to what the search phrase actually means.
 function matchesKeywords(haystack: string, keywords: string): boolean {
   const normalizedHaystack = normalizeLocation(haystack);
   const tokens = normalizeLocation(keywords)
@@ -277,7 +284,7 @@ function matchesKeywords(haystack: string, keywords: string): boolean {
     .filter((t) => t.length >= 3 && !STOPWORDS.has(t));
 
   if (!tokens.length) return true;
-  return tokens.some((token) => normalizedHaystack.includes(token));
+  return tokens.every((token) => normalizedHaystack.includes(token));
 }
 
 @Injectable()
@@ -1096,7 +1103,14 @@ export class ScrapingService {
       params: { search: params.keywords },
     });
 
-    const offers = (response.data?.jobs || []).slice(0, 20);
+    // Confirmed live: Remotive's own `search` param is loose enough that a
+    // query like "Développeur Fullstack" still surfaced completely
+    // unrelated roles (Inside Sales Contractor, Kundenservice Mobilfunk
+    // Inbound...) with no local re-check to catch it, unlike the other
+    // free-API sources below. Same AND-based re-filter as a safety net.
+    const offers = (response.data?.jobs || [])
+      .filter((offer: any) => matchesKeywords(`${offer.title} ${offer.description || ''}`, params.keywords))
+      .slice(0, 20);
 
     return offers.map((offer: any) => ({
       externalId: String(offer.id),
