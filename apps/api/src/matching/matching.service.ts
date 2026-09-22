@@ -130,12 +130,22 @@ export class MatchingService {
     // How many of the campaign's targeted roles/technologies actually show
     // up in this offer — independent of what's on the CV, since the search
     // list can include aspirational titles/stacks beyond current skills.
-    // Same capped-target logic, same live-run-confirmed recalibration as
-    // SKILL_TARGET above: a real strong match rarely hit more than 2-3
-    // distinct target keywords in one posting's text, so the old target of
-    // 5 was capping keywordCoverage well under 1.0 even for offers that
-    // were, in practice, an excellent match.
-    const KEYWORD_TARGET = 3;
+    // Confirmed live across a real 576-offer run: this campaign's own
+    // targetKeywords are ALTERNATIVE search queries ("Développeur
+    // Fullstack" / "... Full Stack Java" / "... Node.js" / "... Flutter"),
+    // not a checklist one posting is expected to satisfy at once — a
+    // single posting is realistically about ONE of those roles, so it
+    // matches at most 1 of the 5 verbatim phrases almost every time.
+    // KEYWORD_TARGET=3 (needing 3 of 5) capped keywordCoverage near 0.33
+    // for every genuinely on-topic offer, which alone compressed the whole
+    // score distribution into ~55-71 regardless of how strong the actual
+    // skill match was — confirmed live: raising the threshold from that
+    // band did nothing but reject offers a human would call good matches.
+    // Lowered so ONE matching query is a real, mostly-complete signal
+    // ("this offer is what I searched for") and a second, genuinely
+    // stronger match still adds real headroom instead of being wasted
+    // above an already-maxed bucket.
+    const KEYWORD_TARGET = 2;
     const matchedTargets = targetKeywords.filter((kw) => kw.trim() && offerText.includes(normalize(kw)));
     const keywordCoverage = targetKeywords.length > 0 ? Math.min(1, matchedTargets.length / KEYWORD_TARGET) : 0;
 
