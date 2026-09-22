@@ -8,7 +8,35 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 
+function cleanupOrphanedPlaywrightProcesses() {
+  if (process.platform === 'win32') {
+    try {
+      const { execSync } = require('child_process');
+      execSync(
+        `powershell -NoProfile -Command "Get-Process chrome -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*ms-playwright*' } | Stop-Process -Force -ErrorAction SilentlyContinue"`,
+        { stdio: 'ignore' },
+      );
+    } catch {}
+  }
+}
+
+// Ensure orphaned Chromium processes are cleaned up on shutdown
+process.on('SIGINT', () => {
+  cleanupOrphanedPlaywrightProcesses();
+  process.exit(0);
+});
+process.on('SIGTERM', () => {
+  cleanupOrphanedPlaywrightProcesses();
+  process.exit(0);
+});
+process.on('beforeExit', () => {
+  cleanupOrphanedPlaywrightProcesses();
+});
+
 async function bootstrap() {
+  // Purge any stale orphaned Playwright Chromium instances left from previous crashes
+  cleanupOrphanedPlaywrightProcesses();
+
   const app = await NestFactory.create(AppModule);
 
   // Enable shutdown hooks so that services (like BrowserSessionService) 

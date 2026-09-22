@@ -18,6 +18,9 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { chromium as stealthChromium } from 'patchright';
 import type { Browser, BrowserContext } from 'playwright';
+// See cdp-endpoint.ts for why a real host Chrome over CDP is the strongest
+// anti-bot posture available, and the two Chrome quirks it works around.
+import { CDP_URL, resolveCdpEndpoint } from '../common/cdp-endpoint';
 import {
   buildFingerprintScript,
   randomProfile,
@@ -83,9 +86,38 @@ export class BrowserSessionService implements OnModuleDestroy {
       this.logger.warn('Cached browser is disconnected — relaunching.');
       this.browser = null;
     }
+    if (!this.browser && CDP_URL) {
+      // Still patchright: its patches are protocol-level (e.g. never
+      // issuing the detectable Runtime.enable), which a site can spot no
+      // matter how the browser was started. What's dropped over CDP is the
+      // PAGE-level disguise (UA/locale/WebGL overrides, see createContext):
+      // this browser is genuine, and overwriting real values with fake ones
+      // would manufacture exactly the contradictions those exist to hide.
+      const endpoint = await resolveCdpEndpoint(CDP_URL);
+      // No silent fallback to launching a Chromium in here: that would
+      // quietly reintroduce the exact headless/software-GPU fingerprint this
+      // mode exists to get away from, and every attempt would fail against
+      // anti-bot checks with nothing in the logs explaining why.
+      this.browser = (await stealthChromium.connectOverCDP(endpoint, { timeout: 15000 }).catch((err: any) => {
+        throw new Error(
+          `Host Chrome not reachable at ${endpoint} — start it with start-host-chrome.ps1 (${err.message})`,
+        );
+      })) as unknown as Browser;
+      this.logger.log(`Connected to host Chrome over CDP at ${endpoint} (${this.browser.version()})`);
+      return this.browser;
+    }
     if (!this.browser) {
+      const headless = process.env.AUTO_APPLY_HEADLESS !== 'false';
+      // Only meaningful in a GPU-less container. On a real desktop running
+      // headed, disabling the GPU makes Chromium render through SwiftShader,
+      // and a software WebGL renderer string is one of the most common
+      // headless/bot tells behavioral WAFs check -- DataDome's own challenge
+      // page on APEC listed browser behavior as its reason. A headed browser
+      // that still carries that fingerprint gains almost nothing from being
+      // visible; a real desktop Chrome uses the GPU, so this one should too.
+      const gpuArgs = headless ? ['--disable-gpu', '--disable-software-rasterizer', '--disable-accelerated-2d-canvas'] : [];
       this.browser = (await stealthChromium.launch({
-        headless: process.env.AUTO_APPLY_HEADLESS !== 'false',
+        headless,
         // Without this, Playwright launches its lightweight
         // "chrome-headless-shell" binary for headless mode instead of full
         // Chromium — confirmed live: a real hang landed inside a LinkedIn
@@ -102,8 +134,7 @@ export class BrowserSessionService implements OnModuleDestroy {
           '--disable-blink-features=AutomationControlled',
           '--disable-features=IsolateOrigins,site-per-process',
           '--disable-dev-shm-usage',
-          '--disable-gpu',
-          '--disable-software-rasterizer',
+          ...gpuArgs,
           '--disable-extensions',
           '--disable-background-networking',
           '--mute-audio',
@@ -132,7 +163,6 @@ export class BrowserSessionService implements OnModuleDestroy {
           // .env if renderer crashes show up in local testing; production
           // keeps today's 160 unless Render's own env vars are changed.
           '--renderer-process-limit=1',
-          '--disable-accelerated-2d-canvas',
           '--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider',
           `--js-flags=--max-old-space-size=${process.env.CHROMIUM_RENDERER_HEAP_MB || '160'}`,
           '--lang=fr-FR',
@@ -205,12 +235,6 @@ export class BrowserSessionService implements OnModuleDestroy {
                 c.domain && c.domain.includes('linkedin.com') && !c.domain.includes('fr.linkedin.com')
               );
             }
-            storageState.cookies = storageState.cookies.map((c: any) => {
-              if (c.domain && c.domain.includes('linkedin.com')) {
-                return { ...c, domain: '.linkedin.com' };
-              }
-              return c;
-            });
           }
         }
       } catch {
@@ -221,24 +245,44 @@ export class BrowserSessionService implements OnModuleDestroy {
       storageState = undefined;
     }
 
-    const context = (await browser.newContext({
-      userAgent: fp.userAgent,
-      viewport: { width: 1280, height: 800 }, // Aligné avec remote-login pour avoir exactement la même empreinte
-      locale: fp.locale,
-      timezoneId: fp.timezoneId,
-      deviceScaleFactor: fp.deviceScaleFactor,
-      colorScheme: 'light',
-      storageState,
-      extraHTTPHeaders: {
-        'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Accept-Encoding': 'gzip, deflate, br',
-        DNT: '1',
-        'Upgrade-Insecure-Requests': '1',
-      },
-    })) as unknown as BrowserContext;
+    // Over CDP the browser is a real desktop Chrome: its own UA, Client
+    // Hints, locale, timezone, headers and WebGL are all genuine and all
+    // consistent with each other. Forcing the emulated profile on top (a UA
+    // string pinned to another Chrome version, spoofed WebGL strings, ...)
+    // would replace real values with fake ones -- the checkable
+    // contradictions this file's own comments warn about. Only the cookies
+    // and a fixed viewport (which remote-login's screencast coordinates
+    // assume) are applied; everything else is left to the browser.
+    const context = (await browser.newContext(
+      CDP_URL
+        ? {
+            viewport: { width: 1280, height: 800 },
+            // Emulated separately from the viewport: in headless mode the
+            // screen would otherwise report exactly the viewport size, and
+            // "screen == browser window" is a shape no real desktop has.
+            screen: { width: 1920, height: 1080 },
+            storageState,
+          }
+        : {
+            userAgent: fp.userAgent,
+            viewport: { width: 1280, height: 800 }, // Aligné avec remote-login pour avoir exactement la même empreinte
+            locale: fp.locale,
+            timezoneId: fp.timezoneId,
+            deviceScaleFactor: fp.deviceScaleFactor,
+            colorScheme: 'light',
+            storageState,
+            extraHTTPHeaders: {
+              'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
+              'Accept-Encoding': 'gzip, deflate, br',
+              DNT: '1',
+              'Upgrade-Insecure-Requests': '1',
+            },
+          },
+    )) as unknown as BrowserContext;
 
-    // Inject fingerprint overrides before any page script runs
-    if (siteName !== 'hellowork' && siteName !== 'apec') {
+    // Inject fingerprint overrides before any page script runs -- never over
+    // CDP (see above).
+    if (!CDP_URL && siteName !== 'hellowork' && siteName !== 'apec') {
       await context.addInitScript(buildFingerprintScript(fp));
     }
 
@@ -293,9 +337,6 @@ export class BrowserSessionService implements OnModuleDestroy {
         return route.abort();
       }
       if (/demdex\.net|scorecardresearch|google-analytics|googletagmanager|clarity\.ms|datadoghq/i.test(url)) {
-        return route.abort();
-      }
-      if (/linkedin\.com\/feed\/?(\?.*)?$/i.test(url)) {
         return route.abort();
       }
       return route.continue();

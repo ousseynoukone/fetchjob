@@ -39,6 +39,7 @@ type Status = 'connecting' | 'active' | 'done' | 'error';
 
 export default function RemoteLoginModal({
   platform,
+  targetUrl,
   onClose,
   onLoggedIn,
 }: {

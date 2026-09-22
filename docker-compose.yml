@@ -74,6 +74,14 @@ services:
       # Same headless default as production (see render.yaml) — no display
       # exists inside the container anyway.
       - AUTO_APPLY_HEADLESS=${AUTO_APPLY_HEADLESS:-true}
+      # Drive a REAL desktop Chrome on the host instead of launching one in
+      # here -- see apps/api/src/common/cdp-endpoint.ts. The host Chrome is
+      # started separately (start-host-chrome.ps1) with --remote-debugging-
+      # port=9222; Docker Desktop routes host.docker.internal to the host
+      # loopback, so no port forwarding is needed. Leave empty to fall back
+      # to launching a (headless, software-rendered) Chromium inside the
+      # container, which is what anti-bot systems kept flagging.
+      - BROWSER_CDP_URL=${BROWSER_CDP_URL:-http://host.docker.internal:9222}
       # Render caps this at 160 to fit its 512MB container — confirmed live
       # that this same limit can crash the renderer outright on a heavy page
       # (LinkedIn's Easy Apply modal) even locally, where there's no such
@@ -108,8 +116,14 @@ services:
     environment:
       - NODE_ENV=production
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:4000}
-    depends_on:
-      - api
+    # No depends_on: api. The API runs as a LOCAL process, not a container
+    # (a containerized browser trips anti-bot detection far more than a real
+    # desktop one), and the frontend reaches it from the browser via
+    # localhost:4000 -- nothing here needs the api container. Declaring the
+    # dependency made every `docker compose up web` silently resurrect the
+    # containerized API alongside the local one: two instances hitting the
+    # same DB, running duplicate session keep-alives against every platform,
+    # and fighting over port 4000.
 
 volumes:
   postgres_data:

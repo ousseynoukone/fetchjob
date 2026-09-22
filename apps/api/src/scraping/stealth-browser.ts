@@ -33,6 +33,7 @@ import * as os from 'os';
 // through playwright-extra returned a clean 200 with real results through
 // patchright alone, no stealth plugin needed on top of it.
 import { chromium } from 'patchright';
+import { CDP_URL, resolveCdpEndpoint } from '../common/cdp-endpoint';
 
 // ─── Fingerprint profiles ─────────────────────────────────────────────────────
 
@@ -324,6 +325,44 @@ export interface StealthContextOptions {
  * Always call `context.close()` and `browser.close()` in a finally block.
  */
 export async function createStealthContext(options: StealthContextOptions = {}) {
+  // Same real, host-side Chrome the auto-apply, remote-login and session
+  // checks already drive (see cdp-endpoint.ts). Confirmed live: the
+  // in-container Chromium scrapers were the last thing still running with
+  // a spoofed fingerprint from a container -- LinkedIn blocked that guest
+  // scraper (0 cards) and killed the person's logged-in session from the
+  // same IP within the same minute, and Indeed's Cloudflare wall hit it
+  // on every query. A real Chrome on the host presents one consistent
+  // identity: no fingerprint script, no forced UA/timezone/headers -- the
+  // browser's own values are the ones that agree with everything else.
+  // Cookie jars are kept per site AND per mode ("<site>-host"), since a
+  // Cloudflare/DataDome clearance minted for the container's fingerprint
+  // is worse than no cookie at all on a different browser.
+  if (CDP_URL) {
+    if (options.proxy) {
+      console.warn(`[stealth-browser] proxy ${options.proxy.server} ignored: scraping goes through the host Chrome (BROWSER_CDP_URL), which has no per-context proxy.`);
+    }
+    const endpoint = await resolveCdpEndpoint(CDP_URL);
+    let browser: import('patchright').Browser;
+    try {
+      browser = await chromium.connectOverCDP(endpoint);
+    } catch (error: any) {
+      throw new Error(`Host Chrome not reachable at ${endpoint} for scraping — start it with start-host-chrome.ps1 (${error.message})`);
+    }
+    const context = await browser.newContext({
+      viewport: { width: 1280, height: 800 },
+      screen: { width: 1920, height: 1080 },
+      colorScheme: 'light',
+    });
+    if (options.siteName) {
+      const saved = loadCookies(`${options.siteName}-host`);
+      if (saved.length > 0) {
+        await context.addCookies(saved as Parameters<typeof context.addCookies>[0]).catch(() => {});
+      }
+    }
+    const fp = withCurrentChromeVersion(FINGERPRINT_PROFILES[0], browser.version());
+    return { browser, context, fp };
+  }
+
   const rawFp = options.profileIndex !== undefined ? FINGERPRINT_PROFILES[options.profileIndex] : randomProfile();
   const isHeadless = process.env.AUTO_APPLY_HEADLESS !== 'false';
 
@@ -432,7 +471,8 @@ export async function persistCookies(
   siteName: string,
 ): Promise<void> {
   try {
-    saveCookies(siteName, await context.cookies());
+    // Same per-mode jar split as createStealthContext.
+    saveCookies(CDP_URL ? `${siteName}-host` : siteName, await context.cookies());
   } catch { /* non-critical */ }
 }
 

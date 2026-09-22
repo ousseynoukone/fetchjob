@@ -11,6 +11,7 @@ import { PrismaService } from '../common/prisma.service';
 import { SESSION_CHECKS, dismissCookieBanner } from '../auto-apply/appliers/ats-common';
 import { buildFingerprintScript, FINGERPRINT_PROFILES, saveCookies } from '../scraping/stealth-browser';
 import { SupportedPlatform } from './dto/upsert-credential.dto';
+import { CDP_URL, resolveCdpEndpoint } from '../common/cdp-endpoint';
 
 // Docker-volume-backed (see docker-compose.yml) so a real, accumulating
 // Chrome profile per platform survives container restarts/rebuilds instead
@@ -38,6 +39,18 @@ const PROFILE_BASE_DIR = process.env.REMOTE_LOGIN_PROFILE_DIR || path.join(os.ho
 //    terminé" once they're actually done (see confirmManualLogin).
 const MANUAL_CONFIRM_PLATFORMS = new Set<SupportedPlatform>(['gmail']);
 
+// Platforms whose login flow can park a LOGGED-IN person on a page the
+// page-level check still reads as "login wall". Confirmed live on Indeed:
+// every auth screen lives on secure.indeed.com, and so do its post-login
+// interstitials (passkey / phone-number prompts), so after a successful
+// one-time-code login the person sat on secure.indeed.com, genuinely
+// connected, while both the 2s poll and "Valider la session" kept saying
+// "la page de connexion semble toujours active". No rule about the page
+// itself settles this; probeLoggedIn (a real load of the authenticated
+// home in the same context) does.
+const PROBE_ON_AMBIGUOUS_PLATFORMS = new Set<SupportedPlatform>(['indeed']);
+const AMBIGUOUS_PROBE_INTERVAL_MS = 20_000;
+
 export interface RemoteLoginFrame {
   dataUrl: string | null;
   status: 'active' | 'done' | 'error';
@@ -59,6 +72,7 @@ interface ActiveSession {
   cdpSession: CDPSession;
   frames: Subject<RemoteLoginFrame>;
   pollTimer: NodeJS.Timeout;
+  autoCloseTimer?: NodeJS.Timeout;
   consecutiveLoggedIn: number;
   closed: boolean;
   // setInterval keeps firing whether or not the previous tick finished --
@@ -78,6 +92,25 @@ interface ActiveSession {
   // pre-filled instead of retyped from scratch (see prefillSavedCredential).
   capturedEmail?: string;
   capturedPassword?: string;
+  // One automatic recovery per session when the browser lands on a Chrome
+  // error page (see recoverFromErrorPage) -- a second failure means the
+  // problem isn't stale cookies, and looping on it would just hide that.
+  recoveredFromErrorPage?: boolean;
+  // Last time probeLoggedIn ran from the poll (rate limit, see there).
+  lastProbeAt?: number;
+}
+
+// A Chrome network-error page (ERR_TOO_MANY_REDIRECTS, ERR_CONNECTION_*,
+// ...) is neither a login wall nor an authenticated page -- it's a third
+// state every platform's isLoginWallVisible was written without. Confirmed
+// live on LinkedIn: no /login in the URL, no #username, no sign-in header,
+// no logged-out body text, so the check returned "not on the login wall",
+// two ticks later that counted as a genuine login, and a dead redirect loop
+// got saved to the DB as a working session ("Session enregistrée !").
+async function isBrowserErrorPage(page: Page): Promise<boolean> {
+  if (page.url().startsWith('chrome-error://')) return true;
+  const body = await page.locator('body').innerText({ timeout: 1500 }).catch(() => '');
+  return /\bERR_[A-Z_]+\b|cette page ne fonctionne pas|this site can.t be reached|impossible d.acc[ée]der [àa] ce site/i.test(body);
 }
 
 // Dedicated direct login URLs for each platform so the user lands straight
@@ -194,9 +227,7 @@ export class RemoteLoginService implements OnModuleDestroy {
     // bot-management systems look for -- modern Chrome also exposes its
     // true version via navigator.userAgentData (Client Hints), which reads
     // the real engine regardless of what UA string was declared.
-    const versionProbe = await chromium.launch({ headless: true, channel: 'chromium' });
-    const realChromeVersion = versionProbe.version();
-    await versionProbe.close();
+    const realChromeVersion = '124.0.6367.207';
     const userAgent = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${realChromeVersion} Safari/537.36`;
 
     // Confirmed live: this context was otherwise a plain, unmodified
@@ -233,28 +264,37 @@ export class RemoteLoginService implements OnModuleDestroy {
     // if this fresh process's own session map has nothing running for this
     // platform, there is no legitimate in-progress login these files could
     // still correctly be guarding.
+    // Scoped to THIS profile's directory on both OSes -- only a stale Chrome
+    // still holding this platform's own profile lock is a legitimate
+    // target. The Windows branch used to match on Path -like '*ms-playwright*'
+    // instead (Get-Process can't see command lines), which is every
+    // Playwright Chromium on the machine: confirmed live once the API moved
+    // to a local Windows process, every remote-login START force-killed the
+    // shared auto-apply browser out from under whatever was using it --
+    // SessionHealthService's Indeed check died mid-wait with "browser has
+    // been closed", then relaunched, twice, each lining up exactly with a
+    // remote-login starting. Win32_Process exposes CommandLine, so this can
+    // filter on the --user-data-dir the same way `pkill -f` does below.
     try {
       const { execSync } = require('child_process');
       if (process.platform === 'win32') {
-        execSync(`wmic process where "name='chrome.exe' and commandline like '%${platform}%'" call terminate`, { stdio: 'ignore' });
+        const needle = profileDir.replace(/'/g, "''");
+        execSync(
+          `powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name='chrome.exe'\\" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${needle}') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"`,
+          { stdio: 'ignore' },
+        );
       } else {
         execSync(`pkill -f "${profileDir}"`, { stdio: 'ignore' });
       }
     } catch (e) {}
 
     await Promise.all(
-      ['SingletonLock', 'SingletonSocket', 'SingletonCookie'].map((name) =>
+      ['SingletonLock', 'SingletonSocket', 'SingletonCookie', 'lockfile'].map((name) =>
         fs.unlink(path.join(profileDir, name)).catch(() => {}),
       ),
     );
-    // launchPersistentContext, not launch()+newContext() -- a real, on-disk
-    // Chrome profile PER PLATFORM (cookies, cache, local storage) that
-    // survives across every future login attempt to that same platform
-    // instead of starting from a completely blank, zero-history browser
-    // every single time, which is itself a signal a real person's browser
-    // never gives off. See PROFILE_BASE_DIR above for the persistence
-    // caveat (local only, not on Render's free tier).
-    const context = await chromium.launchPersistentContext(profileDir, {
+
+    const launchOptions = {
       headless: process.env.AUTO_APPLY_HEADLESS !== 'false',
       channel: 'chromium',
       args: [
@@ -275,28 +315,56 @@ export class RemoteLoginService implements OnModuleDestroy {
         '--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider',
         `--js-flags=--max-old-space-size=${process.env.CHROMIUM_RENDERER_HEAP_MB || '160'}`,
         '--lang=fr-FR',
-        '--enable-automation=false', // Kept from original remote-login
+        '--enable-automation=false',
       ],
       userAgent,
-      // Fixed at 1280x800, NOT fp.viewport (1920x1080) -- the frontend's
-      // click/wheel coordinate mapping is hardcoded to this exact size to
-      // match the CDP screencast's own maxWidth/maxHeight below; using the
-      // fingerprint profile's own viewport here would silently break every
-      // click's position without erroring anywhere.
       viewport: { width: 1280, height: 800 },
       locale: fp.locale,
       timezoneId: fp.timezoneId,
       deviceScaleFactor: fp.deviceScaleFactor,
-      colorScheme: 'light',
+      colorScheme: 'light' as const,
       extraHTTPHeaders: {
         'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
         'Accept-Encoding': 'gzip, deflate, br',
         DNT: '1',
         'Upgrade-Insecure-Requests': '1',
       },
-    });
-    if (platform !== 'hellowork' && platform !== 'apec') {
-      await context.addInitScript(buildFingerprintScript(fp));
+    };
+
+    let context: BrowserContext;
+    if (CDP_URL) {
+      // A context inside the real desktop Chrome on the host (see
+      // cdp-endpoint.ts). No persistent profile dir of its own: the person
+      // logs in inside a genuine browser, and the resulting cookies are
+      // saved to the DB on success exactly as before -- which is what every
+      // later auto-apply context injects. No fingerprint script either: the
+      // browser is real, and overriding its real values would only create
+      // the contradictions the script exists to avoid.
+      const endpoint = await resolveCdpEndpoint(CDP_URL);
+      const hostBrowser = await chromium.connectOverCDP(endpoint, { timeout: 15000 }).catch((err: any) => {
+        throw new Error(
+          `Le navigateur Chrome de l'hôte n'est pas joignable (${endpoint}) : lancez start-host-chrome.ps1 puis réessayez. (${err.message})`,
+        );
+      });
+      context = await hostBrowser.newContext({ viewport: { width: 1280, height: 800 }, screen: { width: 1920, height: 1080 } });
+      this.logger.log(`Remote-login for ${platform} opened in host Chrome over CDP (${hostBrowser.version()})`);
+    } else {
+      try {
+        context = await chromium.launchPersistentContext(profileDir, launchOptions);
+      } catch (launchErr: any) {
+        this.logger.warn(`Failed to launch persistent context on ${profileDir}: ${launchErr.message}. Clearing lockfile and retrying...`);
+        await fs.unlink(path.join(profileDir, 'lockfile')).catch(() => {});
+        try {
+          context = await chromium.launchPersistentContext(profileDir, launchOptions);
+        } catch {
+          const fallbackDir = path.join(PROFILE_BASE_DIR, `${platform}-${Date.now()}`);
+          this.logger.warn(`Persistent profile still locked. Launching with fresh profile dir ${fallbackDir}...`);
+          context = await chromium.launchPersistentContext(fallbackDir, launchOptions);
+        }
+      }
+      if (platform !== 'hellowork' && platform !== 'apec') {
+        await context.addInitScript(buildFingerprintScript(fp));
+      }
     }
     
     // Unification des sessions : Si l'utilisateur a déjà une session active en base
@@ -328,6 +396,19 @@ export class RemoteLoginService implements OnModuleDestroy {
             normalized = normalized.filter((c: any) => c.domain && c.domain.includes('linkedin.com') && !c.domain.includes('fr.linkedin.com'))
               .map((c: any) => c.domain.includes('linkedin.com') ? { ...c, domain: '.linkedin.com' } : c);
           }
+          // This is a PERSISTENT on-disk profile (launchPersistentContext), so
+          // it already carries its own cookies from every previous real login
+          // here -- adding the DB set on top of those gave LinkedIn the same
+          // li_at/JSESSIONID twice on different domain scopes (.linkedin.com
+          // from the DB, www./fr. from the profile itself). Confirmed live:
+          // LinkedIn redirects to reconcile, the other cookie re-asserts,
+          // and the page dies with ERR_TOO_MANY_REDIRECTS ("essayez de
+          // supprimer vos cookies"). browser-session.service.ts never hits
+          // this because a fresh newContext({storageState}) has no
+          // pre-existing cookies to collide with. Clear first so the DB is
+          // the single source of truth, which is what the "same as
+          // browser-session.service.ts" intent above actually requires.
+          await context.clearCookies();
           await context.addCookies(normalized);
           this.logger.log(`Injected ${normalized.length} cookies from DB into remote-login for ${platform}`);
         }
@@ -348,6 +429,10 @@ export class RemoteLoginService implements OnModuleDestroy {
       cdpSession,
       frames,
       pollTimer: null as any,
+      autoCloseTimer: setTimeout(() => {
+        this.logger.log(`Session remote-login pour ${platform} fermée automatiquement après 5 minutes.`);
+        this.cleanup(sessionId, { dataUrl: null, status: 'error', message: 'Délai d\'inactivité dépassé (5 minutes).' }).catch(() => {});
+      }, 5 * 60 * 1000),
       consecutiveLoggedIn: 0,
       closed: false,
     };
@@ -456,9 +541,20 @@ export class RemoteLoginService implements OnModuleDestroy {
     const session = this.sessions.get(sessionId);
     if (!session || session.closed) return { success: false, message: 'Session introuvable ou déjà terminée.' };
 
+    if (await isBrowserErrorPage(session.page)) {
+      return { success: false, message: "Le navigateur affiche une page d'erreur, pas une session connectée — cliquez sur Actualiser puis reconnectez-vous." };
+    }
+
     const check = SESSION_CHECKS[session.platform];
-    const onLoginWall = await check.isLoginWallVisible(session.page as any).catch(() => false);
-    if (onLoginWall) {
+    // .catch(() => true), not false: a check that THROWS (page mid-navigation,
+    // context gone) is an unknown state, and saving an unknown state as a
+    // confirmed login is exactly how a broken session gets persisted.
+    const onLoginWall = await check.isLoginWallVisible(session.page as any).catch(() => true);
+    // The person is explicitly saying "I'm done": the page they're looking
+    // at is not the last word -- the platform's own home page is. This is
+    // the check that a post-login interstitial (see
+    // PROBE_ON_AMBIGUOUS_PLATFORMS) cannot fool.
+    if (onLoginWall && !(await this.probeLoggedIn(session))) {
       return { success: false, message: "La page de connexion semble toujours active — finalisez la connexion sur la page puis réessayez." };
     }
 
@@ -716,11 +812,36 @@ export class RemoteLoginService implements OnModuleDestroy {
 
     session.polling = true;
     try {
+      // Checked BEFORE the platform's own login-wall test, which has no
+      // concept of this state and misreads it as "logged in".
+      if (await isBrowserErrorPage(session.page)) {
+        session.consecutiveLoggedIn = 0;
+        await this.recoverFromErrorPage(session);
+        return;
+      }
+
       const check = SESSION_CHECKS[session.platform];
       const onLoginWall = await check.isLoginWallVisible(session.page as any).catch(() => true);
 
       if (onLoginWall) {
         session.consecutiveLoggedIn = 0;
+
+        // "Wall, but no field to type into" is the ambiguous state: either
+        // a button-only login screen (Indeed's "Continuer avec Google"
+        // page) or a post-login interstitial. Only the platform's home
+        // page can tell them apart -- loaded in a second tab, at most every
+        // 20s, so a person sitting on the login page doesn't turn into a
+        // stream of automated loads of the authenticated home.
+        if (PROBE_ON_AMBIGUOUS_PLATFORMS.has(session.platform) && !(await this.hasVisibleLoginInput(session.page))) {
+          const now = Date.now();
+          if (now - (session.lastProbeAt ?? 0) >= AMBIGUOUS_PROBE_INTERVAL_MS) {
+            session.lastProbeAt = now;
+            if (await this.probeLoggedIn(session)) {
+              await this.persistSuccessfulSession(sessionId, session);
+              return;
+            }
+          }
+        }
 
         // Retry the prefill until it actually lands (only ever fills an
         // empty field, so this can't fight the person's own typing) --
@@ -749,6 +870,64 @@ export class RemoteLoginService implements OnModuleDestroy {
     } finally {
       session.polling = false;
     }
+  }
+
+  private async hasVisibleLoginInput(page: Page): Promise<boolean> {
+    return page
+      .locator('input[type="email"], input[type="password"], input[type="text"], input[type="tel"], input[type="number"], input:not([type])')
+      .filter({ visible: true })
+      .count()
+      .then((n) => n > 0)
+      .catch(() => false);
+  }
+
+  // Ground truth for "is this context logged in": load the platform's
+  // authenticated home in a SECOND tab of the same context (same cookies)
+  // and see whether it bounces to the login wall. The tab the person is
+  // watching is left exactly where it is. Anything that goes wrong reads
+  // as "not logged in" -- the poll will simply try again.
+  private async probeLoggedIn(session: ActiveSession): Promise<boolean> {
+    const check = SESSION_CHECKS[session.platform];
+    let probe: Page | null = null;
+    try {
+      probe = await session.context.newPage();
+      await probe.goto(check.homeUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      await probe.waitForTimeout(2000);
+      if (await isBrowserErrorPage(probe)) return false;
+      const wall = await check.isLoginWallVisible(probe as any).catch(() => true);
+      this.logger.log(`Login probe for ${session.platform}: landed on ${probe.url()} -> ${wall ? 'still on login wall' : 'logged in'}`);
+      return !wall;
+    } catch (error: any) {
+      this.logger.warn(`Login probe for ${session.platform} failed: ${error.message}`);
+      return false;
+    } finally {
+      await probe?.close().catch(() => {});
+    }
+  }
+
+  // The only thing a redirect loop on a persistent profile has ever meant
+  // here is a stale/conflicting cookie set -- exactly what the page itself
+  // suggests ("essayez de supprimer vos cookies"). Wipe the context's
+  // cookies and land the person on the real login page so they can just
+  // log in, instead of leaving them on a dead error screen with nothing
+  // to click. Once per session: if the clean login page ALSO errors, the
+  // cause is something else and the error should stay visible.
+  private async recoverFromErrorPage(session: ActiveSession): Promise<void> {
+    if (session.recoveredFromErrorPage) return;
+    session.recoveredFromErrorPage = true;
+    this.logger.warn(`Remote-login for ${session.platform} hit a browser error page — clearing cookies and reloading the login page.`);
+    session.frames.next({
+      dataUrl: null,
+      status: 'active',
+      message: 'Page en erreur (cookies obsolètes) — nettoyage et rechargement de la page de connexion...',
+    });
+    await session.context.clearCookies().catch(() => {});
+    const loginUrl = REMOTE_LOGIN_URLS[session.platform] || SESSION_CHECKS[session.platform].homeUrl;
+    await session.page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    await dismissCookieBanner(session.page as any).catch(() => {});
+    // Whatever was prefilled before the wipe is gone with the page.
+    session.prefilledEmail = false;
+    session.prefilledPassword = false;
   }
 
   // Shared by pollLoginState's auto-detected success (every other platform)
@@ -825,6 +1004,7 @@ export class RemoteLoginService implements OnModuleDestroy {
     const session = this.sessions.get(sessionId);
     if (!session || session.closed) return;
     session.closed = true;
+    if (session.autoCloseTimer) clearTimeout(session.autoCloseTimer);
     clearInterval(session.pollTimer);
     session.frames.next(finalFrame);
     session.frames.complete();
@@ -838,6 +1018,15 @@ export class RemoteLoginService implements OnModuleDestroy {
   async onModuleDestroy() {
     for (const sessionId of [...this.sessions.keys()]) {
       await this.cleanup(sessionId, { dataUrl: null, status: 'error', message: 'Serveur redémarré.' });
+    }
+    if (process.platform === 'win32') {
+      try {
+        const { execSync } = require('child_process');
+        execSync(
+          `powershell -NoProfile -Command "Get-Process chrome -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*ms-playwright*' } | Stop-Process -Force -ErrorAction SilentlyContinue"`,
+          { stdio: 'ignore' },
+        );
+      } catch {}
     }
   }
 }
