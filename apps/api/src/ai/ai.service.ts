@@ -252,6 +252,7 @@ export interface FormStepAiInput {
   company: string;
   fieldsText: string;
   buttonsText: string;
+  markupText: string;
 }
 
 export interface FormStepAiPlan {
@@ -424,7 +425,9 @@ Reponds uniquement en JSON avec les champs: strengths (array de 3 max), gaps (ar
     const prompt = `Tu pilotes un formulaire de candidature d'emploi a la place d'un humain. Reponds UNIQUEMENT avec un JSON strict de la forme {"fields":[{"idx":number,"value":string}],"action":{"idx":number|null,"kind":"submit"|"next"|"review"|"stop"}}.
 
 Regles imperatives :
-- N'utilise QUE les idx listes ci-dessous, n'en invente jamais.
+- N'utilise QUE les idx presents dans le BALISAGE ou les listes ci-dessous, n'en invente jamais.
+- Le BALISAGE DU FORMULAIRE est la source de verite : il contient TOUS les champs, y compris ceux absents de la liste "CHAMPS A RENSEIGNER" (dont le libelle n'a pas pu etre devine automatiquement). Un champ obligatoire qui n'apparait que dans le balisage doit quand meme etre rempli : lis le texte autour de l'input (cellule voisine, paragraphe, placeholder) pour comprendre ce qu'il attend.
+- Si la page contient PLUSIEURS formulaires (formulaire de contact du site, popup newsletter, recherche d'offres), ne remplis QUE celui de la candidature : c'est celui qui contient le depot de CV et/ou le bouton d'envoi de candidature. Ignore les idx des autres.
 - Pour un champ a choix unique (radio), mets dans "fields" l'idx de L'OPTION choisie (pas de la question elle-meme), value peut valoir "1".
 - Pour une case a cocher requise, mets value "true" pour la cocher.
 - Remplis activement un MAXIMUM de champs en utilisant les donnees reelles du profil candidat ci-dessous :
@@ -442,7 +445,10 @@ Regles imperatives :
 PROFIL CANDIDAT: ${input.candidateBrief}
 POSTE VISE: ${input.jobTitle} chez ${input.company}
 
-CHAMPS A RENSEIGNER :
+BALISAGE DU FORMULAIRE (source de verite, chaque element actionnable porte son data-ai-idx) :
+${input.markupText}
+
+CHAMPS A RENSEIGNER (extraction automatique, potentiellement INCOMPLETE) :
 ${input.fieldsText}
 
 BOUTONS DISPONIBLES :

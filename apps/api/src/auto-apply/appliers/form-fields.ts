@@ -1,4 +1,4 @@
-import type { ElementHandle, Page } from 'playwright';
+import type { ElementHandle, Page, Locator } from 'playwright';
 
 // The functions below run inside the browser page (Playwright serializes
 // them into that context), never in Node — this project's tsconfig has no
@@ -178,7 +178,7 @@ export function numericFromAnswer(answer: string): string | null {
   return String(Math.round(value));
 }
 
-export async function fillKnownFields(page: Page, knownAnswers: Map<string, string>): Promise<void> {
+export async function fillKnownFields(page: Page, knownAnswers: Map<string, string>, scope?: Page | Locator): Promise<void> {
   if (!knownAnswers.size) return;
 
   // Visible fields only, and a hard budget for the whole pass: confirmed
@@ -186,7 +186,7 @@ export async function fillKnownFields(page: Page, knownAnswers: Map<string, stri
   // matching a known label ("Ville") each burned a 3s hover timeout, and
   // the pass ran past 30s -- on every loop step.
   const deadline = Date.now() + 20000;
-  const handles = await page.locator(FIELD_SELECTOR).elementHandles();
+  const handles = await (scope ?? page).locator(FIELD_SELECTOR).elementHandles();
   for (const handle of handles) {
     if (Date.now() > deadline) break;
     if (!(await handle.isVisible().catch(() => false))) continue;
@@ -276,7 +276,8 @@ async function fillIfKnown(handle: ElementHandle<any>, knownAnswers: Map<string,
 // submit/next) — scans the currently-visible form for fields still marked
 // invalid, so the exact question text can be stored for the user to answer
 // once, instead of just recording "something was wrong".
-export async function scanInvalidFields(page: Page): Promise<DetectedField[]> {
+export async function scanInvalidFields(page: Page, scope?: Page | Locator): Promise<DetectedField[]> {
+  const area = scope ?? page;
   const results: DetectedField[] = [];
   const seen = new Set<string>();
 
@@ -288,7 +289,7 @@ export async function scanInvalidFields(page: Page): Promise<DetectedField[]> {
   // meaningful empty "value" -- the group as a whole is required, which is
   // a property only visible by looking at all its options together (none
   // checked).
-  const radioHandles = await page.locator('input[type="radio"]').elementHandles();
+  const radioHandles = await area.locator('input[type="radio"]').elementHandles();
   const groups = new Map<string, ElementHandle<any>[]>();
   for (const handle of radioHandles) {
     const visible = await handle.isVisible().catch(() => false);
@@ -326,7 +327,7 @@ export async function scanInvalidFields(page: Page): Promise<DetectedField[]> {
     results.push({ questionText: groupLabel, fieldType: 'radio', options: optionLabels });
   }
 
-  const handles = await page.locator(FIELD_SELECTOR).elementHandles();
+  const handles = await (scope ?? page).locator(FIELD_SELECTOR).elementHandles();
 
   for (const handle of handles) {
     const type = await handle.evaluate((el) => el.type || '');

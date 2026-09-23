@@ -2,6 +2,7 @@ import type { Page } from 'playwright';
 import type { AiService } from '../../ai/ai.service';
 import { ApplyContext, ApplyResult } from './applier.interface';
 import { fillKnownFields, scanInvalidFields, normalizeLabel } from './form-fields';
+import { applicationScope } from './ai-form-snapshot';
 import { buildFormSnapshot, applyFormPlan, formatFieldsForPrompt, formatButtonsForPrompt, buildCandidateBrief } from './ai-form-snapshot';
 import { humanClick, hasSecurityCheck, trySolveSlideChallenge, fillIdentityFields, resolveExternalApplyUrl, hasJobClosedIndicator, tickConsentCheckboxes, clickCvUploadControl, findCvFileInput, uploadCv } from './ats-common';
 
@@ -71,7 +72,7 @@ export async function detectFormSuccess(page: Page, successText: RegExp, success
 // (a real unknown/invalid field) or the original honest "can't tell" note
 // when nothing is actually detectably wrong.
 async function reportBlockedState(page: Page, ctx: ApplyContext, fallbackNote: string): Promise<ApplyResult> {
-  const unknownFields = await scanInvalidFields(page).catch(() => []);
+  const unknownFields = await scanInvalidFields(page, await applicationScope(page)).catch(() => []);
   if (unknownFields.length) {
     await ctx.reportUnknownFields(unknownFields);
     const labels = unknownFields.map((f) => f.questionText).join(', ');
@@ -297,11 +298,12 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
     aiCallsUsed++;
     const plan = await ai
       .planApplicationFormStep({
-        candidateBrief: buildCandidateBrief(ctx),
+        candidateBrief: buildCandidateBrief(ctx, `${snapshot.markup} ${formatFieldsForPrompt(snapshot.fields)}`),
         jobTitle: ctx.application.jobTitle,
         company: ctx.application.company,
         fieldsText: formatFieldsForPrompt(snapshot.fields),
         buttonsText: formatButtonsForPrompt(snapshot.buttons),
+        markupText: snapshot.markup,
       })
       .catch(() => null);
 

@@ -454,11 +454,12 @@ export class LinkedInApplier implements JobApplier {
       aiCallsUsed++;
       const plan = await this.ai
         .planApplicationFormStep({
-          candidateBrief: buildCandidateBrief(ctx),
+          candidateBrief: buildCandidateBrief(ctx, `${snapshot.markup} ${formatFieldsForPrompt(snapshot.fields)}`),
           jobTitle: ctx.application.jobTitle,
           company: ctx.application.company,
           fieldsText: formatFieldsForPrompt(snapshot.fields),
           buttonsText: formatButtonsForPrompt(snapshot.buttons),
+          markupText: snapshot.markup,
         })
         .catch(() => null);
 

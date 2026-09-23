@@ -437,8 +437,14 @@ async function scanIdentityFields(page: Page): Promise<{ role: IdentityRole; idx
       (e: any) => Number(e.getAttribute('data-identity-idx')) || 0,
     );
     let idx = existingIdxs.length ? Math.max(...existingIdxs) + 1 : 1;
+    // Scoped to the application region when one was identified (see
+    // markApplicationRoot), so a page that also carries a contact sidebar or
+    // a newsletter popup doesn't get those filled with the candidate's
+    // details. Falls back to the whole document when no region stands out,
+    // which is every ordinary single-form page.
+    const scopeEl = doc.querySelector('[data-ai-root]') || doc;
     const candidates = Array.from(
-      doc.querySelectorAll(
+      scopeEl.querySelectorAll(
         'input:not([type=file]):not([type=hidden]):not([type=submit]):not([type=button]):not([type=password]):not([type=radio]):not([type=checkbox]), textarea, select',
       ),
     ) as any[];
@@ -549,7 +555,9 @@ async function selectOptionRobustly(locator: Locator, role: IdentityRole, target
 export async function fillIdentityFields(
   page: Page,
   cv: { fullName: string; email: string; phone: string; links?: { type: string; url: string }[] },
+  scope?: Page | Locator,
 ): Promise<void> {
+  const area = scope ?? page;
   const { first, last } = splitName(cv.fullName);
   const linkedinUrl = cv.links?.find((l) => /linkedin/i.test(l.type) || /linkedin\.com/i.test(l.url))?.url;
   const githubUrl = cv.links?.find((l) => /github/i.test(l.type) || /github\.com/i.test(l.url))?.url;

@@ -4,7 +4,7 @@ import { ApplyContext, ApplyResult, JobApplier } from './applier.interface';
 import { dismissCookieBanner, hasSecurityCheck, fillIdentityFields, uploadCv, humanClick, humanFill, trySolveSlideChallenge, findCvFileInput, hasJobClosedIndicator, truncateAtBoundary, tickConsentCheckboxes, clickCvUploadControl } from './ats-common';
 import { fillKnownFields } from './form-fields';
 import { runFormLoop } from './ai-form-loop';
-import { buildFormSnapshot } from './ai-form-snapshot';
+import { buildFormSnapshot, markApplicationRoot, markPreExistingFields, waitForRevealedFields } from './ai-form-snapshot';
 import { AiService } from '../../ai/ai.service';
 
 // Confirmed live on Extia's own career site: its reveal button reads
@@ -178,6 +178,11 @@ export class GenericApplier implements JobApplier {
       }
       if (!revealButton) break;
       await ctx.appendLog?.(`Clic sur « ${(await revealButton.innerText().catch(() => 'Postuler')).trim().slice(0, 40)} »...`);
+      // Whatever fields exist BEFORE this click belong to the page itself
+      // (a contact block, a newsletter popup, a job search box). Whatever
+      // appears after it is the application form. This is structural — it
+      // needs no knowledge of the site's markup or class names.
+      await markPreExistingFields(page);
       const popupPromise = page.context().waitForEvent('page', { timeout: 4000 }).catch(() => null);
       await humanClick(page, revealButton).catch(() => revealButton!.click().catch(() => {}));
       const popup = await popupPromise;
@@ -200,6 +205,14 @@ export class GenericApplier implements JobApplier {
       await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
       await page.waitForTimeout(1000);
       await dismissCookieBanner(page);
+      // A fixed wait is not enough when the form is opened by the site's own
+      // JS: confirmed live on alphea-conseil.com, where filling started
+      // while only the page's contact sidebar existed, so the candidate's
+      // details went into that and the real form's "Ville" was still
+      // reported empty afterwards. Wait for a field that was NOT there
+      // before the click, bounded — a site whose form was already present
+      // simply finds one immediately and moves on.
+      await waitForRevealedFields(page, 8000);
     }
 
     // Checked AFTER the reveal click, not only before it. Confirmed live on
@@ -255,6 +268,9 @@ export class GenericApplier implements JobApplier {
     };
 
     await ctx.appendLog?.('Remplissage des coordonnées et du CV...');
+    // Identify the application region FIRST: every filler and scanner below
+    // then works inside it instead of anywhere on the page.
+    await markApplicationRoot(page);
     await bounded('coordonnées', () => fillIdentityFields(page, ctx.cv), 30000);
 
     const hasPasswordField = await page.locator('input[type="password"]').first().isVisible().catch(() => false);

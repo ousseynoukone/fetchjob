@@ -28,11 +28,26 @@ export interface SnapshotButton {
 export interface FormSnapshot {
   fields: SnapshotField[];
   buttons: SnapshotButton[];
+  // The form's real markup, pruned, with a data-ai-idx on every interactive
+  // element. `fields` above is built from label heuristics (label[for], a
+  // wrapping <label>, aria-label, <legend>, previous sibling) and a field
+  // none of them reach never reaches the model at all — confirmed live on
+  // aplitrak.com, whose required "Nom" input puts its label in a neighbouring
+  // table cell: it was absent from the prompt, so the AI could not fill what
+  // it was never told existed, and the candidature failed on an empty field.
+  // The markup carries what the heuristics miss, including which of several
+  // forms on the page is the application one.
+  markup: string;
 }
 
 const MAX_FIELDS = 25;
 const MAX_BUTTONS = 12;
 const MAX_LABEL_LEN = 100;
+// ~12k characters of pruned markup is roughly 3-4k tokens: enough for a real
+// application form (the ones seen live sit well under it once scripts,
+// styles and layout wrappers are gone) without ever approaching the cost of
+// shipping a whole raw page.
+const MAX_MARKUP_CHARS = 12000;
 
 // Walks the currently-visible form, tagging every actionable element with a
 // stable `data-ai-idx` attribute (reused across calls for elements already
@@ -61,9 +76,113 @@ export async function buildFormSnapshot(page: Page): Promise<FormSnapshot> {
   }
 }
 
+// One shared notion of "the region we are applying in", used by the AI
+// snapshot AND by the deterministic fillers/scanners, so they all act on the
+// same form instead of each other's. Deliberately generic: an open modal, a
+// form carrying a CV upload, otherwise the common ancestor of the
+// interactive elements, otherwise the page itself — no site-specific
+// selector, and a page with a single plain form resolves to the same thing
+// it always did.
+export async function markPreExistingFields(page: Page): Promise<void> {
+  await page
+    .evaluate(() => {
+      const doc: any = document;
+      doc.querySelectorAll('input, textarea, select').forEach((el: any) => el.setAttribute('data-ai-pre', '1'));
+    })
+    .catch(() => {});
+}
+
+// Waits for at least one interactive element that markPreExistingFields did
+// not mark, i.e. one the reveal click actually brought in.
+export async function waitForRevealedFields(page: Page, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const found = await page
+      .evaluate(() => {
+        const doc: any = document;
+        const els = Array.from(doc.querySelectorAll('input:not([type=hidden]), textarea, select')) as any[];
+        return els.some((el: any) => {
+          if (el.hasAttribute('data-ai-pre') || el.disabled) return false;
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        });
+      })
+      .catch(() => false);
+    if (found) return true;
+    await page.waitForTimeout(400);
+  }
+  return false;
+}
+
+export async function markApplicationRoot(page: Page): Promise<void> {
+  await page
+    .evaluate(() => {
+      const doc: any = document;
+      const isVisible = (el: any) => {
+        if (!el || (!el.offsetParent && !(el.getClientRects && el.getClientRects().length))) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      };
+
+      doc.querySelectorAll('[data-ai-root]').forEach((el: any) => el.removeAttribute('data-ai-root'));
+
+      const interactive = Array.from(
+        doc.querySelectorAll('input:not([type=hidden]), textarea, select'),
+      ).filter((el: any) => isVisible(el) && !el.disabled) as any[];
+      if (!interactive.length) return;
+
+      let root: any = null;
+
+      // Fields that appeared only after the "Postuler" click (see
+      // markPreExistingFields) are the application form, whatever the site's
+      // markup looks like. Preferred over any class- or role-based guess.
+      const fresh = interactive.filter((el: any) => !el.hasAttribute('data-ai-pre'));
+      if (fresh.length) {
+        let candidate = fresh[0].parentElement;
+        while (candidate && candidate !== doc.body) {
+          if (fresh.every((el: any) => candidate.contains(el))) break;
+          candidate = candidate.parentElement;
+        }
+        if (candidate && candidate !== doc.body) root = candidate;
+      }
+
+      const dialogs = !root
+        ? (Array.from(doc.querySelectorAll('[role="dialog"], [aria-modal="true"], .modal, .fancybox-container')) as any[])
+            .filter((d) => isVisible(d) && interactive.some((el: any) => d.contains(el)))
+        : [];
+      if (dialogs.length) root = dialogs.reduce((best: any, d: any) => (best && best.contains(d) ? d : best || d), null);
+
+      if (!root) {
+        root = (Array.from(doc.querySelectorAll('form')) as any[]).find(
+          (f) => isVisible(f) && f.querySelector('input[type="file"]'),
+        );
+      }
+
+      if (!root) {
+        let candidate = interactive[0].parentElement;
+        while (candidate && candidate !== doc.body) {
+          if (interactive.every((el: any) => candidate.contains(el))) break;
+          candidate = candidate.parentElement;
+        }
+        root = candidate;
+      }
+
+      if (root && root !== doc.body) root.setAttribute('data-ai-root', '1');
+    })
+    .catch(() => {});
+}
+
+// The scope everything should work in. Falls back to the whole page whenever
+// no region could be identified, which keeps every already-working site on
+// exactly the behaviour it had.
+export async function applicationScope(page: Page): Promise<Page | Locator> {
+  const root = page.locator('[data-ai-root]').first();
+  return (await root.count().catch(() => 0)) > 0 ? root : page;
+}
+
 function buildFormSnapshotOnce(page: Page): Promise<FormSnapshot> {
   return page.evaluate(
-    ({ excludeSource, excludeFlags, maxFields, maxButtons, maxLabelLen }) => {
+    ({ excludeSource, excludeFlags, maxFields, maxButtons, maxLabelLen, maxMarkupChars }) => {
       const doc: any = document;
       const excludeRe = new RegExp(excludeSource, excludeFlags);
 
@@ -295,7 +414,93 @@ function buildFormSnapshotOnce(page: Page): Promise<FormSnapshot> {
         buttons.push({ idx: tag(el), text });
       }
 
-      return { fields, buttons };
+      // Every visible interactive element gets an idx, including the ones no
+      // label heuristic could describe — those are precisely the ones the
+      // model can only act on through the markup below.
+      const interactive = Array.from(
+        doc.querySelectorAll('input:not([type=hidden]), textarea, select, button, [role="button"]'),
+      ) as any[];
+      for (const el of interactive) {
+        if (isVisible(el) && !el.disabled) tag(el);
+      }
+
+      // Which region is the application form. Confirmed live on
+      // alphea-conseil.com: the page also carries a contact sidebar ("Votre
+      // nom / Votre email / Votre message") and a lead popup, whose labels
+      // are near-identical to the real form's — shipping the whole body let
+      // the model fill and submit the sidebar while the actual modal's
+      // "Ville" stayed empty. An open modal wins; otherwise the <form> that
+      // carries the CV upload does; otherwise fall back to the whole page.
+      const tagged = Array.from(doc.querySelectorAll('[data-ai-idx]')) as any[];
+      let root: any = null;
+
+      const marked = doc.querySelector('[data-ai-root]');
+      if (marked) root = marked;
+
+      const dialogs = !root
+        ? (Array.from(doc.querySelectorAll('[role="dialog"], [aria-modal="true"], .modal, .fancybox-container')) as any[])
+            .filter((d) => isVisible(d) && d.querySelector('[data-ai-idx]'))
+        : [];
+      if (dialogs.length) {
+        // The innermost visible dialog: a modal nested in a wrapper should
+        // not drag the wrapper's siblings back in.
+        root = dialogs.reduce((best: any, d: any) => (best && best.contains(d) ? d : best || d), null);
+      }
+
+      if (!root) {
+        const formWithUpload = (Array.from(doc.querySelectorAll('form')) as any[]).find(
+          (f) => isVisible(f) && f.querySelector('input[type="file"]'),
+        );
+        if (formWithUpload) root = formWithUpload;
+      }
+
+      if (!root && tagged.length) {
+        let candidate = tagged[0].parentElement;
+        while (candidate && candidate !== doc.body) {
+          if (tagged.every((el: any) => candidate.contains(el))) break;
+          candidate = candidate.parentElement;
+        }
+        root = candidate;
+      }
+      root = root || doc.body;
+
+      const KEEP_ATTRS = [
+        'data-ai-idx', 'type', 'name', 'id', 'for', 'placeholder', 'value',
+        'required', 'aria-required', 'aria-label', 'checked', 'selected', 'maxlength', 'role', 'alt', 'title',
+      ];
+      const DROP_TAGS = new Set(['SCRIPT', 'STYLE', 'SVG', 'IFRAME', 'NOSCRIPT', 'LINK', 'META', 'PATH', 'PICTURE', 'VIDEO', 'CANVAS']);
+
+      const serialize = (el: any, depth: number): string => {
+        if (depth > 14) return '';
+        if (DROP_TAGS.has(el.tagName)) return '';
+        if (!isVisible(el) && !el.querySelector?.('[data-ai-idx]')) return '';
+
+        const name = el.tagName.toLowerCase();
+        let attrs = '';
+        for (const a of KEEP_ATTRS) {
+          const v = el.getAttribute?.(a);
+          if (v !== null && v !== undefined && v !== '') attrs += ` ${a}="${String(v).slice(0, 120).replace(/"/g, "'")}"`;
+        }
+        if (el.checked) attrs += ' checked';
+
+        let inner = '';
+        for (const node of Array.from(el.childNodes) as any[]) {
+          if (node.nodeType === 3) {
+            const text = (node.textContent || '').replace(/\s+/g, ' ');
+            if (text.trim()) inner += text;
+          } else if (node.nodeType === 1) {
+            inner += serialize(node, depth + 1);
+          }
+        }
+        // A wrapper that adds neither an attribute nor an element of its own
+        // is layout noise; keep its content, drop the tag.
+        if (!attrs && !/^(input|textarea|select|button|option|label|legend|td|th|tr|li)$/.test(name)) return inner;
+        return `<${name}${attrs}>${inner}</${name}>`;
+      };
+
+      const markup = serialize(root, 0).replace(/\s+/g, ' ').slice(0, maxMarkupChars);
+
+      return { fields, buttons, markup };
     },
     {
       excludeSource: KNOWN_FIELD_LABEL_EXCLUDE.source,
@@ -303,6 +508,7 @@ function buildFormSnapshotOnce(page: Page): Promise<FormSnapshot> {
       maxFields: MAX_FIELDS,
       maxButtons: MAX_BUTTONS,
       maxLabelLen: MAX_LABEL_LEN,
+      maxMarkupChars: MAX_MARKUP_CHARS,
     },
   );
 }
@@ -503,7 +709,7 @@ export function formatButtonsForPrompt(buttons: SnapshotButton[]): string {
 // (ai.service.ts) now explicitly allows a reasoned estimate for this kind of
 // question, but it still needs enough of the actual CV to ground that
 // estimate in — the skills list alone was never enough.
-export function buildCandidateBrief(ctx: ApplyContext): string {
+export function buildCandidateBrief(ctx: ApplyContext, formText?: string): string {
   const cv = ctx.cv as any;
   const skills = (cv.skillGroups || [])
     .flatMap((g: any) => g.items || [])
@@ -529,12 +735,34 @@ export function buildCandidateBrief(ctx: ApplyContext): string {
   
   let finalBrief = brief.slice(0, 2500);
   if (ctx.knownAnswers && ctx.knownAnswers.size > 0) {
-    const qaPairs = Array.from(ctx.knownAnswers.entries())
+    // Confirmed live: 109 stored answers were being joined in map order and
+    // cut at 800 characters, so the model saw the first handful and nothing
+    // else — questions already answered elsewhere came back as "unknown" and
+    // were raised again. When the current form's text is available, the
+    // answers are ranked by how much they actually overlap with it, so the
+    // budget is spent on the ones this form is likely to ask.
+    const entries = Array.from(ctx.knownAnswers.entries());
+    const haystack = (formText || '').toLowerCase();
+    const ranked = haystack
+      ? entries
+          .map((entry) => {
+            const words = entry[0]
+              .toLowerCase()
+              .split(/[^a-z0-9àâäéèêëïîôöùûüç]+/i)
+              .filter((w) => w.length > 3);
+            const hits = words.filter((w) => haystack.includes(w)).length;
+            return { entry, score: words.length ? hits / words.length : 0 };
+          })
+          .sort((a, b) => b.score - a.score)
+          .map((r) => r.entry)
+      : entries;
+
+    const qaPairs = ranked
       .map(([q, a]) => `Q: ${q} -> R: ${a}`)
       .join(' | ')
-      .slice(0, 800);
-    finalBrief += `\nRéponses précédentes enregistrées: ${qaPairs}`;
+      .slice(0, 2500);
+    finalBrief += `\nRéponses précédentes enregistrées (réutilise-les telles quelles si la question correspond): ${qaPairs}`;
   }
-  
+
   return finalBrief;
 }
