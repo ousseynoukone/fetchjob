@@ -372,6 +372,113 @@ export class BrowserSessionService implements OnModuleDestroy {
     return context;
   }
 
+  private continuousContexts = new Map<
+    string,
+    {
+      context: BrowserContext;
+      siteName: string;
+      lastUsed: number;
+      realClose: () => Promise<void>;
+    }
+  >();
+
+  /**
+   * Acquire a continuous browser context for a platform.
+   * If a context already exists for this platform, it is reused!
+   * The browser stays continuously open, maintaining cookies, local storage,
+   * socket pools, and TLS session cache across all candidatures and actions.
+   */
+  async acquireContext(sessionStateJson: string | null, siteName?: string): Promise<BrowserContext> {
+    const key = siteName || 'default';
+    const existing = this.continuousContexts.get(key);
+
+    if (existing) {
+      const browser = existing.context.browser();
+      if (browser && browser.isConnected()) {
+        existing.lastUsed = Date.now();
+        // If updated session cookies are provided, inject any new ones
+        if (sessionStateJson) {
+          try {
+            let parsed = JSON.parse(sessionStateJson);
+            while (typeof parsed === 'string') parsed = JSON.parse(parsed);
+            if (Array.isArray(parsed)) parsed = { cookies: parsed };
+            if (parsed?.cookies && Array.isArray(parsed.cookies)) {
+              const normCookies = normalizeCookieExport(parsed.cookies);
+              await existing.context.addCookies(normCookies).catch(() => {});
+            }
+          } catch { /* ignore */ }
+        }
+        return existing.context;
+      } else {
+        // Disconnected, clean up stale entry
+        this.continuousContexts.delete(key);
+      }
+    }
+
+    const context = await this.createContext(sessionStateJson, siteName);
+    const realClose = context.close.bind(context);
+
+    // Override context.close so that if caller calls context.close(),
+    // it releases rather than destroys the continuous context!
+    context.close = async () => {
+      await this.releaseContext(context, key);
+    };
+
+    this.continuousContexts.set(key, {
+      context,
+      siteName: key,
+      lastUsed: Date.now(),
+      realClose,
+    });
+
+    this.logger.log(`Continuous browser context established for [${key}]`);
+    return context;
+  }
+
+  /**
+   * Release a continuous context back to the pool.
+   * Closes child/worker pages to free memory, but keeps the context and browser
+   * open and continuous for the next action.
+   */
+  async releaseContext(context: BrowserContext, siteName?: string): Promise<void> {
+    const key = siteName || 'default';
+    const managed = this.continuousContexts.get(key);
+
+    if (managed && managed.context === context) {
+      managed.lastUsed = Date.now();
+      try {
+        const pages = context.pages();
+        // Close extra pages that were opened during the job, keep one page navigated to about:blank
+        for (let i = 1; i < pages.length; i++) {
+          if (!pages[i].isClosed()) {
+            await pages[i].close().catch(() => {});
+          }
+        }
+        if (pages[0] && !pages[0].isClosed()) {
+          await pages[0].goto('about:blank').catch(() => {});
+        }
+      } catch (err: any) {
+        this.logger.warn(`Failed to clean up pages in continuous context [${key}]: ${err.message}`);
+      }
+      return;
+    }
+
+    // Fallback for non-managed contexts: close directly
+    await context.close().catch(() => {});
+  }
+
+  /**
+   * Force-destroy a continuous context if its session is completely invalidated.
+   */
+  async destroyContinuousContext(siteName: string): Promise<void> {
+    const managed = this.continuousContexts.get(siteName);
+    if (managed) {
+      this.continuousContexts.delete(siteName);
+      await managed.realClose().catch(() => {});
+      this.logger.log(`Continuous context [${siteName}] destroyed.`);
+    }
+  }
+
   /**
    * Persist the context's current cookies to disk so the next run
    * can restore them and skip re-authentication.
@@ -393,7 +500,11 @@ export class BrowserSessionService implements OnModuleDestroy {
   }
 
   async onModuleDestroy() {
-    await this.browser?.close();
+    for (const [, managed] of this.continuousContexts) {
+      await managed.realClose().catch(() => {});
+    }
+    this.continuousContexts.clear();
+    await this.browser?.close().catch(() => {});
     this.browser = null;
   }
 }

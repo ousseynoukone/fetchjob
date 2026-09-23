@@ -799,26 +799,36 @@ export async function dismissCookieBanner(page: Page): Promise<void> {
 // (a validation problem) for what was actually an anti-bot wall the IP
 // itself was flagged for (the page even names the IP: "un robot est sur
 // le même réseau (IP ...) que vous").
-const SECURITY_CHECK_TEXT = /échec de la vérification|browser check failed|verify you are human|unusual activity|security check|vérification supplémentaire|prouvez que vous êtes humain|validate you are human|vérification de sécurité en cours|vérifiez que vous êtes humain|why have i been blocked|you have been blocked|attention required!? \| cloudflare|access denied \| |non pas à un robot|s[ée]curiser votre acc[èe]s/i;
+const SECURITY_CHECK_TEXT =
+  /échec de la vérification|browser check failed|verify you are human|unusual activity|security check|vérification supplémentaire|prouvez que vous êtes humain|validate you are human|vérification de sécurité en cours|vérifiez que vous êtes humain|why have i been blocked|you have been blocked|attention required!? \| cloudflare|access denied \| |non pas à un robot|s[ée]curiser votre acc[èe]s|comportement du navigateur nous a intrigu[ée]|faites glisser vers la droite|glissez vers la droite|captcha-delivery\.com|datadome|challenge-platform/i;
 
 export async function hasSecurityCheck(page: Page): Promise<boolean> {
   const checkOnce = async () => {
     if (SECURITY_CHECK_TEXT.test(page.url())) {
-      console.log('SECURITY CHECK TRIGGERED BY URL:', page.url());
       return true;
     }
-    if (/datadome/i.test(page.url())) {
-      console.log('SECURITY CHECK TRIGGERED BY DATADOME URL:', page.url());
+    if (/datadome|captcha-delivery/i.test(page.url())) {
       return true;
     }
+    // Check all frames (DataDome embeds its challenge in an iframe like geo.captcha-delivery.com)
     for (const frame of page.frames()) {
-      // Background telemetry iframes often contain 'datadome' or 'captcha' without actually blocking the user.
-      // We rely on the body text check below to see if the user is actually being challenged.
+      if (/captcha-delivery\.com|datadome|challenges\.cloudflare\.com/i.test(frame.url())) {
+        return true;
+      }
+      const frameText = await frame.locator('body').innerText({ timeout: 1500 }).catch(() => '');
+      if (SECURITY_CHECK_TEXT.test(frameText)) {
+        return true;
+      }
     }
-    const bodyText = await page.locator('body').innerText({ timeout: 1000 }).catch(() => '');
-    const match = bodyText.match(SECURITY_CHECK_TEXT);
-    if (match) {
-      console.log('SECURITY CHECK TRIGGERED BY BODY TEXT:', match[0]);
+    const hasCaptchaIframe = await page
+      .locator('iframe[src*="captcha-delivery"], iframe[src*="datadome"], iframe[title*="captcha" i], iframe[title*="datadome" i]')
+      .count()
+      .catch(() => 0);
+    if (hasCaptchaIframe > 0) {
+      return true;
+    }
+    const bodyText = await page.locator('body').innerText({ timeout: 1500 }).catch(() => '');
+    if (SECURITY_CHECK_TEXT.test(bodyText)) {
       return true;
     }
     return false;
@@ -830,7 +840,7 @@ export async function hasSecurityCheck(page: Page): Promise<boolean> {
   // Transient checks (Cloudflare "Just a moment...", Datadome interstitial) 
   // often clear automatically after 3-8 seconds for stealth browsers.
   // Poll before declaring it blocked.
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 4; i++) {
     await page.waitForTimeout(2000);
     hasCheck = await checkOnce();
     if (!hasCheck) return false;
@@ -1458,7 +1468,15 @@ export async function trySolveSlideChallenge(page: Page): Promise<boolean> {
       '[aria-label*="slide" i]',
     ].join(', ');
 
-    for (const frame of [page, ...page.frames()]) {
+    // First, look for a frame dedicated to DataDome / captcha delivery
+    for (const frame of page.frames()) {
+      if (/captcha-delivery\.com|datadome/i.test(frame.url())) {
+        targetFrame = frame;
+        break;
+      }
+    }
+
+    for (const frame of [targetFrame, ...page.frames()]) {
       const notice = frame.locator(combinedSelector).first();
       if (await notice.isVisible({ timeout: 1000 }).catch(() => false)) {
         slideNotice = notice;
@@ -1471,9 +1489,10 @@ export async function trySolveSlideChallenge(page: Page): Promise<boolean> {
 
     // Find the slider button/handle
     const handleSelectors = [
+      '#slider-btn',
+      '.slider-btn',
       '[role="slider"]',
       '.slider',
-      '.slider-btn',
       '.btn_slide',
       '[class*="slider" i] [class*="handle" i]',
       '[class*="slider" i] [class*="thumb" i]',
@@ -1508,11 +1527,30 @@ export async function trySolveSlideChallenge(page: Page): Promise<boolean> {
     const handleBox = await handle.boundingBox().catch(() => null);
     if (!handleBox) return false;
 
-    // Find track width from parent container or default ~260px
+    // Find track width from parent container or destination target button
+    let destinationBox: any = null;
+    const arrowButtons = targetFrame.locator('div[class*="arrow" i], button[class*="arrow" i], div[class*="btn" i]');
+    const btnCount = await arrowButtons.count().catch(() => 0);
+    if (btnCount >= 2) {
+      for (let b = 1; b < btnCount; b++) {
+        const candidate = arrowButtons.nth(b);
+        const cBox = await candidate.boundingBox().catch(() => null);
+        if (cBox && cBox.x > handleBox.x + 60) {
+          destinationBox = cBox;
+          break;
+        }
+      }
+    }
+
     const parent = handle.locator('xpath=..').first();
     const parentBox = await parent.boundingBox().catch(() => null);
-    const dragDistance =
-      parentBox && parentBox.width > handleBox.width + 40 ? parentBox.width - handleBox.width - 5 : 260;
+
+    let dragDistance = 260;
+    if (destinationBox) {
+      dragDistance = (destinationBox.x + destinationBox.width / 2) - (handleBox.x + handleBox.width / 2);
+    } else if (parentBox && parentBox.width > handleBox.width + 40) {
+      dragDistance = parentBox.width - handleBox.width - 5;
+    }
 
     const startX = handleBox.x + handleBox.width / 2;
     const startY = handleBox.y + handleBox.height / 2;

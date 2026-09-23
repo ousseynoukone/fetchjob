@@ -410,7 +410,7 @@ export class AutoApplyService {
   private async resolveEffectiveSourceUrl(source: string, sourceUrl: string): Promise<string> {
     if (source !== 'welcome_to_the_jungle') return sourceUrl;
 
-    const context = await this.browserSession.createContext(null, 'welcome_to_the_jungle');
+    const context = await this.browserSession.acquireContext(null, 'welcome_to_the_jungle');
     try {
       await blockHeavyResources(context);
       const page = await context.newPage();
@@ -420,7 +420,7 @@ export class AutoApplyService {
       this.logger.warn(`Welcome to the Jungle apply-link resolution failed for ${sourceUrl}: ${error.message}`);
       return sourceUrl;
     } finally {
-      await context.close().catch(() => {});
+      await this.browserSession.releaseContext(context, 'welcome_to_the_jungle');
     }
   }
 
@@ -465,7 +465,7 @@ export class AutoApplyService {
     await writeFile(cvPdfPath, pdfBuffer);
     const cvFileName = buildCvFileName(cv.fullName);
 
-    const context = await this.browserSession.createContext(sessionState, platformKey);
+    const context = await this.browserSession.acquireContext(sessionState, platformKey);
     let cdpSession: CDPSession | null = null;
 
     // Confirmed live: one HelloWork attempt sat past its normal completion
@@ -816,7 +816,7 @@ export class AutoApplyService {
       // Bounded the same way as everything above — a hung close() on a
       // genuinely dead browser must not block the run() loop either.
       await withCleanupTimeout(this.stopScreencast(cdpSession), 10_000);
-      await withCleanupTimeout(context.close(), 10_000).catch(() => {});
+      await withCleanupTimeout(this.browserSession.releaseContext(context, platformKey), 10_000).catch(() => {});
       await unlink(cvPdfPath).catch(() => {});
     }
   }

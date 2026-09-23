@@ -314,6 +314,9 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
     }
 
     if (!plan || plan.action.kind === 'stop') {
+      if (await hasSecurityCheck(page)) {
+        return { success: false, note: 'CAPTCHA ou test anti-robot détecté — bloqué par la sécurité du site.' };
+      }
       return await reportBlockedState(page, ctx, opts.blockedNote);
     }
 

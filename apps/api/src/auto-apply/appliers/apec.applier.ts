@@ -197,10 +197,25 @@ export class ApecApplier implements JobApplier {
       const continueBtn = page.locator('button, a, [role="button"]').filter({ hasText: /^\s*postuler\s*$/i }).filter({ visible: true }).first();
       if (await continueBtn.isVisible().catch(() => false)) {
         await ctx.appendLog?.("APEC affiche une page intermédiaire — clic sur « Postuler » pour ouvrir le formulaire...");
+        // Natural human pause before clicking
+        await page.waitForTimeout(1000 + Math.random() * 1500);
         await humanClick(page, continueBtn).catch(() => continueBtn.click().catch(() => {}));
         await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => {});
         await page.waitForTimeout(2500);
         await dismissCookieBanner(page);
+
+        if (await hasSecurityCheck(page)) {
+          await ctx.appendLog?.('CAPTCHA anti-robot DataDome détecté sur APEC — tentative de résolution automatique du glisseur...');
+          const solved = await trySolveSlideChallenge(page);
+          if (!solved) {
+            return {
+              success: false,
+              note: 'CAPTCHA DataDome détecté sur APEC — bloqué par la sécurité du site. Candidature à valider manuellement.',
+            };
+          }
+          await ctx.appendLog?.('CAPTCHA DataDome résolu avec succès !');
+          await page.waitForTimeout(2000);
+        }
       }
     }
 

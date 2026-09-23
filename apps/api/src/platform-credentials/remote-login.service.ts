@@ -291,11 +291,11 @@ export class RemoteLoginService implements OnModuleDestroy {
       if (process.platform === 'win32') {
         const needle = profileDir.replace(/'/g, "''");
         execSync(
-          `powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name='chrome.exe'\\" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${needle}') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"`,
-          { stdio: 'ignore' },
+          `powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "Get-CimInstance Win32_Process -Filter \\"Name='chrome.exe'\\" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${needle}') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"`,
+          { stdio: 'ignore', timeout: 3000, windowsHide: true },
         );
       } else {
-        execSync(`pkill -f "${profileDir}"`, { stdio: 'ignore' });
+        execSync(`pkill -f "${profileDir}"`, { stdio: 'ignore', timeout: 3000 });
       }
     } catch (e) {}
 
@@ -342,24 +342,20 @@ export class RemoteLoginService implements OnModuleDestroy {
       },
     };
 
-    let context: BrowserContext;
+    let context: BrowserContext | null = null;
     if (CDP_URL) {
-      // A context inside the real desktop Chrome on the host (see
-      // cdp-endpoint.ts). No persistent profile dir of its own: the person
-      // logs in inside a genuine browser, and the resulting cookies are
-      // saved to the DB on success exactly as before -- which is what every
-      // later auto-apply context injects. No fingerprint script either: the
-      // browser is real, and overriding its real values would only create
-      // the contradictions the script exists to avoid.
-      const endpoint = await resolveCdpEndpoint(CDP_URL);
-      const hostBrowser = await chromium.connectOverCDP(endpoint, { timeout: 15000 }).catch((err: any) => {
-        throw new Error(
-          `Le navigateur Chrome de l'hôte n'est pas joignable (${endpoint}) : lancez start-host-chrome.ps1 puis réessayez. (${err.message})`,
-        );
-      });
-      context = await hostBrowser.newContext({ viewport: { width: 1280, height: 800 }, screen: { width: 1920, height: 1080 } });
-      this.logger.log(`Remote-login for ${platform} opened in host Chrome over CDP (${hostBrowser.version()})`);
-    } else {
+      try {
+        const endpoint = await resolveCdpEndpoint(CDP_URL);
+        const hostBrowser = await chromium.connectOverCDP(endpoint, { timeout: 8000 });
+        context = (await hostBrowser.newContext({ viewport: { width: 1280, height: 800 }, screen: { width: 1920, height: 1080 } })) as unknown as BrowserContext;
+        this.logger.log(`Remote-login for ${platform} opened in host Chrome over CDP (${hostBrowser.version()})`);
+      } catch (err: any) {
+        this.logger.warn(`Host Chrome not reachable over CDP (${err.message}) — falling back to internal browser.`);
+        context = null;
+      }
+    }
+
+    if (!context) {
       try {
         context = await chromium.launchPersistentContext(profileDir, launchOptions);
       } catch (launchErr: any) {

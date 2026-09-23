@@ -192,8 +192,10 @@ export class GmailOtpService {
             continue;
           }
 
+          const subject = msg.envelope?.subject || '';
           const bodyText = msg.source?.toString('utf8') || '';
-          const code = this.extractOtpCode(bodyText);
+          const combined = subject ? `${subject}\n\n${bodyText}` : bodyText;
+          const code = this.extractOtpCode(combined, platform);
           if (code) return code;
         }
 
@@ -264,7 +266,7 @@ export class GmailOtpService {
           await page.waitForTimeout(1500);
 
           const content = await page.locator('div[role="main"], .ii.gt').innerText().catch(() => '');
-          const code = this.extractOtpCode(content);
+          const code = this.extractOtpCode(content, platform);
           if (code) {
             const email = cred.emailEncrypted ? this.crypto.decrypt(cred.emailEncrypted) : 'gmail';
             return { code, source: 'web_session', email };
@@ -282,11 +284,12 @@ export class GmailOtpService {
   /**
    * Extracts the 8-digit, 6-digit, or 4-digit verification code from email body/HTML.
    */
-  extractOtpCode(text: string): string | null {
+  extractOtpCode(text: string, platform?: string): string | null {
     if (!text) return null;
 
-    // Clean HTML tags and quoted-printable encoding
+    // Clean HTML tags and quoted-printable encoding and normalize spaces
     const clean = text
+      .replace(/[\u00a0\s]+/g, ' ')
       .replace(/<[^>]+>/g, ' ')
       .replace(/=\r?\n/g, '')
       .replace(/=C3=A0/gi, 'à')
@@ -297,7 +300,9 @@ export class GmailOtpService {
 
     // 1. Explicit regex targeting code phrases (French & English):
     // e.g. "Votre code à usage unique est le : 31842999", "code de validation est : 12345678", "votre code de sécurité : 123456"
+    // Also "Connectez-vous à Indeed avec le code suivant : 473972"
     const explicitPatterns = [
+      /(?:code(?:\s+suivant)?|passcode|code\s*est|code\s*is|is)[\s:]*([0-9]{4,8})\b/i,
       /(?:code\s*(?:(?:à|a)\s*usage\s*unique)?\s*(?:de\s*)?(?:validation|confirmation|connexion|sécurité|securite|vérification|verification|accès|acces)?\s*(?:est(?:\s*le)?|is)?\s*[:\s]*)([0-9]{6,8})\b/i,
       /(?:security\s*code|verification\s*code|one-time\s*(?:passcode|code|pin)|confirmation\s*code|your\s*code\s*is|votre\s*code\s*est)\s*[:\s]?\s*([0-9]{4,8})\b/i,
       /(?:saisissez\s*le\s*code\s*suivant|enter\s*the\s*following\s*code)\s*[:\s]?\s*([0-9]{4,8})\b/i,
@@ -307,6 +312,14 @@ export class GmailOtpService {
       const match = clean.match(pat);
       if (match && match[1]) {
         return match[1];
+      }
+    }
+
+    // Platforms that strictly use 6-digit codes (Indeed, LinkedIn, HelloWork, Apec)
+    if (platform && platform !== 'france_travail') {
+      const sixDigitMatches = clean.match(/\b[0-9]{6}\b/g);
+      if (sixDigitMatches && sixDigitMatches.length > 0) {
+        return sixDigitMatches[0];
       }
     }
 
@@ -320,7 +333,7 @@ export class GmailOtpService {
       }
     }
 
-    // 3. Direct 6-digit sequence (LinkedIn, Indeed, HelloWork, APEC)
+    // 3. Direct 6-digit sequence fallback
     const sixDigitMatches = clean.match(/\b[0-9]{6}\b/g);
     if (sixDigitMatches && sixDigitMatches.length > 0) {
       return sixDigitMatches[0];
