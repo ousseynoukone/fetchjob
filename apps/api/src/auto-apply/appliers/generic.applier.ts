@@ -150,39 +150,43 @@ export class GenericApplier implements JobApplier {
       .getByRole('link', { name: REVEAL_BUTTON_TEXT })
       .or(page.getByRole('button', { name: REVEAL_BUTTON_TEXT }))
       .or(page.locator('[role="button"], a, button, div[onclick], span[onclick]').filter({ hasText: REVEAL_BUTTON_TEXT }));
-    // Two passes: confirmed live that a first "Postuler" (Direct Emploi's)
-    // can lead to a SECOND choice screen ("Comment souhaitez-vous
-    // postuler ?" -> "Postuler avec mon CV" on Michael Page) before any
-    // form exists. The second pass only runs when the first click left
-    // the page without a single visible field.
-    const visibleFieldCount = () =>
-      page.locator('input:not([type=hidden]):not([type=submit]):not([type=button]):visible, textarea:visible, select:visible').count().catch(() => 0);
-    for (let pass = 0; pass < 2; pass++) {
-      if (pass > 0 && (await visibleFieldCount()) > 0) break;
+    // Multiple candidate buttons can match the same wording on one page
+    // (confirmed live on alphea-conseil.com: a page-wide "Postuler" sits
+    // next to a contact sidebar and a lead popup that use near-identical
+    // copy). Clicking the first match and hoping is what let the bot fill
+    // and submit a contact form while the real application modal never
+    // opened. Tries each distinct match in turn, and only accepts one as
+    // "the" reveal button if it actually reveals a field that wasn't there
+    // before — structural, no per-site wording or class name.
+    await markPreExistingFields(page);
+    const triedButtons = new Set<string>();
+    let revealSucceeded = false;
+    for (let attempt = 0; attempt < 6 && !revealSucceeded; attempt++) {
       // Consent first: on JCDecaux's ATS the "Importez votre CV" /
       // "Remplir le CV manuellement" buttons only enable once the data-
       // protection box is ticked.
       if (await tickConsentCheckboxes(page)) await page.waitForTimeout(600);
+
+      const matches = await revealCandidates.all().catch(() => []);
       let revealButton: import('playwright').Locator | null = null;
-      for (let attempt = 0; attempt < (pass === 0 ? 5 : 2) && !revealButton; attempt++) {
-        const matches = await revealCandidates.all().catch(() => []);
-        for (const candidate of matches) {
-          const text = (await candidate.innerText().catch(() => '')).trim();
-          if (text.length > 80 || THIRD_PARTY_TEXT.test(text)) continue;
-          if (await candidate.isVisible().catch(() => false)) {
-            revealButton = candidate;
-            break;
-          }
+      for (const candidate of matches) {
+        const text = (await candidate.innerText().catch(() => '')).trim();
+        if (text.length > 80 || THIRD_PARTY_TEXT.test(text)) continue;
+        if (triedButtons.has(text)) continue;
+        if (await candidate.isVisible().catch(() => false)) {
+          revealButton = candidate;
+          break;
         }
-        if (!revealButton) await page.waitForTimeout(1000);
       }
-      if (!revealButton) break;
-      await ctx.appendLog?.(`Clic sur « ${(await revealButton.innerText().catch(() => 'Postuler')).trim().slice(0, 40)} »...`);
-      // Whatever fields exist BEFORE this click belong to the page itself
-      // (a contact block, a newsletter popup, a job search box). Whatever
-      // appears after it is the application form. This is structural — it
-      // needs no knowledge of the site's markup or class names.
-      await markPreExistingFields(page);
+      if (!revealButton) {
+        if (triedButtons.size) break; // exhausted every distinct candidate
+        await page.waitForTimeout(1000);
+        continue;
+      }
+
+      const buttonText = (await revealButton.innerText().catch(() => 'Postuler')).trim();
+      triedButtons.add(buttonText);
+      await ctx.appendLog?.(`Clic sur « ${buttonText.slice(0, 40)} »...`);
       const popupPromise = page.context().waitForEvent('page', { timeout: 4000 }).catch(() => null);
       await humanClick(page, revealButton).catch(() => revealButton!.click().catch(() => {}));
       const popup = await popupPromise;
@@ -197,6 +201,8 @@ export class GenericApplier implements JobApplier {
             note: `Cette plateforme (${new URL(page.url()).hostname}) exige un compte pour postuler — candidature à effectuer directement sur le lien de l'offre.`,
           };
         }
+        // A popup is a fresh document -- nothing on it is "pre-existing".
+        await markPreExistingFields(page);
       }
       await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {});
       // The click can start a client-side redirect chain (SuccessFactors:
@@ -212,7 +218,10 @@ export class GenericApplier implements JobApplier {
       // reported empty afterwards. Wait for a field that was NOT there
       // before the click, bounded — a site whose form was already present
       // simply finds one immediately and moves on.
-      await waitForRevealedFields(page, 8000);
+      revealSucceeded = await waitForRevealedFields(page, 8000);
+      if (!revealSucceeded) {
+        await ctx.appendLog?.(`« ${buttonText.slice(0, 40)} » n'a révélé aucun nouveau champ — essai du bouton suivant...`);
+      }
     }
 
     // Checked AFTER the reveal click, not only before it. Confirmed live on
