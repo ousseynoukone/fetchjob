@@ -101,8 +101,15 @@ services:
     # fraud detection (a real person's browser accumulates cookies/cache
     # from years of ordinary use; this at least lets it accumulate across
     # restarts instead of starting from nothing every time).
+    # Backs stealth-browser.ts's per-site scraping Chrome profiles for the
+    # same reason (see createStealthContext / SCRAPING_PROFILE_BASE_DIR):
+    # confirmed live that a genuinely persistent profile is what closed most
+    # of the gap between the in-container scraper and the host Chrome for
+    # sites that check for it (Indeed's Cloudflare WAF scraped 0 offers
+    # in-container before this, 80 via host Chrome).
     volumes:
       - remote_login_profiles:/root/.findurjob/remote-login-profiles
+      - scraping_profiles:/root/.findurjob/scraping-profiles
     depends_on:
       postgres:
         condition: service_healthy
@@ -135,6 +142,7 @@ volumes:
   postgres_data:
   redis_data:
   remote_login_profiles:
+  scraping_profiles:
 
 networks:
   default:

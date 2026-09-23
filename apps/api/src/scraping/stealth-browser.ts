@@ -35,6 +35,18 @@ import * as os from 'os';
 import { chromium } from 'patchright';
 import { CDP_URL, resolveCdpEndpoint } from '../common/cdp-endpoint';
 
+// Docker-volume-backed (see docker-compose.yml), same reasoning and same
+// pattern as remote-login.service.ts's PROFILE_BASE_DIR: a real, per-site
+// Chrome profile that accumulates cookies/localStorage/engagement signals
+// across runs instead of starting from zero-history every single scrape,
+// which several sites' bot detection (Indeed's Cloudflare WAF especially)
+// treats as its own signal.
+const SCRAPING_PROFILE_BASE_DIR =
+  process.env.SCRAPING_PROFILE_DIR || path.join(os.homedir(), '.findurjob', 'scraping-profiles');
+
+// See createStealthContext's fpForLaunch/realVersion handling below.
+let cachedChromeVersion: string | null = null;
+
 // ─── Fingerprint profiles ─────────────────────────────────────────────────────
 
 export interface FingerprintProfile {
@@ -373,9 +385,56 @@ export async function createStealthContext(options: StealthContextOptions = {}) 
   }
 
   const rawFp = options.profileIndex !== undefined ? FINGERPRINT_PROFILES[options.profileIndex] : randomProfile();
+  // launchPersistentContext takes `userAgent` at LAUNCH time, unlike a plain
+  // launch()+newContext() pair where newContext() (and the browser.version()
+  // read before it) can run after the browser already exists. The corrected
+  // version is only knowable AFTER a browser has actually started, so it's
+  // cached process-wide from the first real launch and reused by every
+  // later one -- only the very first launch in this process's life risks an
+  // uncorrected version in its UA string.
+  const fpForLaunch = cachedChromeVersion ? withCurrentChromeVersion(rawFp, cachedChromeVersion) : rawFp;
   const isHeadless = process.env.AUTO_APPLY_HEADLESS !== 'false';
 
-  const browser = await chromium.launch({
+  const launchArgs = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    // The single most important flag — tells Chromium NOT to add the
+    // "navigator.webdriver" property and removes automation-specific flags
+    '--disable-blink-features=AutomationControlled',
+    '--disable-features=IsolateOrigins,site-per-process',
+    '--disable-dev-shm-usage',
+    '--no-first-run',
+    '--disable-infobars',
+    '--lang=fr-FR',
+    // See browser-session.service.ts's identical flags: without these,
+    // canvas.getContext('webgl') returns null in this container, which is
+    // a stronger bot tell than any software-renderer string (no real
+    // browser has zero WebGL support).
+    '--use-gl=angle',
+    '--use-angle=swiftshader',
+    '--enable-unsafe-swiftshader',
+  ];
+
+  // Confirmed live (and documented for the identical remote-login-profiles
+  // volume): "residential proxies are essential", "browser fingerprinting
+  // and IP reputation" and, repeatedly, that a brand-new zero-history
+  // profile is itself a bot signal Cloudflare/Indeed's WAF checks for. Every
+  // call here used to be `chromium.launch()` + `newContext()`, which is an
+  // ISOLATED, throwaway context even when pointed at a real user-data-dir --
+  // Playwright's incognito-style contexts don't write back to the profile's
+  // real on-disk storage the way a genuine tab does, so this never actually
+  // accumulated anything across runs regardless of channel/args. Indeed
+  // scraped 0 offers through this every time; the host Chrome (a real,
+  // accumulating profile via CDP) scraped 80. launchPersistentContext is
+  // the only API that genuinely persists cookies/localStorage/IndexedDB/
+  // engagement signals to disk, one real profile per site, backed by the
+  // same kind of Docker volume as remote-login-profiles (see docker-compose.yml).
+  const profileDir = options.siteName
+    ? path.join(SCRAPING_PROFILE_BASE_DIR, options.siteName)
+    : path.join(SCRAPING_PROFILE_BASE_DIR, `anon-${Date.now()}`);
+  await fs.promises.mkdir(profileDir, { recursive: true }).catch(() => {});
+
+  const launchOptions = {
     headless: isHeadless,
     // Confirmed live on Indeed: without this, Playwright launches its own
     // bundled chrome-headless-shell -- a stripped-down binary missing
@@ -386,49 +445,54 @@ export async function createStealthContext(options: StealthContextOptions = {}) 
     // remote-login.service.ts and establish-session.js for the same
     // reason.
     channel: 'chromium',
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      // The single most important flag — tells Chromium NOT to add the
-      // "navigator.webdriver" property and removes automation-specific flags
-      '--disable-blink-features=AutomationControlled',
-      '--disable-features=IsolateOrigins,site-per-process',
-      '--disable-dev-shm-usage',
-      '--no-first-run',
-      '--disable-infobars',
-      '--lang=fr-FR',
-      // See browser-session.service.ts's identical flags: without these,
-      // canvas.getContext('webgl') returns null in this container, which is
-      // a stronger bot tell than any software-renderer string (no real
-      // browser has zero WebGL support).
-      '--use-gl=angle',
-      '--use-angle=swiftshader',
-      '--enable-unsafe-swiftshader',
-    ],
-    ...(options.proxy ? { proxy: options.proxy } : {}),
-  });
-
-  // See withCurrentChromeVersion — keeps the declared UA's Chrome version
-  // in sync with whatever Chromium build is actually running it.
-  const realVersion = browser.version();
-  const fp = withCurrentChromeVersion(rawFp, realVersion);
-
-  const context = await browser.newContext({
-    userAgent: fp.userAgent,
-    viewport: fp.viewport,
-    locale: fp.locale,
-    timezoneId: fp.timezoneId,
-    deviceScaleFactor: fp.deviceScaleFactor,
-    colorScheme: 'light',
+    args: launchArgs,
+    userAgent: fpForLaunch.userAgent,
+    viewport: fpForLaunch.viewport,
+    locale: fpForLaunch.locale,
+    timezoneId: fpForLaunch.timezoneId,
+    deviceScaleFactor: fpForLaunch.deviceScaleFactor,
+    colorScheme: 'light' as const,
     extraHTTPHeaders: {
       'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
       'Accept-Encoding': 'gzip, deflate, br',
       DNT: '1',
       'Upgrade-Insecure-Requests': '1',
     },
-  });
+    ...(options.proxy ? { proxy: options.proxy } : {}),
+  };
 
-  // Restore persisted cookies (warms the session for sites that use them)
+  // Same recovery as remote-login.service.ts: a process that died without
+  // releasing this profile leaves Chrome's own SingletonLock/-Socket/
+  // -Cookie files behind, and every future launch on that same profile dir
+  // fails with "Failed to create a ProcessSingleton...File exists" until
+  // they're cleared.
+  let context: import('patchright').BrowserContext;
+  try {
+    context = await chromium.launchPersistentContext(profileDir, launchOptions);
+  } catch (launchErr: any) {
+    await Promise.all(
+      ['SingletonLock', 'SingletonSocket', 'SingletonCookie', 'lockfile'].map((name) =>
+        fs.promises.unlink(path.join(profileDir, name)).catch(() => {}),
+      ),
+    );
+    context = await chromium.launchPersistentContext(profileDir, launchOptions).catch(async () => {
+      const fallbackDir = path.join(SCRAPING_PROFILE_BASE_DIR, `${options.siteName || 'anon'}-${Date.now()}`);
+      return chromium.launchPersistentContext(fallbackDir, launchOptions);
+    });
+  }
+
+  // See withCurrentChromeVersion — keeps the declared UA's Chrome version in
+  // sync with whatever Chromium build is actually running it. A persistent
+  // context's own .browser() is non-null in patchright (unlike stock
+  // Playwright, which returns null for it), so this still works the same.
+  const realVersion = context.browser()?.version();
+  if (realVersion) cachedChromeVersion = realVersion;
+  const fp = realVersion ? withCurrentChromeVersion(rawFp, realVersion) : fpForLaunch;
+
+  // Restore persisted cookies (warms the session for sites that use them) --
+  // still worth doing on top of the profile's own accumulated cookies: the
+  // app-level jar is what a DB-driven re-login writes back, the profile is
+  // what accumulates from ordinary browsing here.
   if (options.siteName) {
     const saved = loadCookies(options.siteName);
     if (saved.length > 0) {
@@ -438,6 +502,11 @@ export async function createStealthContext(options: StealthContextOptions = {}) 
 
   // Inject fingerprint overrides before any page script runs
   await context.addInitScript(buildFingerprintScript(fp));
+
+  // Callers only ever call `browser.close()` for cleanup -- closing a
+  // persistent context's real browser() handle (when patchright provides
+  // one) or the context itself both tear down the same underlying process.
+  const browser = context.browser() ?? ({ close: () => context.close(), version: () => 'unknown' } as any);
 
   return { browser, context, fp };
 }
