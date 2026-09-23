@@ -165,10 +165,16 @@ export class WelcomeToTheJungleApplier implements JobApplier {
       // "J'envoie ma candidature !" -- matches either apostrophe character.
       submitText: /j.?envoie ma candidature/i,
       nextText: /suivant|continuer/i,
-      // NOT confirmed against real wording (the recording closed the
-      // confirmation dialog before its text was captured) -- best-effort,
-      // consistent with this file's other success patterns.
-      successText: /candidature envoyée|votre candidature (a bien été|va être) (envoyée|transmise)/i,
+      // Confirmed against a real screenshot of a genuinely successful
+      // submission (the modal's own confirmation dialog: "Votre candidature
+      // a été envoyée" + "Suivez sa progression dans votre espace de suivi
+      // des candidatures."): the old regex required either the bare phrase
+      // "candidature envoyée" or "a BIEN été envoyée" -- the real dialog
+      // reads "a été envoyée" (no "bien"), so it matched neither branch and
+      // every genuinely successful WTTJ submission was reported as
+      // unconfirmed. "a (bien )?été" makes "bien" optional instead of
+      // required.
+      successText: /candidature (a (bien )?été |va être )?(envoyée|transmise)/i,
       blockedNote: 'Le formulaire de candidature Welcome to the Jungle contient un champ non renseigné — à finaliser manuellement.',
       unresolvedNote: 'Soumission Welcome to the Jungle envoyée mais confirmation non détectée — à vérifier manuellement.',
     });

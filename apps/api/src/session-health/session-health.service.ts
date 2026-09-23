@@ -5,13 +5,18 @@ import { PrismaService } from '../common/prisma.service';
 import { PlatformCredentialsService } from '../platform-credentials/platform-credentials.service';
 import { SupportedPlatform } from '../platform-credentials/dto/upsert-credential.dto';
 import { BrowserSessionService } from '../auto-apply/browser-session.service';
-import { SESSION_CHECKS, blockHeavyResources, dismissCookieBanner, handleUniversalEmailOtp } from '../auto-apply/appliers/ats-common';
+import { SESSION_CHECKS, blockHeavyResources, dismissCookieBanner, handleUniversalEmailOtp, humanFill, humanClick } from '../auto-apply/appliers/ats-common';
 import { REMOTE_LOGIN_URLS } from '../platform-credentials/remote-login.service';
 import { GmailOtpService } from '../common/gmail-otp.service';
+
+const LINKEDIN_RETRY_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 @Injectable()
 export class SessionHealthService implements OnModuleInit {
   private readonly logger = new Logger(SessionHealthService.name);
+  // In-process only (resets on restart, which is acceptable): when the last
+  // automatic LinkedIn login failed. See LINKEDIN_RETRY_COOLDOWN_MS.
+  private lastLinkedInLoginFailure = 0;
 
   constructor(
     private prisma: PrismaService,
@@ -228,10 +233,16 @@ export class SessionHealthService implements OnModuleInit {
       if (onLoginWall) {
         // If credentials (email + password) are available, attempt automatic background re-login
         // so the user does NOT have to open the manual remote browser repeatedly!
-        // NOTE: LinkedIn requires interactive device trust / 2FA. Automated headless password login
-        // triggers security checkpoints and phone prompts. We strictly NEVER automate password entry on LinkedIn.
+        // LinkedIn used to be excluded on the grounds that an automated password login
+        // triggers security checkpoints -- a real one had been seen once (see the
+        // checkpoint note on SESSION_CHECKS.linkedin). Tested live through the host
+        // Chrome with the stored cookies: LinkedIn showed its "Bon retour parmi nous"
+        // remembered-account page (password only), the login went straight to /feed/
+        // with no checkpoint. It is attempted again, but never forced past a checkpoint,
+        // and never retried for LINKEDIN_RETRY_COOLDOWN_MS after a failure: repeated
+        // failed logins are a signal in themselves.
         if (
-          platform !== 'linkedin' &&
+          (platform !== 'linkedin' || Date.now() - this.lastLinkedInLoginFailure > LINKEDIN_RETRY_COOLDOWN_MS) &&
           cred.email &&
           cred.password &&
           cred.email !== '(session importée)' &&
@@ -246,6 +257,7 @@ export class SessionHealthService implements OnModuleInit {
             this.logger.log(`Session automatically restored and refreshed for ${platform}`);
             return 'refreshed';
           }
+          if (platform === 'linkedin') this.lastLinkedInLoginFailure = Date.now();
         }
 
         this.logger.warn(`Session expired for ${platform} — needs a reconnect from Comptes.`);
@@ -362,6 +374,71 @@ export class SessionHealthService implements OnModuleInit {
         }
       }
 
+
+      // Confirmed live: the stored Free-Work session's jwt cookies had
+      // expired hours earlier and its refresh_token was rejected by the
+      // server (from the host Chrome as well as the container -- not a
+      // browser binding), yet a plain login with the stored credentials
+      // works and yields a session that replays fine. This platform had no
+      // handler here, so every expiry ended in "needs a reconnect from
+      // Comptes" although the credentials were valid. The button name is
+      // matched exactly: the same page also offers "Se connecter avec
+      // LinkedIn" / "Se connecter avec Google".
+      if (platform === 'free_work') {
+        const emailField = page.locator('input[type="email"], input[name*="email" i]').first();
+        const passField = page.locator('input[type="password"]').first();
+        await passField.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+        if ((await emailField.isVisible().catch(() => false)) && (await passField.isVisible().catch(() => false))) {
+          await humanFill(emailField, email);
+          await humanFill(passField, pass);
+          const loginBtn = page.getByRole('button', { name: /^se connecter$/i }).first();
+          if (await loginBtn.isVisible().catch(() => false)) {
+            await humanClick(page, loginBtn).catch(() => loginBtn.click().catch(() => {}));
+          } else {
+            await passField.press('Enter');
+          }
+          // Poll rather than one fixed wait: the login POST and redirect
+          // take a variable few seconds (a fixed 2s read the still-open
+          // form as a rejection).
+          for (let i = 0; i < 10; i++) {
+            await page.waitForTimeout(1000);
+            if (!(await page.locator('input[type="password"]:visible').first().isVisible().catch(() => false))) break;
+          }
+          return !await SESSION_CHECKS.free_work.isLoginWallVisible(page);
+        }
+      }
+
+      if (platform === 'linkedin') {
+        // Two layouts, confirmed live: a returning browser gets "Bon retour
+        // parmi nous" (the remembered account, password field only, ids
+        // generated per render so no #password); an unknown one gets the full
+        // email + password form.
+        const passField = page.locator('input[type="password"]:visible').first();
+        await passField.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+        if (!(await passField.isVisible().catch(() => false))) return false;
+        const userField = page.locator('input#username, input[name="session_key"]').first();
+        if (await userField.isVisible().catch(() => false)) await humanFill(userField, email);
+        await humanFill(passField, pass);
+        // Exact name: the same page offers "S'identifier avec Apple" and
+        // "Continuer avec Google".
+        const signIn = page.getByRole('button', { name: /^(s.?identifier|se connecter|sign in)$/i }).first();
+        if (await signIn.isVisible().catch(() => false)) {
+          await humanClick(page, signIn).catch(() => signIn.click().catch(() => {}));
+        } else {
+          await passField.press('Enter');
+        }
+        for (let i = 0; i < 20; i++) {
+          await page.waitForTimeout(1000);
+          if (!/\/login|\/uas\/login/.test(page.url())) break;
+        }
+        await page.waitForTimeout(2000);
+        // A checkpoint is a security wall, not something to push through.
+        if (/\/checkpoint\//.test(page.url())) {
+          this.logger.warn('LinkedIn a demandé une vérification de sécurité — reconnexion automatique abandonnée.');
+          return false;
+        }
+        return !await SESSION_CHECKS.linkedin.isLoginWallVisible(page);
+      }
 
       if (platform === 'indeed') {
         const emailField = page.locator('#login-email-input, input[name="__email"]').first();

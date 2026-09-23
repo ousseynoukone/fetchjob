@@ -791,7 +791,15 @@ export async function dismissCookieBanner(page: Page): Promise<void> {
 // block page (seen live on Safran's ATS through WTTJ) -- not a challenge
 // that can be passed, but still a security wall, and the note should say
 // so rather than "no form found".
-const SECURITY_CHECK_TEXT = /échec de la vérification|browser check failed|verify you are human|unusual activity|security check|vérification supplémentaire|prouvez que vous êtes humain|validate you are human|vérification de sécurité en cours|vérifiez que vous êtes humain|why have i been blocked|you have been blocked|attention required!? \| cloudflare|access denied \| /i;
+// "on s'assure qu'on s'adresse...à un robot" / "faites glisser...sécuriser
+// votre accès": a DataDome slider-challenge wording confirmed live on APEC
+// via a real screenshot -- it matched none of the phrases above, so
+// hasSecurityCheck read straight through it, the form loop never saw a
+// fillable field on that page, and it reported "champ non renseigné"
+// (a validation problem) for what was actually an anti-bot wall the IP
+// itself was flagged for (the page even names the IP: "un robot est sur
+// le même réseau (IP ...) que vous").
+const SECURITY_CHECK_TEXT = /échec de la vérification|browser check failed|verify you are human|unusual activity|security check|vérification supplémentaire|prouvez que vous êtes humain|validate you are human|vérification de sécurité en cours|vérifiez que vous êtes humain|why have i been blocked|you have been blocked|attention required!? \| cloudflare|access denied \| |non pas à un robot|s[ée]curiser votre acc[èe]s/i;
 
 export async function hasSecurityCheck(page: Page): Promise<boolean> {
   const checkOnce = async () => {
@@ -1546,7 +1554,25 @@ export async function trySolveSlideChallenge(page: Page): Promise<boolean> {
     await page.waitForTimeout(3000);
 
     const stillChallenged = await slideNotice.isVisible().catch(() => false);
-    return !stillChallenged;
+    if (stillChallenged) return false;
+
+    // Confirmed live on APEC (DataDome): a REJECTED slide doesn't leave the
+    // "Faites glisser..." prompt in place -- it swaps it for a "RÉESSAYER"
+    // button while the rest of the challenge page (heading, "un robot est
+    // sur le même réseau...") stays up. The prompt vanishing was being read
+    // as "solved", so the caller went on to hunt for form fields on a
+    // captcha wall and finished with a bogus "champ non renseigné" instead
+    // of the real reason. Solved means the challenge is actually gone.
+    const retryButtonShown = async () => {
+      for (const frame of [page, ...page.frames()]) {
+        const retry = frame.getByText(/^\s*r[ée]essayer\s*$|^\s*try again\s*$/i).first();
+        if (await retry.isVisible({ timeout: 500 }).catch(() => false)) return true;
+      }
+      return false;
+    };
+    const bodyText = await page.locator('body').innerText({ timeout: 1500 }).catch(() => '');
+    if ((await retryButtonShown()) || SECURITY_CHECK_TEXT.test(bodyText)) return false;
+    return true;
   } catch {
     return false;
   }
