@@ -74,6 +74,15 @@ function normalizeCookieExport(raw: any[]): any[] {
 export class BrowserSessionService implements OnModuleDestroy {
   private readonly logger = new Logger(BrowserSessionService.name);
   private browser: Browser | null = null;
+  // Whether `this.browser` is genuinely the host Chrome over CDP, as
+  // opposed to a Chromium launched inside this container. Tracked
+  // separately from the static CDP_URL env var: when the host Chrome is
+  // configured but unreachable, getBrowser() falls back to an internal
+  // launch WHILE CDP_URL stays set, and createContext() needs to know which
+  // one actually happened to decide whether to apply fingerprint spoofing
+  // (only correct for an internal browser — the host Chrome's real values
+  // must never be overwritten with fake ones, see createContext below).
+  private usingHostChrome = false;
 
   private async getBrowser(): Promise<Browser> {
     // Confirmed live: a genuinely dead/unresponsive browser process doesn't
@@ -85,6 +94,7 @@ export class BrowserSessionService implements OnModuleDestroy {
     if (this.browser && !this.browser.isConnected()) {
       this.logger.warn('Cached browser is disconnected — relaunching.');
       this.browser = null;
+      this.usingHostChrome = false;
     }
     if (!this.browser && CDP_URL) {
       // Still patchright: its patches are protocol-level (e.g. never
@@ -94,28 +104,45 @@ export class BrowserSessionService implements OnModuleDestroy {
       // this browser is genuine, and overwriting real values with fake ones
       // would manufacture exactly the contradictions those exist to hide.
       const endpoint = await resolveCdpEndpoint(CDP_URL);
-      // No silent fallback to launching a Chromium in here: that would
-      // quietly reintroduce the exact headless/software-GPU fingerprint this
-      // mode exists to get away from, and every attempt would fail against
-      // anti-bot checks with nothing in the logs explaining why.
-      this.browser = (await stealthChromium.connectOverCDP(endpoint, { timeout: 15000 }).catch((err: any) => {
-        throw new Error(
-          `Host Chrome not reachable at ${endpoint} — start it with start-host-chrome.ps1 (${err.message})`,
+      // Confirmed live (headless vs headed, side by side): once the
+      // internal launch below uses the right SwiftShader flags, it produces
+      // the EXACT SAME fingerprint whether headed or headless -- there's no
+      // fidelity this used to be protecting by refusing to fall back. A host
+      // Chrome that isn't running any more (laptop off, browser closed) used
+      // to hard-fail every single apply/scrape attempt until someone noticed
+      // and restarted it by hand; this now falls back to the internal
+      // browser instead, loudly logged so it's never a silent downgrade.
+      const connected = await stealthChromium.connectOverCDP(endpoint, { timeout: 15000 }).catch((err: any) => {
+        this.logger.warn(
+          `Host Chrome not reachable at ${endpoint} (${err.message}) — falling back to the browser inside this container.`,
         );
-      })) as unknown as Browser;
-      this.logger.log(`Connected to host Chrome over CDP at ${endpoint} (${this.browser.version()})`);
-      return this.browser;
+        return null;
+      });
+      if (connected) {
+        this.browser = connected as unknown as Browser;
+        this.usingHostChrome = true;
+        this.logger.log(`Connected to host Chrome over CDP at ${endpoint} (${this.browser.version()})`);
+        return this.browser;
+      }
     }
     if (!this.browser) {
+      this.usingHostChrome = false;
       const headless = process.env.AUTO_APPLY_HEADLESS !== 'false';
-      // Only meaningful in a GPU-less container. On a real desktop running
-      // headed, disabling the GPU makes Chromium render through SwiftShader,
-      // and a software WebGL renderer string is one of the most common
-      // headless/bot tells behavioral WAFs check -- DataDome's own challenge
-      // page on APEC listed browser behavior as its reason. A headed browser
-      // that still carries that fingerprint gains almost nothing from being
-      // visible; a real desktop Chrome uses the GPU, so this one should too.
-      const gpuArgs = headless ? ['--disable-gpu', '--disable-software-rasterizer', '--disable-accelerated-2d-canvas'] : [];
+      // Confirmed live, headless AND headed (Xvfb), side by side: without
+      // these flags `canvas.getContext('webgl')` returns null outright --
+      // not a software-renderer string, no WebGL at all, which no real
+      // browser ever does and is a far stronger bot tell than any renderer
+      // string. This used to instead pass `--disable-software-rasterizer`
+      // on the assumption that a software renderer string was the bigger
+      // risk; that flag is what was breaking WebGL, and the assumption was
+      // never actually tested. With these three flags, headless and headed
+      // report the IDENTICAL fingerprint (SwiftShader via ANGLE/Vulkan) --
+      // there turned out to be no fidelity difference between the two to
+      // trade off. AUTO_APPLY_HEADLESS still exists as a manual override
+      // (headed needs the Xvfb virtual display docker-entrypoint.sh starts
+      // when there's no host Chrome), but the default, headless, is not
+      // giving up anything by being simpler to deploy.
+      const gpuArgs = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'];
       this.browser = (await stealthChromium.launch({
         headless,
         // Without this, Playwright launches its lightweight
@@ -254,7 +281,7 @@ export class BrowserSessionService implements OnModuleDestroy {
     // and a fixed viewport (which remote-login's screencast coordinates
     // assume) are applied; everything else is left to the browser.
     const context = (await browser.newContext(
-      CDP_URL
+      this.usingHostChrome
         ? {
             viewport: { width: 1280, height: 800 },
             // Emulated separately from the viewport: in headless mode the
@@ -282,7 +309,7 @@ export class BrowserSessionService implements OnModuleDestroy {
 
     // Inject fingerprint overrides before any page script runs -- never over
     // CDP (see above).
-    if (!CDP_URL && siteName !== 'hellowork' && siteName !== 'apec') {
+    if (!this.usingHostChrome && siteName !== 'hellowork' && siteName !== 'apec') {
       await context.addInitScript(buildFingerprintScript(fp));
     }
 

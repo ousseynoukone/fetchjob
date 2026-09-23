@@ -342,25 +342,34 @@ export async function createStealthContext(options: StealthContextOptions = {}) 
       console.warn(`[stealth-browser] proxy ${options.proxy.server} ignored: scraping goes through the host Chrome (BROWSER_CDP_URL), which has no per-context proxy.`);
     }
     const endpoint = await resolveCdpEndpoint(CDP_URL);
-    let browser: import('patchright').Browser;
-    try {
-      browser = await chromium.connectOverCDP(endpoint);
-    } catch (error: any) {
-      throw new Error(`Host Chrome not reachable at ${endpoint} for scraping — start it with start-host-chrome.ps1 (${error.message})`);
-    }
-    const context = await browser.newContext({
-      viewport: { width: 1280, height: 800 },
-      screen: { width: 1920, height: 1080 },
-      colorScheme: 'light',
+    // Confirmed live: this used to throw here, which took down the WHOLE
+    // campaign run the moment the host Chrome wasn't running (not just this
+    // one source) -- the very first scrape call fails, executeRun's own
+    // try/catch has nothing to fall back to, and the run ends with zero
+    // offers scanned. Falls through to the in-container launch below
+    // instead, logged clearly so it's visible this happened rather than
+    // silently changing behaviour.
+    const browser = await chromium.connectOverCDP(endpoint).catch((error: any) => {
+      console.warn(
+        `[stealth-browser] Host Chrome not reachable at ${endpoint} for scraping (${error.message}) — falling back to the browser inside this container.`,
+      );
+      return null;
     });
-    if (options.siteName) {
-      const saved = loadCookies(`${options.siteName}-host`);
-      if (saved.length > 0) {
-        await context.addCookies(saved as Parameters<typeof context.addCookies>[0]).catch(() => {});
+    if (browser) {
+      const context = await browser.newContext({
+        viewport: { width: 1280, height: 800 },
+        screen: { width: 1920, height: 1080 },
+        colorScheme: 'light',
+      });
+      if (options.siteName) {
+        const saved = loadCookies(`${options.siteName}-host`);
+        if (saved.length > 0) {
+          await context.addCookies(saved as Parameters<typeof context.addCookies>[0]).catch(() => {});
+        }
       }
+      const fp = withCurrentChromeVersion(FINGERPRINT_PROFILES[0], browser.version());
+      return { browser, context, fp };
     }
-    const fp = withCurrentChromeVersion(FINGERPRINT_PROFILES[0], browser.version());
-    return { browser, context, fp };
   }
 
   const rawFp = options.profileIndex !== undefined ? FINGERPRINT_PROFILES[options.profileIndex] : randomProfile();
@@ -388,6 +397,13 @@ export async function createStealthContext(options: StealthContextOptions = {}) 
       '--no-first-run',
       '--disable-infobars',
       '--lang=fr-FR',
+      // See browser-session.service.ts's identical flags: without these,
+      // canvas.getContext('webgl') returns null in this container, which is
+      // a stronger bot tell than any software-renderer string (no real
+      // browser has zero WebGL support).
+      '--use-gl=angle',
+      '--use-angle=swiftshader',
+      '--enable-unsafe-swiftshader',
     ],
     ...(options.proxy ? { proxy: options.proxy } : {}),
   });

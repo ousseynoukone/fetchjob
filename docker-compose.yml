@@ -71,17 +71,23 @@ services:
       - FRANCE_TRAVAIL_CLIENT_SECRET=${FRANCE_TRAVAIL_CLIENT_SECRET:-}
       - ADZUNA_APP_ID=${ADZUNA_APP_ID:-}
       - ADZUNA_API_KEY=${ADZUNA_API_KEY:-}
-      # Same headless default as production (see render.yaml) — no display
-      # exists inside the container anyway.
+      # Same headless default as production (see render.yaml). When
+      # BROWSER_CDP_URL is empty (no host Chrome) and this is "false", the
+      # container's own entrypoint (docker-entrypoint.sh) starts Xvfb so
+      # Chromium has a display to open a window on -- still no real GPU
+      # though, so this trades a headless fingerprint for a software-GPU one
+      # rather than a genuinely undetectable one; the host Chrome path
+      # remains the only way to get a real hardware fingerprint.
       - AUTO_APPLY_HEADLESS=${AUTO_APPLY_HEADLESS:-true}
       # Drive a REAL desktop Chrome on the host instead of launching one in
       # here -- see apps/api/src/common/cdp-endpoint.ts. The host Chrome is
       # started separately (start-host-chrome.ps1) with --remote-debugging-
       # port=9222; Docker Desktop routes host.docker.internal to the host
-      # loopback, so no port forwarding is needed. Leave empty to fall back
-      # to launching a (headless, software-rendered) Chromium inside the
-      # container, which is what anti-bot systems kept flagging.
-      - BROWSER_CDP_URL=${BROWSER_CDP_URL:-http://host.docker.internal:9222}
+      # loopback, so no port forwarding is needed. Bare `-` (not `:-`) so
+      # setting this to an explicitly empty value in .env.local actually
+      # falls through to launching a Chromium inside the container instead
+      # of always retrying the host Chrome URL.
+      - BROWSER_CDP_URL=${BROWSER_CDP_URL-http://host.docker.internal:9222}
       # Render caps this at 160 to fit its 512MB container — confirmed live
       # that this same limit can crash the renderer outright on a heavy page
       # (LinkedIn's Easy Apply modal) even locally, where there's no such
