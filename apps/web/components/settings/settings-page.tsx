@@ -40,6 +40,18 @@ const NOTIFICATION_FIELDS: FieldSpec[] = [
     placeholder: '4',
     type: 'number',
   },
+  {
+    key: 'responseCheckIntervalHours',
+    label: 'Vérification des réponses recruteurs (Gmail) — toutes les X heures',
+    placeholder: '12',
+    type: 'number',
+  },
+  {
+    key: 'platformStatusCheckIntervalHours',
+    label: 'Vérification des statuts directement sur les plateformes (ex. HelloWork) — toutes les X heures',
+    placeholder: '12',
+    type: 'number',
+  },
 ];
 
 const PLATFORM_LABELS: Record<SupportedPlatform, string> = {

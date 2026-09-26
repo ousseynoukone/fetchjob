@@ -414,6 +414,81 @@ Reponds uniquement en JSON avec les champs: strengths (array de 3 max), gaps (ar
     }
   }
 
+  // Called by ApplicationResponseTrackerService with a batch of recent inbox
+  // emails and the candidatures currently awaiting a reply. Matching by AI
+  // rather than keyword/sender rules because a recruiter's reply comes from
+  // an arbitrary address ("noreply@myworkday.com", a named recruiter's own
+  // mailbox...) with no reliable link back to the company name stored on
+  // the candidature, and because "refused" is phrased a hundred different
+  // ways across languages and tones that a regex list would chase forever.
+  async matchApplicationResponses(
+    emails: { index: number; from: string; subject: string; date: string; snippet: string }[],
+    applications: { id: string; company: string; jobTitle: string; appliedAt: string }[],
+  ): Promise<
+    {
+      emailIndex: number;
+      applicationId: string;
+      verdict: 'rejected' | 'interview' | 'offer' | 'update' | 'not_related';
+      summary: string;
+      evidence: string;
+    }[]
+  > {
+    if (!emails.length || !applications.length) return [];
+
+    const prompt = `Tu analyses une boite mail pour retrouver des reponses de recruteurs a des candidatures envoyees.
+
+CANDIDATURES EN ATTENTE DE REPONSE (JSON, un id par candidature) :
+${JSON.stringify(applications)}
+
+EMAILS RECENTS DE LA BOITE DE RECEPTION (JSON, un index par email) :
+${JSON.stringify(emails)}
+
+Pour CHAQUE email qui correspond clairement a l'une de ces candidatures (meme entreprise ou poste, expediteur plausible type RH/recrutement/ATS), determine le verdict :
+- "rejected" : refus / candidature non retenue
+- "interview" : proposition d'entretien / d'echange telephonique
+- "offer" : proposition d'embauche / offre
+- "update" : reponse liee a la candidature mais sans verdict clair (accuse de reception, demande d'info, etc.)
+- Ignore purement et simplement tout email qui n'a clairement aucun rapport avec une de ces candidatures -- ne le mets pas dans la reponse.
+
+Reponds UNIQUEMENT en JSON strict de la forme {"matches":[{"emailIndex":number,"applicationId":string,"verdict":"rejected"|"interview"|"offer"|"update","summary":string,"evidence":string}]}.
+- "summary" : phrase courte en francais (moins de 120 caracteres) resumant ce que dit l'email.
+- "evidence" : la phrase ou le passage EXACT (copie-colle depuis le snippet fourni, mot pour mot, PAS une reformulation) qui justifie le verdict choisi -- l'utilisateur doit pouvoir verifier lui-meme que le verdict est correct en lisant ce passage. Moins de 250 caracteres. Si aucun passage precis ne justifie a lui seul le verdict, prends le passage le plus pertinent du snippet tel quel.`;
+
+    try {
+      const response = await (await this.getClient()).chat.completions.create({
+        model: MODEL,
+        temperature: 0,
+        messages: [{ role: 'user', content: stripLoneSurrogates(prompt) }],
+        response_format: { type: 'json_object' },
+      });
+
+      const raw = response.choices[0]?.message?.content || '{}';
+      const parsed = cleanAndParseJson<{ matches?: any[] }>(raw, { matches: [] });
+      const matches = Array.isArray(parsed.matches) ? parsed.matches : [];
+      const validAppIds = new Set(applications.map((a) => a.id));
+      const validVerdicts = new Set(['rejected', 'interview', 'offer', 'update']);
+
+      return matches
+        .filter(
+          (m) =>
+            typeof m?.emailIndex === 'number' &&
+            typeof m?.applicationId === 'string' &&
+            validAppIds.has(m.applicationId) &&
+            validVerdicts.has(m?.verdict),
+        )
+        .map((m) => ({
+          emailIndex: m.emailIndex,
+          applicationId: m.applicationId,
+          verdict: m.verdict,
+          summary: typeof m.summary === 'string' ? m.summary.slice(0, 200) : '',
+          evidence: typeof m.evidence === 'string' ? m.evidence.slice(0, 300) : '',
+        }));
+    } catch (err: any) {
+      this.logger.warn(`matchApplicationResponses failed: ${err.message}`);
+      return [];
+    }
+  }
+
   // Called only as a fallback when the auto-apply bot's own hardcoded
   // selectors/text-matching couldn't resolve the current form step (an
   // unrecognized button label, an unfamiliar screening question) — most

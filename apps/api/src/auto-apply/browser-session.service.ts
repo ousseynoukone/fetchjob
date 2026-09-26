@@ -448,14 +448,11 @@ export class BrowserSessionService implements OnModuleDestroy {
       managed.lastUsed = Date.now();
       try {
         const pages = context.pages();
-        // Close extra pages that were opened during the job, keep one page navigated to about:blank
-        for (let i = 1; i < pages.length; i++) {
-          if (!pages[i].isClosed()) {
-            await pages[i].close().catch(() => {});
+        // Close all pages so no orphan or empty windows/tabs linger
+        for (const page of pages) {
+          if (!page.isClosed()) {
+            await page.close().catch(() => {});
           }
-        }
-        if (pages[0] && !pages[0].isClosed()) {
-          await pages[0].goto('about:blank').catch(() => {});
         }
       } catch (err: any) {
         this.logger.warn(`Failed to clean up pages in continuous context [${key}]: ${err.message}`);

@@ -32,6 +32,8 @@ import {
   Send,
   Eye,
   Check,
+  Trophy,
+  MessageSquare,
 } from 'lucide-react';
 
 // Main category definitions requested by user:
@@ -692,7 +694,36 @@ export default function ApplicationsList() {
                         <span>Candidature transmise avec succès le {formatDate(app.appliedAt)}</span>
                       </div>
                     )}
+
+                    {/* Interview banner */}
+                    {app.status === 'interview' && (
+                      <div className="mt-2.5 text-[11px] text-warning flex items-center gap-1.5 bg-warning/8 border border-warning/20 rounded-lg px-2 py-1">
+                        <Clock className="w-3 h-3 text-warning shrink-0" />
+                        <span>
+                          {(app as any).interviewDate
+                            ? <>Entretien le <strong>{formatDate((app as any).interviewDate)}</strong>{(app as any).interviewType ? ` · ${(app as any).interviewType}` : ''}</>
+                            : 'Entretien à planifier'}
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Offer salary banner */}
+                    {app.status === 'offer' && (app as any).offerSalary && (
+                      <div className="mt-2.5 text-[11px] text-success flex items-center gap-1.5 bg-success/8 border border-success/20 rounded-lg px-2 py-1">
+                        <span>💰</span>
+                        <span>Offre : <strong>{(app as any).offerSalary}</strong></span>
+                      </div>
+                    )}
+
+                    {/* Rejection note */}
+                    {app.status === 'rejected' && (app as any).feedbackNote && (
+                      <div className="mt-2.5 text-[11px] text-base-content/50 flex items-start gap-1.5 bg-base-300/40 border border-base-300 rounded-lg px-2 py-1">
+                        <MessageSquare className="w-3 h-3 shrink-0 mt-0.5" />
+                        <span className="line-clamp-1 italic">{(app as any).feedbackNote}</span>
+                      </div>
+                    )}
                   </div>
+
 
                   {/* Bottom Footer Actions */}
                   <div className="flex items-center justify-between pt-3 mt-3 border-t border-base-300/50 text-xs text-base-content/40">

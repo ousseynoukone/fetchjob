@@ -298,7 +298,7 @@ model JobOffer {
   // native form), "external" = the platform redirects to the employer's
   // own ATS, "unknown" = the source gave no signal at scrape time.
   // Campaign runs prepare and apply to internal offers first.
-  applyMode String @default("unknown")
+  applyMode    String  @default("unknown")
 
   postedAt  DateTime?
   scrapedAt DateTime  @default(now())
@@ -383,8 +383,48 @@ model Application {
   verificationScreenshotTakenAt DateTime?
 
   appliedAt DateTime?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+
+  // Post-application tracking (filled manually by the user)
+  // These fields let the user record what happened after the application was sent:
+  // whether they got an interview, an offer, or a rejection, and any relevant notes.
+  interviewDate DateTime? // When the interview is scheduled
+  interviewType String? // e.g. "Téléphonique", "Visio", "Présentiel", "Technique"
+  feedbackNote  String?   @db.Text // Free-form notes about the process
+  rejectedAt    DateTime? // When the rejection was received
+  offerSalary   String? // Salary offered (free text, e.g. "45k€/an")
+
+  // Set by ApplicationResponseTrackerService (email/response-tracker.service.ts)
+  // when its periodic Gmail scan matches an incoming email to this candidature
+  // and infers an outcome -- distinct from the fields above, which are filled
+  // by hand. hasUnseenUpdate drives the "Mises à jour" nav badge; cleared via
+  // POST /candidatures/:id/updates/seen once the person has looked. autoUpdateAt
+  // is separate from `updatedAt` (which changes on any edit at all) so "is
+  // there something new to look at" can be answered without false positives
+  // from unrelated saves.
+  hasUnseenUpdate   Boolean   @default(false)
+  autoUpdateSummary String?   @db.Text
+  autoUpdateAt      DateTime?
+
+  // Explicit verdict, distinct from `status` -- `status` alone couldn't tell
+  // apart "a needs_review row got confirmed sent" from "an already-applied
+  // row got an inconclusive reply" (both used to land on status 'applied',
+  // showing the same misleading "Réponse reçue" badge for two very
+  // different meanings -- confirmed confusing directly by the user).
+  // One of 'rejected' | 'interview' | 'offer' | 'confirmed' | 'update'.
+  autoUpdateVerdict String?
+  // 'gmail' | 'hellowork' | ... -- which detector produced this update, so
+  // the UI can label the source truthfully instead of implying one system.
+  autoUpdateSource  String?
+  // The literal evidence a person can check for themselves instead of just
+  // trusting the AI/scraper's own summary -- a quoted email excerpt (+
+  // from/subject/date) for Gmail-sourced updates, or the exact status text
+  // read off the platform's own page for HelloWork-sourced ones. Requested
+  // directly by the user after the AI-written summary alone gave no way to
+  // verify a verdict against its actual source.
+  autoUpdateEvidence String?  @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
   user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -479,6 +519,25 @@ model Settings {
   autoApplyMaxAiCalls String?
   // Internal bookkeeping only — never shown or edited in the UI.
   lastDigestSentAt    DateTime?
+
+  // How often ApplicationResponseTrackerService scans Gmail for recruiter
+  // replies to "applied" candidatures — text like every other Settings
+  // field; parsed where used, defaults to 12 (twice a day) when unset.
+  responseCheckIntervalHours String?
+  // Internal bookkeeping only — never shown or edited in the UI.
+  lastResponseCheckAt        DateTime?
+
+  // How often PlatformStatusCheckerService scrapes each supported
+  // platform's own "my applications" page (currently: HelloWork's
+  // mes-candidatures.html, which shows a native "Refusée" status set by
+  // the platform itself for recruiters using HelloWork's own ATS —
+  // confirmed live, distinct from the "Envoyée"/"Consultée" states and
+  // from the self-reported "avez-vous eu un retour" prompt shown for
+  // recruiters who don't). Same text/parsed-where-used shape as the other
+  // interval fields, defaults to 12 when unset.
+  platformStatusCheckIntervalHours String?
+  // Internal bookkeeping only — never shown or edited in the UI.
+  lastPlatformStatusCheckAt        DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

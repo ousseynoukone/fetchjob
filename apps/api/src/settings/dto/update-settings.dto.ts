@@ -48,4 +48,12 @@ export class UpdateSettingsDto {
   @IsString()
   @IsOptional()
   autoApplyMaxAiCalls?: string;
+
+  @IsString()
+  @IsOptional()
+  responseCheckIntervalHours?: string;
+
+  @IsString()
+  @IsOptional()
+  platformStatusCheckIntervalHours?: string;
 }

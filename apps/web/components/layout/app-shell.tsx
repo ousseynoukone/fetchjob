@@ -2,16 +2,19 @@
 
 import buildInfo from '@/lib/build-info.json';
 
+import { useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, FileText, Rocket, Briefcase, Sparkles, Settings, HelpCircle, BookOpen, ShieldCheck } from 'lucide-react';
+import { LayoutDashboard, FileText, Rocket, Briefcase, Sparkles, Settings, HelpCircle, BookOpen, ShieldCheck, BellRing } from 'lucide-react';
 import clsx from 'clsx';
+import { useUpdatesStore } from '@/lib/updates-store';
 
 const NAV_ITEMS = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/mon-cv', label: 'Mon CV', icon: FileText },
   { href: '/campagne', label: 'Campagne', icon: Rocket },
   { href: '/candidatures', label: 'Candidatures', icon: Briefcase },
+  { href: '/mises-a-jour', label: 'Mises à jour', icon: BellRing },
   { href: '/verification', label: 'Vérification', icon: ShieldCheck },
   { href: '/connaissances', label: 'Connaissances', icon: BookOpen },
   { href: '/questions', label: 'Questions', icon: HelpCircle },
@@ -20,6 +23,18 @@ const NAV_ITEMS = [
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const unseenCount = useUpdatesStore((s) => s.unseenCount);
+  const startPolling = useUpdatesStore((s) => s.startPolling);
+  const stopPolling = useUpdatesStore((s) => s.stopPolling);
+
+  // Global, not per-page: AppShell wraps every screen, so the badge stays
+  // current no matter where the person navigates, and the interval is only
+  // ever created once regardless of how many pages mount AppShell during a
+  // session.
+  useEffect(() => {
+    startPolling();
+    return () => stopPolling();
+  }, [startPolling, stopPolling]);
 
   return (
     <div className="min-h-screen flex bg-base-100">
@@ -48,6 +63,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               >
                 <Icon className="w-4 h-4" />
                 {item.label}
+                {item.href === '/mises-a-jour' && unseenCount > 0 && (
+                  <span className="ml-auto badge badge-sm badge-primary">{unseenCount}</span>
+                )}
               </Link>
             );
           })}

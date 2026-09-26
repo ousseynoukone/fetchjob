@@ -23,9 +23,23 @@ import {
   FileText,
   CalendarClock,
   CalendarCheck,
+  Phone,
+  Video,
+  Users,
+  Code2,
+  Trophy,
+  XCircle,
+  MessageSquare,
+  Pencil,
+  Save,
+  X,
+  Clock,
+  Euro,
+  ChevronDown,
+  Star,
 } from 'lucide-react';
 
-function formatDateTime(iso?: string) {
+function formatDateTime(iso?: string | null) {
   if (!iso) return null;
   return new Date(iso).toLocaleDateString('fr-FR', {
     day: 'numeric',
@@ -36,21 +50,26 @@ function formatDateTime(iso?: string) {
   });
 }
 
+function formatDateForInput(iso?: string | null): string {
+  if (!iso) return '';
+  return new Date(iso).toISOString().slice(0, 16); // "YYYY-MM-DDTHH:mm"
+}
+
 // The API already names these files (see buildCvFileName) — honour it rather
 // than inventing a name here. Falls back only if the header is unreadable.
 function fileNameFromResponse(response: { headers?: Record<string, unknown> }, fallback: string): string {
   const header = String(response.headers?.['content-disposition'] ?? '');
-  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(header);
+  const match = /filename\*?=(?:UTF-8'')?\"?([^";]+)\"?/i.exec(header);
   return match ? decodeURIComponent(match[1].trim()) : fallback;
 }
 
-const TABS = ['Offre', 'CV adapté', 'Lettre de motivation', 'Analyse IA', 'Matching'];
+const TABS = ['Offre', 'Suivi', 'CV adapté', 'Lettre de motivation', 'Analyse IA', 'Matching'];
 
 const STATUS_LABEL: Record<string, string> = {
   to_apply: 'À postuler',
   applied: 'Envoyée',
   interview: 'Entretien',
-  offer: 'Offre',
+  offer: 'Offre reçue',
   rejected: 'Refusée',
   ignored: 'Ignorée',
   needs_review: 'À vérifier',
@@ -66,17 +85,61 @@ const STATUS_STYLE: Record<string, string> = {
   needs_review: 'badge-warning',
 };
 
+const INTERVIEW_TYPES = [
+  { value: 'Téléphonique', label: 'Téléphonique', icon: Phone, color: 'text-blue-400' },
+  { value: 'Visio', label: 'Visio / Teams / Zoom', icon: Video, color: 'text-purple-400' },
+  { value: 'Présentiel', label: 'Présentiel', icon: Users, color: 'text-emerald-400' },
+  { value: 'Technique', label: 'Test Technique', icon: Code2, color: 'text-amber-400' },
+  { value: 'RH', label: 'Entretien RH', icon: Star, color: 'text-pink-400' },
+];
+
+// Status pipeline steps
+const PIPELINE_STEPS = [
+  { status: 'to_apply', label: 'À postuler', color: 'bg-info' },
+  { status: 'applied', label: 'Envoyée', color: 'bg-primary' },
+  { status: 'interview', label: 'Entretien', color: 'bg-warning' },
+  { status: 'offer', label: 'Offre', color: 'bg-success' },
+];
+
+const REJECTED_STEP = { status: 'rejected', label: 'Refusée', color: 'bg-error' };
+
+function getPipelineIndex(status: string) {
+  const idx = PIPELINE_STEPS.findIndex((s) => s.status === status);
+  return idx >= 0 ? idx : -1;
+}
+
 export default function ApplicationDetail({ id }: { id: string }) {
   const router = useRouter();
-  const { current, loading, error, fetchById, updateStatus, markApplied, regenerate, retryOne } = useApplicationsStore();
+  const { current, loading, error, fetchById, updateStatus, markApplied, regenerate, retryOne, updateTracking } = useApplicationsStore();
   const [tab, setTab] = useState('Offre');
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showRemoteLogin, setShowRemoteLogin] = useState(false);
 
+  // Tracking form state
+  const [trackingEdit, setTrackingEdit] = useState(false);
+  const [trackingForm, setTrackingForm] = useState({
+    interviewDate: '',
+    interviewType: '',
+    feedbackNote: '',
+    offerSalary: '',
+  });
+
   useEffect(() => {
     fetchById(id);
   }, [id, fetchById]);
+
+  // Sync form with current data when application loads or changes
+  useEffect(() => {
+    if (current) {
+      setTrackingForm({
+        interviewDate: formatDateForInput(current.interviewDate),
+        interviewType: current.interviewType ?? '',
+        feedbackNote: current.feedbackNote ?? '',
+        offerSalary: current.offerSalary ?? '',
+      });
+    }
+  }, [current?.id, current?.interviewDate, current?.interviewType, current?.feedbackNote, current?.offerSalary]);
 
   useEffect(() => {
     if (!notice) return;
@@ -91,6 +154,30 @@ export default function ApplicationDetail({ id }: { id: string }) {
       if (successMessage) setNotice(successMessage);
     } catch {
       // error is already surfaced via the store's `error` state and the toast below
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleStatusChange = async (newStatus: string) => {
+    setBusy('status-' + newStatus);
+    try {
+      await updateTracking(id, { status: newStatus });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleSaveTracking = async () => {
+    setBusy('save-tracking');
+    try {
+      await updateTracking(id, {
+        interviewDate: trackingForm.interviewDate || null,
+        interviewType: trackingForm.interviewType || null,
+        feedbackNote: trackingForm.feedbackNote || null,
+        offerSalary: trackingForm.offerSalary || null,
+      });
+      setTrackingEdit(false);
     } finally {
       setBusy(null);
     }
@@ -144,6 +231,9 @@ export default function ApplicationDetail({ id }: { id: string }) {
 
   if (!current) return null;
 
+  const pipelineIdx = getPipelineIndex(current.status);
+  const isRejected = current.status === 'rejected';
+
   return (
     <AppShell>
       <div className="max-w-4xl mx-auto px-8 py-10">
@@ -154,6 +244,7 @@ export default function ApplicationDetail({ id }: { id: string }) {
           <ArrowLeft className="w-4 h-4" /> Retour aux candidatures
         </button>
 
+        {/* Header Card */}
         <div className="bg-base-200 border border-base-300 rounded-2xl p-6 mb-6">
           <div className="flex justify-between items-start gap-4">
             <div>
@@ -202,6 +293,62 @@ export default function ApplicationDetail({ id }: { id: string }) {
             </div>
           </div>
 
+          {/* Status Pipeline */}
+          <div className="mt-5 pt-5 border-t border-base-300/50">
+            <p className="text-xs text-base-content/40 mb-3 font-medium uppercase tracking-wider">Progression de la candidature</p>
+            <div className="flex items-center gap-0">
+              {PIPELINE_STEPS.map((step, idx) => {
+                const isActive = current.status === step.status;
+                const isPassed = !isRejected && pipelineIdx > idx;
+                const isCurrent = isActive;
+                return (
+                  <React.Fragment key={step.status}>
+                    <button
+                      onClick={() => !isCurrent && handleStatusChange(step.status)}
+                      disabled={!!busy || isCurrent}
+                      title={`Marquer comme "${step.label}"`}
+                      className={`flex flex-col items-center px-3 py-2 rounded-xl text-xs font-medium transition-all gap-1 ${
+                        isCurrent
+                          ? 'bg-primary/20 text-primary border border-primary/40 cursor-default'
+                          : isPassed
+                          ? 'bg-success/10 text-success/70 border border-success/20 hover:bg-success/20 hover:text-success cursor-pointer'
+                          : 'bg-base-300/30 text-base-content/40 border border-base-300/50 hover:bg-base-300/60 hover:text-base-content/70 cursor-pointer'
+                      }`}
+                    >
+                      {isPassed && !isCurrent ? (
+                        <Check className="w-3.5 h-3.5" />
+                      ) : (
+                        <div className={`w-2.5 h-2.5 rounded-full ${isCurrent ? 'bg-primary animate-pulse' : isPassed ? 'bg-success' : 'bg-base-content/20'}`} />
+                      )}
+                      {step.label}
+                    </button>
+                    {idx < PIPELINE_STEPS.length - 1 && (
+                      <div className={`h-0.5 flex-1 min-w-[16px] ${isPassed && !isRejected ? 'bg-success/40' : 'bg-base-300/50'}`} />
+                    )}
+                  </React.Fragment>
+                );
+              })}
+              {/* Rejected step — outside the main pipeline */}
+              <div className="flex items-center gap-0 ml-2">
+                <div className="h-0.5 w-4 border-t-2 border-dashed border-base-300/40" />
+                <button
+                  onClick={() => !isRejected && handleStatusChange('rejected')}
+                  disabled={!!busy || isRejected}
+                  title="Marquer comme refusée"
+                  className={`flex flex-col items-center px-3 py-2 rounded-xl text-xs font-medium transition-all gap-1 ${
+                    isRejected
+                      ? 'bg-error/20 text-error border border-error/40 cursor-default'
+                      : 'bg-base-300/20 text-base-content/40 border border-base-300/30 hover:bg-error/10 hover:text-error/70 hover:border-error/20 cursor-pointer'
+                  }`}
+                >
+                  <XCircle className="w-3.5 h-3.5" />
+                  {REJECTED_STEP.label}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Alerts */}
           {current.status === 'needs_review' && current.autoApplyNote && (
             <div className="alert alert-warning mt-5 text-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="flex items-center gap-2.5">
@@ -251,14 +398,60 @@ export default function ApplicationDetail({ id }: { id: string }) {
             </div>
           )}
 
+          {/* Interview info banner */}
+          {current.status === 'interview' && current.interviewDate && (
+            <div className="mt-4 bg-warning/10 border border-warning/25 rounded-xl px-4 py-3 flex items-center gap-3">
+              <Clock className="w-5 h-5 text-warning shrink-0" />
+              <div>
+                <p className="text-sm font-semibold text-warning">Entretien prévu</p>
+                <p className="text-xs text-base-content/60">
+                  {formatDateTime(current.interviewDate)}
+                  {current.interviewType && <> · <span className="font-medium">{current.interviewType}</span></>}
+                </p>
+              </div>
+              <button
+                onClick={() => { setTab('Suivi'); setTrackingEdit(true); }}
+                className="btn btn-xs btn-ghost ml-auto gap-1"
+              >
+                <Pencil className="w-3 h-3" /> Modifier
+              </button>
+            </div>
+          )}
+
+          {/* Offer info banner */}
+          {current.status === 'offer' && current.offerSalary && (
+            <div className="mt-4 bg-success/10 border border-success/25 rounded-xl px-4 py-3 flex items-center gap-3">
+              <Euro className="w-5 h-5 text-success shrink-0" />
+              <div>
+                <p className="text-sm font-semibold text-success">Offre reçue</p>
+                <p className="text-xs text-base-content/60">Salaire proposé : <strong>{current.offerSalary}</strong></p>
+              </div>
+            </div>
+          )}
+
+          {/* Rejection banner */}
+          {current.status === 'rejected' && (
+            <div className="mt-4 bg-error/10 border border-error/25 rounded-xl px-4 py-3 flex items-center gap-3">
+              <XCircle className="w-5 h-5 text-error shrink-0" />
+              <div>
+                <p className="text-sm font-semibold text-error">Candidature refusée</p>
+                {current.rejectedAt && (
+                  <p className="text-xs text-base-content/60">Le {formatDateTime(current.rejectedAt)}</p>
+                )}
+                {current.feedbackNote && (
+                  <p className="text-xs text-base-content/60 mt-0.5 italic">« {current.feedbackNote} »</p>
+                )}
+              </div>
+              <button
+                onClick={() => { setTab('Suivi'); setTrackingEdit(true); }}
+                className="btn btn-xs btn-ghost ml-auto gap-1"
+              >
+                <Pencil className="w-3 h-3" /> Notes
+              </button>
+            </div>
+          )}
+
           {current.screenshotTakenAt && (
-            // Always open, success or failure -- it used to expand only for
-            // needs_review, so a successfully sent candidature hid its
-            // screenshot behind a collapsed one-line summary that read as
-            // "no capture". The screenshot is the only record of what the
-            // page actually showed at the moment of the attempt, which
-            // matters just as much for confirming a success as for
-            // diagnosing a failure.
             <details className="mt-5" open>
               <summary className="cursor-pointer text-sm text-base-content/60 hover:text-base-content">
                 Capture de la tentative ({formatDateTime(current.screenshotTakenAt)})
@@ -330,6 +523,7 @@ export default function ApplicationDetail({ id }: { id: string }) {
           </div>
         </div>
 
+        {/* Tabs */}
         <div className="flex gap-1 mb-4 overflow-x-auto">
           {TABS.map((t) => (
             <button
@@ -342,15 +536,216 @@ export default function ApplicationDetail({ id }: { id: string }) {
               }`}
             >
               {t}
+              {t === 'Suivi' && (current.interviewDate || current.feedbackNote || current.offerSalary) && (
+                <span className="ml-1.5 w-1.5 h-1.5 rounded-full bg-primary inline-block align-middle" />
+              )}
             </button>
           ))}
         </div>
 
+        {/* Tab Content */}
         <div className="bg-base-200 border border-base-300 rounded-2xl p-6 min-h-[240px]">
           {tab === 'Offre' && (
             <p className="text-sm leading-relaxed whitespace-pre-line text-base-content/80">
               {current.jobOffer?.description || 'Aucune description disponible.'}
             </p>
+          )}
+
+          {/* === SUIVI TAB === */}
+          {tab === 'Suivi' && (
+            <div className="space-y-5">
+              <div className="flex items-center justify-between">
+                <h2 className="text-base font-semibold">Suivi de la candidature</h2>
+                {!trackingEdit ? (
+                  <button
+                    onClick={() => setTrackingEdit(true)}
+                    className="btn btn-ghost btn-sm gap-1.5"
+                  >
+                    <Pencil className="w-3.5 h-3.5" /> Modifier
+                  </button>
+                ) : (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => { setTrackingEdit(false); }}
+                      className="btn btn-ghost btn-sm gap-1"
+                    >
+                      <X className="w-3.5 h-3.5" /> Annuler
+                    </button>
+                    <button
+                      onClick={handleSaveTracking}
+                      disabled={busy === 'save-tracking'}
+                      className="btn btn-primary btn-sm gap-1.5"
+                    >
+                      <Save className="w-3.5 h-3.5" />
+                      {busy === 'save-tracking' ? 'Enregistrement...' : 'Enregistrer'}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Status quick-change buttons */}
+              <div>
+                <p className="text-xs text-base-content/50 mb-2 font-medium uppercase tracking-wider">Changer le statut</p>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { s: 'applied', label: 'Envoyée', icon: Check, cls: 'btn-success' },
+                    { s: 'interview', label: 'Entretien', icon: Clock, cls: 'btn-warning' },
+                    { s: 'offer', label: 'Offre reçue', icon: Trophy, cls: 'btn-accent' },
+                    { s: 'rejected', label: 'Refusée', icon: XCircle, cls: 'btn-error' },
+                    { s: 'ignored', label: 'Ignorer', icon: Archive, cls: 'btn-ghost' },
+                  ].map(({ s, label, icon: Icon, cls }) => (
+                    <button
+                      key={s}
+                      onClick={() => handleStatusChange(s)}
+                      disabled={!!busy || current.status === s}
+                      className={`btn btn-sm gap-1.5 ${current.status === s ? cls + ' opacity-100 cursor-default' : 'btn-outline opacity-70 hover:opacity-100'}`}
+                    >
+                      <Icon className="w-3.5 h-3.5" />
+                      {label}
+                      {current.status === s && <span className="badge badge-xs badge-neutral ml-0.5">Actuel</span>}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="divider my-2" />
+
+              {/* Entretien section */}
+              <div className="bg-base-300/30 rounded-xl p-4 space-y-3">
+                <div className="flex items-center gap-2 mb-1">
+                  <Clock className="w-4 h-4 text-warning" />
+                  <h3 className="text-sm font-semibold">Entretien</h3>
+                </div>
+
+                {trackingEdit ? (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-xs text-base-content/50 mb-1 block">Date et heure</label>
+                      <input
+                        type="datetime-local"
+                        value={trackingForm.interviewDate}
+                        onChange={(e) => setTrackingForm((f) => ({ ...f, interviewDate: e.target.value }))}
+                        className="input input-sm input-bordered w-full max-w-xs bg-base-100/70"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-base-content/50 mb-1.5 block">Type d'entretien</label>
+                      <div className="flex flex-wrap gap-2">
+                        {INTERVIEW_TYPES.map((t) => {
+                          const Icon = t.icon;
+                          const isSelected = trackingForm.interviewType === t.value;
+                          return (
+                            <button
+                              key={t.value}
+                              type="button"
+                              onClick={() => setTrackingForm((f) => ({ ...f, interviewType: isSelected ? '' : t.value }))}
+                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                                isSelected
+                                  ? 'bg-warning/15 border-warning/40 text-warning'
+                                  : 'bg-base-200 border-base-300 text-base-content/60 hover:border-base-content/30'
+                              }`}
+                            >
+                              <Icon className={`w-3.5 h-3.5 ${isSelected ? '' : t.color}`} />
+                              {t.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    {current.interviewDate ? (
+                      <>
+                        <div className="flex items-center gap-2 text-sm">
+                          <span className="text-base-content/50">Date :</span>
+                          <span className="font-medium text-warning">{formatDateTime(current.interviewDate)}</span>
+                        </div>
+                        {current.interviewType && (
+                          <div className="flex items-center gap-2 text-sm">
+                            <span className="text-base-content/50">Type :</span>
+                            <span className="badge badge-warning badge-outline badge-sm">{current.interviewType}</span>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-sm text-base-content/40 italic">Aucun entretien enregistré</p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Offre section */}
+              <div className="bg-base-300/30 rounded-xl p-4 space-y-3">
+                <div className="flex items-center gap-2 mb-1">
+                  <Euro className="w-4 h-4 text-success" />
+                  <h3 className="text-sm font-semibold">Offre & Salaire</h3>
+                </div>
+                {trackingEdit ? (
+                  <div>
+                    <label className="text-xs text-base-content/50 mb-1 block">Salaire proposé (texte libre)</label>
+                    <input
+                      type="text"
+                      placeholder="Ex: 45k€/an, 3 800€/mois..."
+                      value={trackingForm.offerSalary}
+                      onChange={(e) => setTrackingForm((f) => ({ ...f, offerSalary: e.target.value }))}
+                      className="input input-sm input-bordered w-full max-w-xs bg-base-100/70"
+                    />
+                  </div>
+                ) : (
+                  <div>
+                    {current.offerSalary ? (
+                      <div className="flex items-center gap-2 text-sm">
+                        <span className="text-base-content/50">Salaire :</span>
+                        <span className="font-semibold text-success">{current.offerSalary}</span>
+                      </div>
+                    ) : (
+                      <p className="text-sm text-base-content/40 italic">Aucun salaire enregistré</p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Notes section */}
+              <div className="bg-base-300/30 rounded-xl p-4 space-y-3">
+                <div className="flex items-center gap-2 mb-1">
+                  <MessageSquare className="w-4 h-4 text-info" />
+                  <h3 className="text-sm font-semibold">Notes & Retour</h3>
+                </div>
+                {trackingEdit ? (
+                  <div>
+                    <label className="text-xs text-base-content/50 mb-1 block">
+                      Notes libres (feedback reçu, impressions, raison du refus...)
+                    </label>
+                    <textarea
+                      rows={4}
+                      placeholder="Ex: Entretien sympa, mais ils cherchent quelqu'un avec plus d'expérience en Kubernetes. Relancer dans 6 mois."
+                      value={trackingForm.feedbackNote}
+                      onChange={(e) => setTrackingForm((f) => ({ ...f, feedbackNote: e.target.value }))}
+                      className="textarea textarea-bordered w-full text-sm bg-base-100/70 resize-none"
+                    />
+                  </div>
+                ) : (
+                  <div>
+                    {current.feedbackNote ? (
+                      <p className="text-sm text-base-content/80 leading-relaxed whitespace-pre-line">
+                        {current.feedbackNote}
+                      </p>
+                    ) : (
+                      <p className="text-sm text-base-content/40 italic">Aucune note enregistrée</p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Applied date */}
+              {current.appliedAt && (
+                <div className="text-xs text-base-content/40 flex items-center gap-1.5">
+                  <Check className="w-3 h-3 text-success" />
+                  Candidature transmise le {formatDateTime(current.appliedAt)}
+                </div>
+              )}
+            </div>
           )}
 
           {tab === 'CV adapté' && (

@@ -385,6 +385,12 @@ export class CampaignService implements OnModuleInit {
         atsEnabled: campaign.autoApplyAts,
         minDelaySeconds: campaign.autoApplyMinDelaySeconds,
         maxDelaySeconds: campaign.autoApplyMaxDelaySeconds,
+        // Without these the auto-apply loop sees no limit at all: a retry over
+        // every "à vérifier" candidature (209 at the time this was noticed)
+        // would send as many as it can confirm, ignoring the per-source limit
+        // the person configured for a launch.
+        sourceDailyLimits: (campaign.sourceDailyLimits || {}) as Record<string, number>,
+        maxApplicationsPerDay: campaign.maxApplicationsPerDay,
         appendLog: (message) => this.appendLog(runId, message),
         isCancelled: () => this.cancelledCampaigns.has(campaign.id),
       });

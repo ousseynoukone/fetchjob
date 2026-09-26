@@ -5,6 +5,7 @@ import { ApplicationsService } from './applications.service';
 import { PdfService } from '../pdf/pdf.service';
 import { buildCvFileName } from '../common/cv-file-name';
 import { UpdateStatusDto } from './dto/update-status.dto';
+import { UpdateTrackingDto } from './dto/update-tracking.dto';
 import { AddManualOfferDto } from './dto/add-manual.dto';
 
 @Controller('candidatures')
@@ -30,6 +31,23 @@ export class ApplicationsController {
     return this.applicationsService.removeAll(status, scope);
   }
 
+  // Registered before ':id' so "updates"/"updates/count" don't get
+  // swallowed as an :id param.
+  @Get('updates')
+  async getUnseenUpdates() {
+    return this.applicationsService.getUnseenUpdates();
+  }
+
+  @Get('updates/count')
+  async getUnseenUpdatesCount() {
+    return { count: await this.applicationsService.getUnseenUpdatesCount() };
+  }
+
+  @Post(':id/updates/seen')
+  async markUpdateSeen(@Param('id') id: string) {
+    return this.applicationsService.markUpdateSeen(id);
+  }
+
   @Get(':id')
   async getById(@Param('id') id: string) {
     return this.applicationsService.getById(id);
@@ -38,6 +56,12 @@ export class ApplicationsController {
   @Patch(':id/status')
   async updateStatus(@Param('id') id: string, @Body() dto: UpdateStatusDto) {
     return this.applicationsService.updateStatus(id, dto.status);
+  }
+
+  /** Update post-send tracking: interview date/type, feedback, rejection, offer salary */
+  @Patch(':id/tracking')
+  async updateTracking(@Param('id') id: string, @Body() dto: UpdateTrackingDto) {
+    return this.applicationsService.updateTracking(id, dto);
   }
 
   @Post(':id/apply')

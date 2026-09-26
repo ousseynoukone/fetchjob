@@ -6,6 +6,7 @@ import { MatchingService } from '../matching/matching.service';
 import { CampaignService } from '../campaign/campaign.service';
 import { ApplicationPrepService } from './application-prep.service';
 import { AddManualOfferDto } from './dto/add-manual.dto';
+import { UpdateTrackingDto } from './dto/update-tracking.dto';
 import type { CVData } from '../pdf/templates/cv-document';
 import { createHash } from 'crypto';
 
@@ -127,12 +128,80 @@ export class ApplicationsService {
     return application?.verificationScreenshot ?? null;
   }
 
+  // Candidatures ApplicationResponseTrackerService flagged from a matched
+  // Gmail reply, not yet acknowledged by the person. Ordered newest-first so
+  // the "Mises à jour" page reads like a feed.
+  async getUnseenUpdates() {
+    const userId = await this.localUser.getDefaultUserId();
+    return this.prisma.application.findMany({
+      where: { userId, hasUnseenUpdate: true },
+      include: { jobOffer: true },
+      orderBy: { autoUpdateAt: 'desc' },
+      omit: { screenshot: true, verificationScreenshot: true },
+    });
+  }
+
+  async getUnseenUpdatesCount(): Promise<number> {
+    const userId = await this.localUser.getDefaultUserId();
+    return this.prisma.application.count({ where: { userId, hasUnseenUpdate: true } });
+  }
+
+  async markUpdateSeen(id: string) {
+    await this.getById(id);
+    await this.prisma.application.update({ where: { id }, data: { hasUnseenUpdate: false } });
+    return { ok: true };
+  }
+
   async updateStatus(id: string, status: string) {
     await this.getById(id);
     return this.prisma.application.update({
       where: { id },
       data: { status },
       include: { jobOffer: true },
+      omit: { screenshot: true, verificationScreenshot: true },
+    });
+  }
+
+  // Lets the user record what happened after the application was sent:
+  // interview scheduled, offer received, rejection, etc.
+  // Also updates the status if provided, so a single call from the UI handles both.
+  async updateTracking(id: string, dto: UpdateTrackingDto) {
+    await this.getById(id);
+
+    const data: Record<string, any> = {};
+
+    if (dto.status !== undefined) data.status = dto.status;
+
+    // Interview fields — always set explicitly (null clears them)
+    if ('interviewDate' in dto) data.interviewDate = dto.interviewDate ? new Date(dto.interviewDate) : null;
+    if ('interviewType' in dto) data.interviewType = dto.interviewType ?? null;
+
+    // Rejection
+    if ('rejectedAt' in dto) data.rejectedAt = dto.rejectedAt ? new Date(dto.rejectedAt) : null;
+
+    // Offer salary
+    if ('offerSalary' in dto) data.offerSalary = dto.offerSalary ?? null;
+
+    // Notes
+    if ('feedbackNote' in dto) data.feedbackNote = dto.feedbackNote ?? null;
+
+    // If status changes to 'rejected', auto-set rejectedAt to now if not provided
+    if (dto.status === 'rejected' && !data.rejectedAt) {
+      data.rejectedAt = new Date();
+    }
+    // If status changes to 'interview' and no interviewDate given, that's fine
+    // If status changes back to 'applied', clear interview/rejection tracking
+    if (dto.status === 'applied') {
+      data.interviewDate = null;
+      data.interviewType = null;
+      data.rejectedAt = null;
+    }
+
+    return this.prisma.application.update({
+      where: { id },
+      data,
+      include: { jobOffer: true },
+      omit: { screenshot: true, verificationScreenshot: true },
     });
   }
 

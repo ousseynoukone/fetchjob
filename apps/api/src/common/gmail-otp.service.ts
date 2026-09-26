@@ -95,6 +95,78 @@ export class GmailOtpService {
   }
 
   /**
+   * General-purpose inbox scan for ApplicationResponseTrackerService — unlike
+   * fetchOtpForPlatform, not looking for a code from one known sender, but
+   * for whatever recruiter replies came in since `since`. Reuses the same
+   * IMAP credentials and connection pattern as queryImapForOtp; returns []
+   * (not an error) when no Gmail account is configured, since a person
+   * without Gmail-based OTP set up simply doesn't get this feature yet.
+   */
+  async searchRecentMessages(
+    userId: string,
+    since: Date,
+    maxMessages = 200,
+  ): Promise<{ from: string; subject: string; date: Date; snippet: string }[]> {
+    const candidates = await this.getImapCandidates(userId);
+    if (!candidates.length) return [];
+
+    // Only the first configured Gmail account — a second candidate exists
+    // for OTP redundancy (SMTP settings vs the dedicated gmail credential
+    // can name the same or different inboxes), but scanning for replies
+    // should read one real inbox, not merge two.
+    const { email, password } = candidates[0];
+    const client = new ImapFlow({
+      host: 'imap.gmail.com',
+      port: 993,
+      secure: true,
+      auth: { user: email.trim(), pass: password.trim().replace(/\s+/g, '') },
+      logger: false,
+    });
+    client.on('error', (err) => this.logger.debug(`IMAP client error: ${err?.message}`));
+
+    try {
+      await client.connect();
+      const lock = await client.getMailboxLock('INBOX');
+      try {
+        const uids = await client.search({ since }).catch(() => []);
+        if (!uids || !Array.isArray(uids) || !uids.length) return [];
+
+        // Newest first, bounded — a first-ever run can have weeks of inbox
+        // to look at, and the AI-matching step's cost scales with this.
+        const recent = uids.slice(-maxMessages).reverse();
+        const results: { from: string; subject: string; date: Date; snippet: string }[] = [];
+        for (const seq of recent) {
+          const msg = await client.fetchOne(seq, { envelope: true, source: true }).catch(() => null);
+          if (!msg || !msg.envelope) continue;
+          const from = msg.envelope.from?.[0]?.address || msg.envelope.from?.[0]?.name || '';
+          const subject = msg.envelope.subject || '';
+          const date = msg.envelope.date ? new Date(msg.envelope.date) : since;
+          const raw = msg.source?.toString('utf8') || '';
+          // Same cleanup family as extractOtpCode's `clean` step, kept
+          // separate since this needs a much longer, readable snippet for
+          // the AI to actually judge tone/outcome from, not a single code.
+          const snippet = raw
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/=\r?\n/g, '')
+            .replace(/&nbsp;/gi, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 3000);
+          results.push({ from, subject, date, snippet });
+        }
+        return results;
+      } finally {
+        lock.release();
+      }
+    } catch (err: any) {
+      this.logger.debug(`searchRecentMessages IMAP failed for ${email}: ${err.message}`);
+      return [];
+    } finally {
+      await client.logout().catch(() => {});
+    }
+  }
+
+  /**
    * Collects IMAP login credentials from:
    * 1. `PlatformCredential` with platform='gmail' (user-configured)
    * 2. `Settings` table (smtpUsername / smtpPassword if hosted on Gmail)

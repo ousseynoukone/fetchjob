@@ -171,7 +171,7 @@ export class SessionHealthService implements OnModuleInit {
         cred.email !== '(connecté via navigateur intégré)'
       ) {
         this.logger.log(`No active session cookies for ${platform} — attempting background login with stored credentials...`);
-        const context = await this.browserSession.acquireContext(null, platform);
+        const context = await this.browserSession.createContext(null, platform);
         try {
           await blockHeavyResources(context);
           const page = await context.newPage();
@@ -184,7 +184,10 @@ export class SessionHealthService implements OnModuleInit {
             return 'refreshed';
           }
         } finally {
-          await this.browserSession.releaseContext(context, platform);
+          for (const p of context.pages()) {
+            if (!p.isClosed()) await p.close().catch(() => {});
+          }
+          await context.close().catch(() => {});
         }
       }
       this.logger.log(`No usable session for ${platform} and no stored credentials to re-login with — left as expired.`);
@@ -192,7 +195,7 @@ export class SessionHealthService implements OnModuleInit {
     }
 
     // Pass platform so BrowserSessionService applies site-specific fingerprints and cookie caches
-    const context = await this.browserSession.acquireContext(cred.sessionState, platform);
+    const context = await this.browserSession.createContext(cred.sessionState, platform);
     try {
       await blockHeavyResources(context);
       const page = await context.newPage();
@@ -271,7 +274,10 @@ export class SessionHealthService implements OnModuleInit {
       this.logger.log(`Session successfully refreshed and kept alive for ${platform}`);
       return 'refreshed';
     } finally {
-      await this.browserSession.releaseContext(context, platform);
+      for (const p of context.pages()) {
+        if (!p.isClosed()) await p.close().catch(() => {});
+      }
+      await context.close().catch(() => {});
     }
   }
 

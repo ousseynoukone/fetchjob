@@ -15,6 +15,8 @@ export interface SettingsStatus {
   notificationEmail: boolean;
   digestIntervalHours: boolean;
   autoApplyMaxAiCalls: boolean;
+  responseCheckIntervalHours: boolean;
+  platformStatusCheckIntervalHours: boolean;
 }
 
 interface Store {

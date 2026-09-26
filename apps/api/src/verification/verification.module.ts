@@ -4,10 +4,11 @@ import { PlatformCredentialsModule } from '../platform-credentials/platform-cred
 import { AutoApplyModule } from '../auto-apply/auto-apply.module';
 import { VerificationService } from './verification.service';
 import { VerificationController } from './verification.controller';
+import { PlatformStatusCheckerService } from './platform-status-checker.service';
 
 @Module({
   imports: [CommonModule, PlatformCredentialsModule, AutoApplyModule],
-  providers: [VerificationService],
+  providers: [VerificationService, PlatformStatusCheckerService],
   controllers: [VerificationController],
 })
 export class VerificationModule {}

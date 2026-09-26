@@ -35,6 +35,27 @@ export interface Application {
   screenshotTakenAt?: string;
   verificationScreenshotTakenAt?: string;
   appliedAt?: string;
+  // Post-send tracking fields
+  interviewDate?: string | null;
+  interviewType?: string | null;
+  feedbackNote?: string | null;
+  rejectedAt?: string | null;
+  offerSalary?: string | null;
+  // Set by ApplicationResponseTrackerService (Gmail) or
+  // PlatformStatusCheckerService (e.g. HelloWork) when an update was
+  // detected. autoUpdateVerdict is the actual classification ('rejected' |
+  // 'interview' | 'offer' | 'confirmed' | 'update') -- distinct from
+  // `status`, since a 'confirmed' (needs_review -> applied, proof of
+  // submission) and a genuinely ambiguous 'update' both leave status
+  // 'applied' but mean very different things. autoUpdateEvidence is the
+  // literal source (quoted email excerpt, or the exact status text read off
+  // a platform's own page) so the verdict can be checked, not just trusted.
+  hasUnseenUpdate?: boolean;
+  autoUpdateSummary?: string | null;
+  autoUpdateAt?: string | null;
+  autoUpdateVerdict?: string | null;
+  autoUpdateSource?: string | null;
+  autoUpdateEvidence?: string | null;
   createdAt: string;
   jobOffer: JobOffer;
 }
@@ -47,6 +68,14 @@ interface Store {
   fetchList: (status?: string, scope?: 'current' | 'history') => Promise<void>;
   fetchById: (id: string) => Promise<void>;
   updateStatus: (id: string, status: string) => Promise<void>;
+  updateTracking: (id: string, data: {
+    status?: string;
+    interviewDate?: string | null;
+    interviewType?: string | null;
+    feedbackNote?: string | null;
+    rejectedAt?: string | null;
+    offerSalary?: string | null;
+  }) => Promise<void>;
   markApplied: (id: string) => Promise<void>;
   retryOne: (id: string) => Promise<void>;
   regenerate: (id: string) => Promise<void>;
@@ -108,6 +137,22 @@ export const useApplicationsStore = create<Store>((set, get) => ({
       toast.success('Candidature marquée comme envoyée');
     } catch (error: any) {
       toast.error(error.response?.data?.message || 'Failed to mark as applied');
+      throw error;
+    }
+  },
+
+  updateTracking: async (id, data) => {
+    try {
+      const response = await apiClient.patch(`/api/candidatures/${id}/tracking`, data);
+      set({ current: response.data });
+      set({
+        applications: get().applications.map((a) =>
+          a.id === id ? { ...a, ...response.data } : a,
+        ),
+      });
+      toast.success('Suivi mis à jour');
+    } catch (error: any) {
+      toast.error(error.response?.data?.message || 'Échec de la mise à jour du suivi');
       throw error;
     }
   },

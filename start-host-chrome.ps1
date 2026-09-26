@@ -26,10 +26,22 @@
 #
 #   .\start-host-chrome.ps1            # headless (default)
 #   .\start-host-chrome.ps1 -Visible   # headed, if you ever want to watch it
+#   .\start-host-chrome.ps1 -Stop      # kill it (used by the stop-*.bat scripts)
 
-param([switch]$Visible)
+param([switch]$Visible, [switch]$Stop)
 
 $ErrorActionPreference = 'Stop'
+
+if ($Stop) {
+  $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match '9222' -and $_.Name -match 'chrome' } | Select-Object -First 1
+  if ($proc) {
+    Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+    Write-Host "Host Chrome stopped."
+  } else {
+    Write-Host "Host Chrome was not running."
+  }
+  exit 0
+}
 
 $chrome = @(
   "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
@@ -41,11 +53,19 @@ if (-not $chrome) { throw "Google Chrome not found." }
 $profileDir = "$env:USERPROFILE\.findurjob\host-chrome-profile"
 New-Item -ItemType Directory -Force $profileDir | Out-Null
 
-# Already running on the debug port? Then there's nothing to do.
+# Already running on the debug port? Check if it matches requested visibility
 try {
   $v = Invoke-RestMethod http://127.0.0.1:9222/json/version -TimeoutSec 2
-  Write-Host "Host Chrome already running: $($v.Browser)"
-  exit 0
+  $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match '9222' -and $_.Name -match 'chrome' } | Select-Object -First 1
+  $isHeadless = $proc -and ($proc.CommandLine -match '--headless')
+  if (($Visible -and -not $isHeadless) -or (-not $Visible -and $isHeadless)) {
+    $mode = if ($isHeadless) { 'headless' } else { 'visible' }
+    Write-Host "Host Chrome already running on :9222 ($mode): $($v.Browser)"
+    exit 0
+  }
+  Write-Host "Host Chrome on :9222 does not match requested mode (headless=$isHeadless vs requested visible=$Visible). Stopping to restart correctly..."
+  if ($proc) { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue }
+  Start-Sleep -Seconds 1
 } catch {}
 
 # Derive the normal UA from the installed version so it never drifts from the

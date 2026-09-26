@@ -15,6 +15,8 @@ export interface SettingsFields {
   notificationEmail?: string;
   digestIntervalHours?: string;
   autoApplyMaxAiCalls?: string;
+  responseCheckIntervalHours?: string;
+  platformStatusCheckIntervalHours?: string;
 }
 
 const FIELD_TO_ENV_FALLBACK: Record<keyof SettingsFields, string> = {
@@ -30,6 +32,8 @@ const FIELD_TO_ENV_FALLBACK: Record<keyof SettingsFields, string> = {
   notificationEmail: 'NOTIFICATION_EMAIL',
   digestIntervalHours: 'DIGEST_INTERVAL_HOURS',
   autoApplyMaxAiCalls: 'AUTO_APPLY_MAX_AI_CALLS',
+  responseCheckIntervalHours: 'RESPONSE_CHECK_INTERVAL_HOURS',
+  platformStatusCheckIntervalHours: 'PLATFORM_STATUS_CHECK_INTERVAL_HOURS',
 };
 
 @Injectable()
@@ -92,5 +96,27 @@ export class SettingsService {
   async setLastDigestSentAt(date: Date): Promise<void> {
     const row = await this.getRow();
     await this.prisma.settings.update({ where: { id: row.id }, data: { lastDigestSentAt: date } });
+  }
+
+  // Same shape as the pair above, for ApplicationResponseTrackerService.
+  async getLastResponseCheckAt(): Promise<Date | null> {
+    const row = await this.getRow();
+    return row.lastResponseCheckAt;
+  }
+
+  async setLastResponseCheckAt(date: Date): Promise<void> {
+    const row = await this.getRow();
+    await this.prisma.settings.update({ where: { id: row.id }, data: { lastResponseCheckAt: date } });
+  }
+
+  // Same shape as the pair above, for PlatformStatusCheckerService.
+  async getLastPlatformStatusCheckAt(): Promise<Date | null> {
+    const row = await this.getRow();
+    return row.lastPlatformStatusCheckAt;
+  }
+
+  async setLastPlatformStatusCheckAt(date: Date): Promise<void> {
+    const row = await this.getRow();
+    await this.prisma.settings.update({ where: { id: row.id }, data: { lastPlatformStatusCheckAt: date } });
   }
 }
