@@ -47,6 +47,10 @@ lerna-debug.log*
 
 # Turbo
 .turbo/
+
+# Native local run (start-mac.command / stop-mac.command)
+.run/
+.postgres-restored
 dist/
 *.tsbuildinfo
 
