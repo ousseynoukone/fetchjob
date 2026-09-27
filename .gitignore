@@ -20,6 +20,11 @@ out/
 .env.test.local
 .env.production.local
 
+# One-off DB dump + real secrets bundled for a machine-to-machine migration
+# (see migration-to-mac/README.md) -- never committed, contains the real
+# CREDENTIALS_ENCRYPTION_KEY and a full pg_dump of local application data.
+/migration-to-mac/
+
 # IDE
 .vscode/
 .idea/

@@ -8,6 +8,7 @@ import { promises as fs } from 'fs';
 import { CryptoService } from '../common/crypto.service';
 import { LocalUserService } from '../common/local-user.service';
 import { PrismaService } from '../common/prisma.service';
+import { GmailOtpService } from '../common/gmail-otp.service';
 import { SESSION_CHECKS, dismissCookieBanner } from '../auto-apply/appliers/ats-common';
 import { buildFingerprintScript, FINGERPRINT_PROFILES, saveCookies } from '../scraping/stealth-browser';
 import { SupportedPlatform } from './dto/upsert-credential.dto';
@@ -67,6 +68,7 @@ export type RemoteLoginInputEvent =
 
 interface ActiveSession {
   platform: SupportedPlatform;
+  userId: string;
   context: BrowserContext;
   page: Page;
   cdpSession: CDPSession;
@@ -75,6 +77,11 @@ interface ActiveSession {
   autoCloseTimer?: NodeJS.Timeout;
   consecutiveLoggedIn: number;
   closed: boolean;
+  // Set once an OTP fetch-and-fill has actually been attempted for this
+  // session, so the 2s poll tick doesn't re-trigger it (and re-poll Gmail)
+  // every single tick while the passcode field stays visible waiting on a
+  // slow submit/redirect. See attemptOtpAutofill.
+  otpAttempted?: boolean;
   // setInterval keeps firing whether or not the previous tick finished --
   // a tick that outlives the 2s interval (a slow DOM read on a page still
   // loading) would otherwise stack up concurrent Playwright operations
@@ -145,6 +152,16 @@ const LOGIN_EMAIL_SELECTOR =
   'input[type="email"], input[autocomplete*="username" i], input[name*="email" i], input[id*="email" i], input[name*="identifiant" i], input[id*="identifiant" i], input[name="__email"], input[name="session_key"], input#username, input[data-testid*="email" i]';
 const LOGIN_PASSWORD_SELECTOR =
   'input[type="password"], input[name*="password" i], input[id*="password" i], input[name="session_password"], input#password, input[data-testid*="password" i]';
+// Same keyword set as LOGIN_EMAIL_SELECTOR's name/id/autocomplete matchers,
+// used by captureTypedCredential below to decide whether a focused
+// type="text" field is actually an identity field. Confirmed live as a real
+// corruption, not a hypothetical: Indeed's OTP passcode input
+// (#passcode-input) is a plain type="text" field, and the old blanket
+// `type === 'text'` check captured a typed 6-digit code as the account's
+// "email", overwriting it in the database and breaking every subsequent
+// reconnection attempt (which then tried logging in with that code as the
+// email).
+const IDENTITY_FIELD_HINT = /email|identifiant|username|session_key/i;
 // Written when nothing was captured for the login identifier (see
 // captureTypedCredential) -- checked against by name, not by shape (an `@`
 // test), since not every platform's login identifier is an email address.
@@ -196,6 +213,7 @@ export class RemoteLoginService implements OnModuleDestroy {
     private crypto: CryptoService,
     private localUser: LocalUserService,
     private prisma: PrismaService,
+    private gmailOtp: GmailOtpService,
   ) {}
 
   async start(platform: SupportedPlatform, customTargetUrl?: string): Promise<string> {
@@ -227,6 +245,7 @@ export class RemoteLoginService implements OnModuleDestroy {
 
     const sessionId = randomUUID();
     const frames = new Subject<RemoteLoginFrame>();
+    const userId = await this.localUser.getDefaultUserId();
 
     // A throwaway launch purely to read the real installed Chromium's
     // version -- launchPersistentContext below combines launch+context
@@ -431,6 +450,7 @@ export class RemoteLoginService implements OnModuleDestroy {
 
     const session: ActiveSession = {
       platform,
+      userId,
       context,
       page,
       cdpSession,
@@ -764,13 +784,22 @@ export class RemoteLoginService implements OnModuleDestroy {
       .evaluate(() => {
         const el = (globalThis as any).document?.activeElement as any;
         if (!el || typeof el.value !== 'string') return null;
-        return { type: (el.type || '').toLowerCase(), value: el.value };
+        return {
+          type: (el.type || '').toLowerCase(),
+          value: el.value,
+          name: (el.name || '').toLowerCase(),
+          id: (el.id || '').toLowerCase(),
+          autocomplete: (el.autocomplete || '').toLowerCase(),
+        };
       })
       .catch(() => null);
     if (!info) return;
     if (info.type === 'password') {
       session.capturedPassword = info.value;
-    } else if (info.type === 'email' || info.type === 'text') {
+    } else if (info.type === 'email' || IDENTITY_FIELD_HINT.test(`${info.name} ${info.id} ${info.autocomplete}`)) {
+      // A plain type="text" field only counts if its name/id/autocomplete
+      // actually looks like an identity field -- otherwise (an OTP/passcode
+      // input, a search box, ...) it's ignored. See IDENTITY_FIELD_HINT.
       session.capturedEmail = info.value;
     }
   }
@@ -809,6 +838,53 @@ export class RemoteLoginService implements OnModuleDestroy {
     if (password) session.capturedPassword = password;
   }
 
+  // Auto-fetches and enters Indeed's 6-digit "Se connecter avec un code"
+  // passcode via the same Gmail IMAP lookup SessionHealthService's fully
+  // automatic background re-login already uses -- added after a real
+  // incident where the OLD, too-broad captureTypedCredential accidentally
+  // stored a typed OTP code as the account's "email" (see
+  // IDENTITY_FIELD_HINT), and the fix for THAT bug still left the human
+  // watching this live view stuck manually reading their own email and
+  // typing the code by hand every time. This closes that gap: the moment
+  // Indeed's passcode field appears (however the person got there -- they
+  // click "Se connecter avec un code" themselves, this never does), it
+  // fetches the just-sent code and submits it with no action needed from
+  // whoever is watching the live view. Runs on the same 2s poll tick as
+  // everything else here; otpAttempted guards it to a single attempt per
+  // session so it never re-polls Gmail every tick while waiting on a slow
+  // redirect after submitting.
+  private async attemptOtpAutofill(session: ActiveSession): Promise<void> {
+    if (session.platform !== 'indeed' || session.otpAttempted) return;
+
+    const passcodeInput = session.page.locator('#passcode-input, input[name="passcode"]').first();
+    const visible = await passcodeInput.isVisible({ timeout: 500 }).catch(() => false);
+    if (!visible) return;
+
+    session.otpAttempted = true;
+    try {
+      this.logger.log('Indeed passcode field detected in remote-login — fetching OTP from Gmail automatically...');
+      const otpResult = await this.gmailOtp.fetchOtpForPlatform('indeed', session.userId, {
+        since: new Date(Date.now() - 2 * 60_000),
+        maxWaitSeconds: 45,
+      });
+      if (!otpResult?.code) {
+        this.logger.warn('No Indeed OTP code found in Gmail within the wait window.');
+        return;
+      }
+      this.logger.log(`Entering Indeed OTP code [${otpResult.code}] automatically...`);
+      await this.humanFillField(session.page, passcodeInput, otpResult.code);
+      await session.page.waitForTimeout(500);
+      const submitBtn = session.page.getByRole('button', { name: /^(connexion|sign in|continuer|submit)$/i }).first();
+      if (await submitBtn.isVisible().catch(() => false)) {
+        await submitBtn.click().catch(() => {});
+      } else {
+        await passcodeInput.press('Enter').catch(() => {});
+      }
+    } catch (error: any) {
+      this.logger.warn(`Automatic Indeed OTP autofill failed: ${error.message}`);
+    }
+  }
+
   async stop(sessionId: string): Promise<void> {
     await this.cleanup(sessionId, { dataUrl: null, status: 'done', message: 'Fermé.' });
   }
@@ -832,6 +908,8 @@ export class RemoteLoginService implements OnModuleDestroy {
 
       if (onLoginWall) {
         session.consecutiveLoggedIn = 0;
+
+        await this.attemptOtpAutofill(session).catch(() => {});
 
         // "Wall, but no field to type into" is the ambiguous state: either
         // a button-only login screen (Indeed's "Continuer avec Google"

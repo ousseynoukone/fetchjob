@@ -10,6 +10,20 @@ taskkill /FI "WINDOWTITLE eq Frontend Web*" /T /F >nul 2>&1
 echo Starting the local host Chrome (headless, used over CDP)...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-host-chrome.ps1"
 
+echo Checking Docker Desktop...
+docker info >nul 2>&1
+if errorlevel 1 (
+  echo Docker Desktop is not running -- starting it...
+  start "" "C:\Program Files\Docker\Docker\Docker Desktop.exe"
+  echo Waiting for Docker Desktop to become ready ^(can take a minute^)...
+  powershell -NoProfile -Command ^
+    "$ok = $false; for ($i = 0; $i -lt 60; $i++) { docker info *> $null; if ($LASTEXITCODE -eq 0) { $ok = $true; break }; Start-Sleep -Seconds 3 }; if (-not $ok) { exit 1 }"
+  if errorlevel 1 (
+    echo Docker Desktop did not become ready in time.
+    goto :end
+  )
+)
+
 echo Starting Docker (Postgres, Redis, API, Web)...
 docker compose up -d
 

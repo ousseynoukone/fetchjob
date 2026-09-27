@@ -926,9 +926,29 @@ export const SESSION_CHECKS: Record<string, SessionCheck> = {
       // before the person had even signed in. Every Indeed auth screen
       // (email, password, one-time code, this welcome-back page) lives on
       // secure.indeed.com, and the Google/Apple SSO detours on their own
-      // domains; a real session lands on myjobs.indeed.com. The URL is the
-      // reliable signal; the input is only a fallback.
-      if (/secure\.indeed\.com|accounts\.google\.com|appleid\.apple\.com/i.test(page.url())) return true;
+      // domains.
+      //
+      // BUT confirmed live (a second, separate incident): authenticated
+      // pages ALSO live on secure.indeed.com -- e.g. "Paramètres du compte"
+      // at secure.indeed.com/settings/account, reached right after a
+      // genuinely successful OTP login. Blanket-treating the whole domain
+      // as "still on the login wall" threw away that just-established
+      // session every time, reporting the login as failed and forcing
+      // attemptBackgroundLogin to retry from scratch on every hourly sweep
+      // -- a fresh OTP code emailed every ~20 minutes, forever, none of
+      // them ever actually used. Now requires an ACTUAL login-form element
+      // (email/password/passcode input, or the button-only welcome-back
+      // screen) to be visible, not just the domain.
+      if (/accounts\.google\.com|appleid\.apple\.com/i.test(page.url())) return true;
+      if (/secure\.indeed\.com/i.test(page.url())) {
+        return page
+          .locator(
+            '#login-email-input, input[name="__email"], input[type="password"]:visible, #passcode-input, input[name="passcode"], button:has-text("Continuer avec Google")',
+          )
+          .first()
+          .isVisible()
+          .catch(() => false);
+      }
       return page.locator('#login-email-input, input[name="__email"]').first().isVisible().catch(() => false);
     },
   },
