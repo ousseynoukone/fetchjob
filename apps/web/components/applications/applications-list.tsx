@@ -121,6 +121,7 @@ const PLATFORM_LABELS: Record<string, { label: string; badge: string }> = {
   indeed: { label: 'Indeed', badge: 'bg-indigo-600/15 text-indigo-400 border-indigo-500/30' },
   adzuna: { label: 'Adzuna', badge: 'bg-teal-600/15 text-teal-400 border-teal-500/30' },
   the_muse: { label: 'The Muse', badge: 'bg-pink-600/15 text-pink-400 border-pink-500/30' },
+  collective_work: { label: 'Collective Work', badge: 'bg-orange-600/15 text-orange-400 border-orange-500/30' },
 };
 
 const STATUS_DETAILS: Record<string, { label: string; badgeClass: string; icon: React.ComponentType<{ className?: string }> }> = {

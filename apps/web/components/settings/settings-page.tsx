@@ -63,6 +63,7 @@ const PLATFORM_LABELS: Record<SupportedPlatform, string> = {
   apec: 'APEC',
   gmail: 'Gmail',
   free_work: 'Free-Work',
+  collective_work: 'Collective Work',
 };
 
 // Only LinkedIn's applier ever attempts an automatic email/password login
@@ -83,6 +84,7 @@ const AUTO_LOGIN_PLATFORMS = new Set<SupportedPlatform>([
   'apec',
   'gmail',
   'free_work',
+  'collective_work',
 ]);
 
 const PLATFORM_NOTES: Partial<Record<SupportedPlatform, string>> = {
@@ -93,6 +95,7 @@ const PLATFORM_NOTES: Partial<Record<SupportedPlatform, string>> = {
   apec: "Connexion et reconnexion 100% automatiques avec votre adresse email et mot de passe.",
   gmail: "Permet de relever automatiquement les codes de sécurité (ex: code à 8 chiffres de France Travail). Vous pouvez vous connecter via le navigateur intégré, ou renseigner un mot de passe d'application Google (généré sur myaccount.google.com/apppasswords).",
   free_work: "La plupart des offres Free-Work se postulent sans compte — ce compte ne sert que de secours pour les offres publiées par une agence partenaire, qui exigent une connexion. Connexion automatique tentée avec l'email/mot de passe, pas encore fiable à 100% sur ce site précis.",
+  collective_work: "Connexion et reconnexion 100% automatiques avec votre adresse email et mot de passe.",
 };
 
 // Gmail supports both remote login browser and entering a Google App Password directly
@@ -661,6 +664,7 @@ export default function SettingsPage() {
                 <PlatformCredentialRow platform="apec" />
                 <PlatformCredentialRow platform="gmail" />
                 <PlatformCredentialRow platform="free_work" />
+                <PlatformCredentialRow platform="collective_work" />
               </div>
             </div>
 

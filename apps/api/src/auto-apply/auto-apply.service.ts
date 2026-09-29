@@ -23,6 +23,7 @@ import { LeverApplier } from './appliers/lever.applier';
 import { WorkdayApplier } from './appliers/workday.applier';
 import { SmartRecruitersApplier } from './appliers/smartrecruiters.applier';
 import { FreeWorkApplier } from './appliers/freework.applier';
+import { CollectiveWorkApplier } from './appliers/collective-work.applier';
 import { GenericApplier } from './appliers/generic.applier';
 import { JobApplier, ApplyResult } from './appliers/applier.interface';
 import { scanInvalidFields } from './appliers/form-fields';
@@ -78,6 +79,7 @@ const SOURCE_OWN_DOMAIN: Partial<Record<string, RegExp>> = {
   apec: /(^|\.)apec\.fr$/i,
   indeed: /(^|\.)indeed\.com$/i,
   linkedin: /(^|\.)linkedin\.com$/i,
+  collective_work: /(^|\.)collective\.work$/i,
 };
 
 // A redirect that lands on one of the account-based platforms (confirmed
@@ -91,6 +93,7 @@ const PLATFORM_BY_HOST: { pattern: RegExp; platform: string }[] = [
   { pattern: /(^|\.)francetravail\.fr$/i, platform: 'france_travail' },
   { pattern: /(^|\.)indeed\.com$/i, platform: 'indeed' },
   { pattern: /(^|\.)linkedin\.com$/i, platform: 'linkedin' },
+  { pattern: /(^|\.)collective\.work$/i, platform: 'collective_work' },
 ];
 
 function platformForHost(url: string): string | null {
@@ -162,6 +165,7 @@ export class AutoApplyService {
     workday: WorkdayApplier,
     smartRecruiters: SmartRecruitersApplier,
     freeWork: FreeWorkApplier,
+    collectiveWork: CollectiveWorkApplier,
     private genericFallback: GenericApplier,
   ) {
     this.appliers = {
@@ -171,6 +175,7 @@ export class AutoApplyService {
       hellowork: helloWork,
       welcome_to_the_jungle: wttj,
       apec: apec,
+      collective_work: collectiveWork,
     };
     this.atsAppliers = {
       greenhouse,

@@ -34,6 +34,7 @@ const PLATFORM_LABELS: Record<SupportedPlatform, string> = {
   apec: 'APEC',
   gmail: 'Gmail',
   free_work: 'Free-Work',
+  collective_work: 'Collective Work',
 };
 
 type Status = 'connecting' | 'active' | 'done' | 'error';

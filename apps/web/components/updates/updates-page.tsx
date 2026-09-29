@@ -51,6 +51,7 @@ const FALLBACK_VERDICT_BY_STATUS: Record<string, string> = {
 const SOURCE_LABEL: Record<string, string> = {
   gmail: 'Détecté par email (Gmail)',
   hellowork: 'Détecté sur HelloWork',
+  collective_work: 'Détecté sur Collective Work',
 };
 
 const FILTER_TABS: { key: string; label: string }[] = [

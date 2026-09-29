@@ -1068,6 +1068,16 @@ export const SESSION_CHECKS: Record<string, SessionCheck> = {
       return !/\/fr\/resume/i.test(page.url());
     },
   },
+  collective_work: {
+    // Confirmed live (recorded flow): an anonymous visit to the app root
+    // redirects to app.collective.work/auth/login, whose email field has
+    // accessible name "email-input".
+    homeUrl: 'https://app.collective.work/',
+    isLoginWallVisible: async (page) => {
+      if (/\/auth\/login/i.test(page.url())) return true;
+      return page.getByRole('textbox', { name: 'email-input' }).first().isVisible().catch(() => false);
+    },
+  },
   // Not used for continuous auto-polling the way every other platform's
   // check is (see remote-login.service.ts's MANUAL_CONFIRM_PLATFORMS) --
   // Google's own login is a multi-step flow (identifier -> password -> 2FA)

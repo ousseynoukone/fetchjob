@@ -19,8 +19,10 @@ import {
 import { SettingsService } from '../common/settings.service';
 import { BrowserConcurrencyService } from '../common/browser-concurrency.service';
 import { locationWithinRegion } from '../common/location-region';
-import { blockHeavyResources } from '../auto-apply/appliers/ats-common';
+import { blockHeavyResources, dismissCookieBanner, humanFill, humanClick } from '../auto-apply/appliers/ats-common';
 import { scrapeLinkedInWithStealth, ProxyRotator } from './linkedin-stealth';
+import { PlatformCredentialsService } from '../platform-credentials/platform-credentials.service';
+import { LocalUserService } from '../common/local-user.service';
 
 // A plain axios GET, not a real browser -- there's no live Chromium engine
 // here for this UA string to contradict via Client Hints the way the
@@ -383,6 +385,8 @@ export class ScrapingService {
   constructor(
     private settings: SettingsService,
     private browserConcurrency: BrowserConcurrencyService,
+    private credentials: PlatformCredentialsService,
+    private localUser: LocalUserService,
   ) {}
 
   // linkedin/hellowork/indeed/welcome_to_the_jungle drive a real browser
@@ -392,7 +396,7 @@ export class ScrapingService {
   // (see BrowserConcurrencyService — this is what stops a scrape from
   // running at the same time as a session-health check or another scrape
   // and pegging the CPU for hours).
-  private static readonly BROWSER_SOURCES = new Set(['linkedin', 'hellowork', 'indeed', 'welcome_to_the_jungle']);
+  private static readonly BROWSER_SOURCES = new Set(['linkedin', 'hellowork', 'indeed', 'welcome_to_the_jungle', 'collective_work']);
 
   private async cachedFeedFetch(url: string, params?: Record<string, unknown>): Promise<any> {
     const key = `${url}|${JSON.stringify(params ?? {})}`;
@@ -414,6 +418,8 @@ export class ScrapingService {
         return this.fetchIndeedOffers(params);
       case 'welcome_to_the_jungle':
         return this.fetchWelcomeToTheJungleOffers(params);
+      case 'collective_work':
+        return this.fetchCollectiveWorkOffers(params);
       default:
         return [];
     }
@@ -690,6 +696,191 @@ export class ScrapingService {
       return offers;
     } catch (err: any) {
       this.logger.warn(`HelloWork stealth scraper error: ${err.message}`);
+      return [];
+    } finally {
+      await context.close().catch(() => {});
+      await browser.close().catch(() => {});
+    }
+  }
+
+  // Collective Work (app.collective.work) — a React/Chakra UI SPA whose job
+  // search requires a logged-in session (confirmed live via a recorded real
+  // application flow: the recording logs in before ever reaching the offers
+  // list). Unlike HelloWork's static server-rendered search-results HTML,
+  // results here only exist in the client-rendered DOM, so the listing is
+  // read via a live page.evaluate() rather than a cheerio parse of raw HTML
+  // (page.content() would need the same wait either way, since it reflects
+  // whatever's currently painted, not a fresh server fetch).
+  private async fetchCollectiveWorkOffers(params: SearchParams): Promise<ScrapedOffer[]> {
+    const userId = await this.localUser.getDefaultUserId().catch(() => null);
+    if (!userId) return [];
+
+    let sessionState: string | null = null;
+    let email: string | null = null;
+    let password: string | null = null;
+    try {
+      const cred = await this.credentials.getDecrypted(userId, 'collective_work');
+      sessionState = cred.sessionState;
+      email = cred.email;
+      password = cred.password ?? null;
+    } catch {
+      // No credential configured at all for this platform yet — nothing to
+      // scrape with, same as every other account-based source with no
+      // saved session.
+      return [];
+    }
+
+    const { browser, context } = await createStealthContext({ siteName: 'collective_work' });
+    try {
+      await blockUnnecessaryResources(context);
+
+      if (sessionState) {
+        try {
+          const parsed = JSON.parse(sessionState);
+          const cookies = Array.isArray(parsed) ? parsed : parsed?.cookies;
+          if (Array.isArray(cookies) && cookies.length) {
+            await context.addCookies(cookies).catch(() => {});
+          }
+        } catch {
+          // Not JSON / not the shape expected — proceed cookie-less, the
+          // inline login below covers it.
+        }
+      }
+
+      const page = await context.newPage();
+      await page.goto('https://app.collective.work/', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+      await dismissCookieBanner(page).catch(() => {});
+      await jitter(500, 1200);
+
+      const onLoginWall = /\/auth\/login/i.test(page.url()) || (await page.getByRole('textbox', { name: 'email-input' }).first().isVisible().catch(() => false));
+      if (onLoginWall) {
+        if (!email || !password || email === '(session importée)') {
+          this.logger.warn('Collective Work: session expirée et aucun identifiant email/mot de passe enregistré — recherche ignorée.');
+          return [];
+        }
+        const emailField = page.getByRole('textbox', { name: 'email-input' }).first();
+        const passField = page.getByRole('textbox', { name: 'password-input' }).first();
+        await emailField.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+        if ((await emailField.isVisible().catch(() => false)) && (await passField.isVisible().catch(() => false))) {
+          await humanFill(emailField, email);
+          await humanFill(passField, password);
+          const loginBtn = page.getByRole('button', { name: /se connecter/i }).first();
+          if (await loginBtn.isVisible().catch(() => false)) {
+            await humanClick(page, loginBtn).catch(() => loginBtn.click().catch(() => {}));
+          } else {
+            await passField.press('Enter');
+          }
+          await page.waitForTimeout(3000);
+        }
+        if (/\/auth\/login/i.test(page.url())) {
+          this.logger.warn('Collective Work: échec de connexion — recherche ignorée.');
+          return [];
+        }
+        const freshState = await context.storageState().catch(() => null);
+        if (freshState) {
+          await this.credentials
+            .upsert({ platform: 'collective_work', email, password, sessionState: JSON.stringify(freshState) })
+            .catch(() => {});
+        }
+      }
+
+      // The search box only exists on the offers listing page, not the app
+      // root/dashboard the login check above runs against — confirmed live
+      // (an authenticated visit to '/' redirects to '/talent/get-onboard' or
+      // '/talent/home', neither of which has a search field at all).
+      await page.goto('https://app.collective.work/talent/jobs', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+      await page.waitForTimeout(1500);
+
+      const searchBox = page.getByRole('textbox', { name: /rechercher des offres/i }).first();
+      const hasSearchBox = await searchBox.waitFor({ state: 'visible', timeout: 10000 }).then(() => true).catch(() => false);
+      if (!hasSearchBox) {
+        this.logger.warn('Collective Work: champ de recherche introuvable — mise en page inattendue.');
+        return [];
+      }
+      await humanFill(searchBox, params.keywords);
+      await searchBox.press('Enter');
+      await page.waitForTimeout(2500);
+
+      // Confirmed live via a real search, the hard way (three separate
+      // wrong guesses first): #jobs-scrollable wraps the WHOLE offers
+      // section (header, filters sidebar, results list together), and the
+      // filter sidebar has ITS OWN <h2> headings ("Filtres", "Filtres
+      // d'entreprise") using the exact same generic "chakra-heading" class
+      // as everything else — so "any h2" or "any h2 not literally named
+      // Filtres" both grabbed the wrong element. The real job-title h2s all
+      // share one distinct, verified-live Chakra style-hash class
+      // (css-1dq9x6k) no sidebar heading uses — confirmed by dumping every
+      // h2 on the page and comparing classes directly, not guessed.
+      // Separately: the `?jobId=` anchor is NOT a card-wrapping link at all
+      // — it's a small icon-only "Voir l'offre" button that does not
+      // contain the title, so extraction walks from each title h2 UP to
+      // the nearest ancestor that contains one of these link, rather than
+      // the other way around.
+      await page.locator('h2.css-1dq9x6k').first().waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+
+      const offers: ScrapedOffer[] = await page
+        .evaluate(() => {
+          const doc: any = (globalThis as any).document;
+          const results: any[] = [];
+          const seen = new Set<string>();
+          const titleEls = Array.from(doc.querySelectorAll('h2.css-1dq9x6k')) as any[];
+          for (const h2 of titleEls) {
+            const title = (h2.innerText || h2.textContent || '').trim();
+            if (!title) continue;
+
+            let ancestor = h2.parentElement;
+            let jobLink: any = null;
+            for (let i = 0; i < 10 && ancestor; i++) {
+              jobLink = ancestor.querySelector('a[href*="jobId="]');
+              if (jobLink) break;
+              ancestor = ancestor.parentElement;
+            }
+            if (!jobLink) continue;
+
+            const href = jobLink.getAttribute('href') || '';
+            const jobId = href.match(/[?&]jobId=([^&]+)/)?.[1];
+            if (!jobId || seen.has(jobId)) continue;
+            seen.add(jobId);
+
+            const cardText = (ancestor.innerText || '').trim();
+            const lines = cardText.split('\n').map((l: string) => l.trim()).filter(Boolean);
+            // Confirmed live: Collective Work's card layout puts the
+            // company name on the line BEFORE the title, not after.
+            const titleIdx = lines.indexOf(title);
+            const company = titleIdx > 0 && lines[titleIdx - 1] ? lines[titleIdx - 1] : 'Entreprise non précisée';
+            // A one-letter line (the company's avatar-circle initial,
+            // rendered as its own text node right before the company name)
+            // is layout noise, not real card content — dropped from the
+            // description only; company/title extraction above already
+            // works correctly around it via title-relative indexing.
+            const cleanLines = lines.filter((l: string) => l.length > 2 && l !== "Voir l'offre");
+
+            results.push({
+              externalId: jobId,
+              title,
+              company,
+              url: href.startsWith('http') ? href : `https://app.collective.work${href.startsWith('/') ? '' : '/'}${href}`,
+              description: cleanLines.join(' | ').slice(0, 500),
+            });
+          }
+          return results;
+        })
+        .then((raw: any[]) =>
+          raw.map((r) => ({
+            externalId: r.externalId,
+            source: 'collective_work',
+            title: r.title,
+            company: r.company,
+            description: r.description || `${r.title} chez ${r.company}`,
+            url: r.url,
+          })),
+        )
+        .catch(() => []);
+
+      await persistCookies(context, 'collective_work');
+      return offers;
+    } catch (err: any) {
+      this.logger.warn(`Collective Work stealth scraper error: ${err.message}`);
       return [];
     } finally {
       await context.close().catch(() => {});

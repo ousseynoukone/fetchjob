@@ -18,6 +18,7 @@ import { LeverApplier } from './appliers/lever.applier';
 import { WorkdayApplier } from './appliers/workday.applier';
 import { SmartRecruitersApplier } from './appliers/smartrecruiters.applier';
 import { FreeWorkApplier } from './appliers/freework.applier';
+import { CollectiveWorkApplier } from './appliers/collective-work.applier';
 import { GenericApplier } from './appliers/generic.applier';
 
 @Module({
@@ -36,6 +37,7 @@ import { GenericApplier } from './appliers/generic.applier';
     WorkdayApplier,
     SmartRecruitersApplier,
     FreeWorkApplier,
+    CollectiveWorkApplier,
     GenericApplier,
   ],
   exports: [AutoApplyService, BrowserSessionService],

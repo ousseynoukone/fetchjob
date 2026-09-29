@@ -141,6 +141,7 @@ export const REMOTE_LOGIN_URLS: Record<SupportedPlatform, string> = {
   // /fr/login?redirect=/fr/resume when logged out (verified 200) and lands
   // straight back on the résumé page once actually logged in.
   free_work: 'https://www.free-work.com/fr/resume',
+  collective_work: 'https://app.collective.work/auth/login',
 };
 
 // Generic enough to match every platform's own login form without needing a

@@ -18,6 +18,7 @@ const SOURCES = [
   { id: 'arbeitnow', label: 'Arbeitnow' },
   { id: 'jobicy', label: 'Jobicy (remote)' },
   { id: 'the_muse', label: 'The Muse' },
+  { id: 'collective_work', label: 'Collective Work' },
 ];
 
 export default function CampaignPage() {

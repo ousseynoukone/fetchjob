@@ -15,7 +15,14 @@ export interface SnapshotField {
   // specific option element.
   idx?: number;
   label: string;
-  kind: 'text' | 'textarea' | 'select' | 'checkbox' | 'radio-group';
+  // 'richtext' = a rich-text editor (ProseMirror, Quill, TipTap, ...) built
+  // on a contenteditable div rather than a real <textarea> -- confirmed live
+  // on Collective Work's application form (app.collective.work), whose
+  // custom-question answers are div[contenteditable].ProseMirror elements
+  // with no underlying form control at all. Filled differently in
+  // applyFormPlan (real keystrokes, not .fill()/.inputValue(), which don't
+  // work the same way on a plain input) — see the comment there.
+  kind: 'text' | 'textarea' | 'select' | 'checkbox' | 'radio-group' | 'richtext';
   options?: string[]; // select: option labels
   radioOptions?: { idx: number; text: string }[]; // radio-group only
 }
@@ -311,19 +318,46 @@ function buildFormSnapshotOnce(page: Page): Promise<FormSnapshot> {
         fields.push({ label: truncate(groupLabel || '(choix)'), kind: 'radio-group', radioOptions });
       }
 
-      // Everything else: text/textarea/select/checkbox.
+      // Everything else: text/textarea/select/checkbox/richtext.
+      // [contenteditable="true"] catches rich-text editors (ProseMirror,
+      // Quill, TipTap...) that have no real <textarea> underneath at all --
+      // confirmed live on Collective Work's custom-question fields.
       const candidates = Array.from(
         doc.querySelectorAll(
-          'input:not([type=file]):not([type=hidden]):not([type=submit]):not([type=button]):not([type=password]):not([type=radio]), textarea, select',
+          'input:not([type=file]):not([type=hidden]):not([type=submit]):not([type=button]):not([type=password]):not([type=radio]), textarea, select, [contenteditable="true"]',
         ),
       ) as any[];
 
       for (const el of candidates) {
         if (fields.length >= maxFields) break;
         if (!isVisible(el) || el.disabled) continue;
+        // A contenteditable INSIDE another contenteditable/textarea already
+        // captured (ProseMirror nests its editable div inside a wrapper that
+        // sometimes also matches) would otherwise be tagged twice.
+        if (el.getAttribute('contenteditable') === 'true' && el.closest('[data-ai-idx]')) continue;
 
         const type = (el.type || '').toLowerCase();
         const tagName = el.tagName.toLowerCase();
+        const isRichText = !type && tagName === 'div' && el.getAttribute('contenteditable') === 'true';
+
+        if (isRichText) {
+          // Already has real text typed into it (not just ProseMirror's own
+          // empty-state placeholder paragraph) -- don't re-ask.
+          const text = (el.innerText || el.textContent || '').trim();
+          if (text) continue;
+          // A ProseMirror instance rarely carries its own label -- the
+          // question text sits as a sibling/ancestor-sibling paragraph
+          // instead (confirmed live on Collective Work: a data-testid
+          // wrapper holds the question <p> followed by the editable div as
+          // a separate sibling, not a <label for>). extractLabel's own
+          // previous-sibling walk already covers exactly this shape when
+          // starting from the wrapper rather than the div itself.
+          const wrapper = el.closest('[data-testid], fieldset, li') || el.parentElement;
+          const label = (wrapper && wrapper !== el ? extractLabel(wrapper) : '') || extractLabel(el);
+          if (!label || excludeRe.test(label)) continue;
+          fields.push({ idx: tag(el), label: truncate(label), kind: 'richtext' });
+          continue;
+        }
 
         if (type === 'checkbox') {
           if (el.checked) continue;
@@ -586,8 +620,21 @@ export async function applyFormPlan(page: Page, plan: FormStepPlan): Promise<voi
 
     const tagName = await el.evaluate((e: any) => e.tagName.toLowerCase()).catch(() => '');
     const type = await el.evaluate((e: any) => (e.type || '').toLowerCase()).catch(() => '');
+    const isContentEditable = await el.evaluate((e: any) => e.getAttribute('contenteditable') === 'true').catch(() => false);
 
-    if (type === 'radio') {
+    if (isContentEditable) {
+      // ProseMirror (and similar rich-text editors) maintain their own
+      // document model from real DOM input events -- .fill()/.inputValue()
+      // either don't apply (no `.value` property on a div) or get silently
+      // ignored/reverted by the editor's own render cycle, since a raw
+      // textContent write never goes through its transaction system.
+      // pressSequentially dispatches genuine keydown/beforeinput/input
+      // events, which is what these editors actually listen for.
+      await el.click({ timeout: 3000 }).catch(() => {});
+      await el.press('Control+a').catch(() => {});
+      await el.press('Backspace').catch(() => {});
+      await el.pressSequentially(f.value, { delay: 20 + Math.random() * 40, timeout: 15000 }).catch(() => {});
+    } else if (type === 'radio') {
       await el.evaluate((e: any) => e.click()).catch(() => {});
     } else if (type === 'checkbox') {
       if (/^(true|yes|oui|1)$/i.test(f.value || 'true')) {
@@ -687,7 +734,7 @@ export function formatFieldsForPrompt(fields: SnapshotField[]): string {
       if (f.kind === 'checkbox') {
         return `- [${f.idx}] "${f.label}" (case à cocher, requise)`;
       }
-      return `- [${f.idx}] "${f.label}" (${f.kind === 'textarea' ? 'texte long' : 'texte'})`;
+      return `- [${f.idx}] "${f.label}" (${f.kind === 'textarea' || f.kind === 'richtext' ? 'texte long' : 'texte'})`;
     })
     .join('\n');
 }

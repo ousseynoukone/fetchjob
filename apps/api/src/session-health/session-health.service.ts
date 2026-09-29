@@ -418,6 +418,31 @@ export class SessionHealthService implements OnModuleInit {
         }
       }
 
+      // Confirmed live via a real recorded application flow: a plain
+      // email/password login, no OTP/2FA step. Fields are matched by
+      // accessible name ("email-input"/"password-input") since the actual
+      // DOM ids are React's own useId() output and change on every page
+      // load.
+      if (platform === 'collective_work') {
+        const emailField = page.getByRole('textbox', { name: 'email-input' }).first();
+        const passField = page.getByRole('textbox', { name: 'password-input' }).first();
+        if ((await emailField.isVisible().catch(() => false)) && (await passField.isVisible().catch(() => false))) {
+          await humanFill(emailField, email);
+          await humanFill(passField, pass);
+          const loginBtn = page.getByRole('button', { name: /se connecter/i }).first();
+          if (await loginBtn.isVisible().catch(() => false)) {
+            await humanClick(page, loginBtn).catch(() => loginBtn.click().catch(() => {}));
+          } else {
+            await passField.press('Enter');
+          }
+          for (let i = 0; i < 10; i++) {
+            await page.waitForTimeout(1000);
+            if (!(await page.getByRole('textbox', { name: 'password-input' }).first().isVisible().catch(() => false))) break;
+          }
+          return !await SESSION_CHECKS.collective_work.isLoginWallVisible(page);
+        }
+      }
+
       if (platform === 'linkedin') {
         // Two layouts, confirmed live: a returning browser gets "Bon retour
         // parmi nous" (the remembered account, password field only, ids
