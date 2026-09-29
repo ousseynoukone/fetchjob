@@ -11,6 +11,7 @@ import { PdfService } from '../pdf/pdf.service';
 import { PlatformCredentialsService } from '../platform-credentials/platform-credentials.service';
 import { SUPPORTED_PLATFORMS, SupportedPlatform } from '../platform-credentials/dto/upsert-credential.dto';
 import { BrowserSessionService } from './browser-session.service';
+import { BrowserConcurrencyService } from '../common/browser-concurrency.service';
 import { LinkedInApplier } from './appliers/linkedin.applier';
 import { IndeedApplier } from './appliers/indeed.applier';
 import { FranceTravailApplier } from './appliers/france-travail.applier';
@@ -148,6 +149,7 @@ export class AutoApplyService {
     private pdfService: PdfService,
     private credentials: PlatformCredentialsService,
     private browserSession: BrowserSessionService,
+    private browserConcurrency: BrowserConcurrencyService,
     private customQuestions: CustomQuestionsService,
     linkedin: LinkedInApplier,
     indeed: IndeedApplier,
@@ -338,7 +340,9 @@ export class AutoApplyService {
 
       try {
         await appendLog(`Auto-apply en cours : ${application.jobTitle} chez ${application.company}...`);
-        const result = await this.applyToOne(userId, application, atsEnabled, knownAnswers, maxAiCallsPerAttempt, appendLog);
+        const result = await this.browserConcurrency.runExclusive(`apply:${source}`, () =>
+          this.applyToOne(userId, application, atsEnabled, knownAnswers, maxAiCallsPerAttempt, appendLog),
+        );
         if (result.success) {
           applied++;
           confirmedThisRun.set(source, (confirmedThisRun.get(source) || 0) + 1);

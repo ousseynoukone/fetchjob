@@ -17,6 +17,7 @@ import {
   mapWithConcurrency as stealthMapWithConcurrency,
 } from './stealth-browser';
 import { SettingsService } from '../common/settings.service';
+import { BrowserConcurrencyService } from '../common/browser-concurrency.service';
 import { locationWithinRegion } from '../common/location-region';
 import { blockHeavyResources } from '../auto-apply/appliers/ats-common';
 import { scrapeLinkedInWithStealth, ProxyRotator } from './linkedin-stealth';
@@ -379,7 +380,19 @@ export class ScrapingService {
   private readonly feedCache = new Map<string, { at: number; data: any }>();
   private static readonly FEED_CACHE_TTL_MS = 5 * 60 * 1000;
 
-  constructor(private settings: SettingsService) {}
+  constructor(
+    private settings: SettingsService,
+    private browserConcurrency: BrowserConcurrencyService,
+  ) {}
+
+  // linkedin/hellowork/indeed/welcome_to_the_jungle drive a real browser
+  // (see stealth-browser.ts/linkedin-stealth.ts) — the rest of fetchOffers's
+  // sources are plain HTTP (axios/cheerio) and don't compete for the same
+  // browser, so only these need to funnel through the app-wide browser lock
+  // (see BrowserConcurrencyService — this is what stops a scrape from
+  // running at the same time as a session-health check or another scrape
+  // and pegging the CPU for hours).
+  private static readonly BROWSER_SOURCES = new Set(['linkedin', 'hellowork', 'indeed', 'welcome_to_the_jungle']);
 
   private async cachedFeedFetch(url: string, params?: Record<string, unknown>): Promise<any> {
     const key = `${url}|${JSON.stringify(params ?? {})}`;
@@ -391,19 +404,29 @@ export class ScrapingService {
     return response.data;
   }
 
+  private async fetchOffersBrowser(source: string, params: SearchParams): Promise<ScrapedOffer[]> {
+    switch (source) {
+      case 'linkedin':
+        return this.fetchLinkedInOffers(params);
+      case 'hellowork':
+        return this.fetchHelloWorkOffers(params);
+      case 'indeed':
+        return this.fetchIndeedOffers(params);
+      case 'welcome_to_the_jungle':
+        return this.fetchWelcomeToTheJungleOffers(params);
+      default:
+        return [];
+    }
+  }
+
   async fetchOffers(source: string, params: SearchParams): Promise<ScrapedOffer[]> {
     try {
+      if (ScrapingService.BROWSER_SOURCES.has(source)) {
+        return await this.browserConcurrency.runExclusive(`scrape:${source}`, () => this.fetchOffersBrowser(source, params));
+      }
       switch (source) {
-        case 'linkedin':
-          return await this.fetchLinkedInOffers(params);
-        case 'hellowork':
-          return await this.fetchHelloWorkOffers(params);
-        case 'indeed':
-          return await this.fetchIndeedOffers(params);
         case 'france_travail':
           return await this.fetchFranceTravailOffers(params);
-        case 'welcome_to_the_jungle':
-          return await this.fetchWelcomeToTheJungleOffers(params);
         case 'adzuna':
           return await this.fetchAdzunaOffers(params);
         case 'apec':
@@ -439,11 +462,11 @@ export class ScrapingService {
   async enrichDescription(offer: ScrapedOffer): Promise<ScrapedOffer> {
     switch (offer.source) {
       case 'hellowork':
-        return this.enrichHelloWorkDescription(offer);
+        return this.browserConcurrency.runExclusive('enrich:hellowork', () => this.enrichHelloWorkDescription(offer));
       case 'linkedin':
-        return this.enrichLinkedInDescription(offer);
+        return this.browserConcurrency.runExclusive('enrich:linkedin', () => this.enrichLinkedInDescription(offer));
       case 'welcome_to_the_jungle':
-        return this.enrichWelcomeToTheJungleDescription(offer);
+        return this.browserConcurrency.runExclusive('enrich:wttj', () => this.enrichWelcomeToTheJungleDescription(offer));
       default:
         return offer;
     }

@@ -8,6 +8,7 @@ import { BrowserSessionService } from '../auto-apply/browser-session.service';
 import { SESSION_CHECKS, blockHeavyResources, dismissCookieBanner, handleUniversalEmailOtp, humanFill, humanClick } from '../auto-apply/appliers/ats-common';
 import { REMOTE_LOGIN_URLS } from '../platform-credentials/remote-login.service';
 import { GmailOtpService } from '../common/gmail-otp.service';
+import { BrowserConcurrencyService } from '../common/browser-concurrency.service';
 
 const LINKEDIN_RETRY_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
@@ -23,6 +24,7 @@ export class SessionHealthService implements OnModuleInit {
     private credentials: PlatformCredentialsService,
     private browserSession: BrowserSessionService,
     private gmailOtp: GmailOtpService,
+    private browserConcurrency: BrowserConcurrencyService,
   ) {}
 
   onModuleInit() {
@@ -95,10 +97,12 @@ export class SessionHealthService implements OnModuleInit {
         }
       }
 
-      const status = await this.checkOne(credential.userId, platform).catch((error: any) => {
-        this.logger.warn(`Session health check failed for ${platform}: ${error.message}`);
-        return 'error' as const;
-      });
+      const status = await this.browserConcurrency
+        .runExclusive(`session-health:${platform}`, () => this.checkOne(credential.userId, platform))
+        .catch((error: any) => {
+          this.logger.warn(`Session health check failed for ${platform}: ${error.message}`);
+          return 'error' as const;
+        });
       results.push({ platform, status });
       // Pause between platforms to mimic human browsing behavior
       await this.browserSession.randomDelay(10000, 25000);

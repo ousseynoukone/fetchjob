@@ -8,6 +8,7 @@ import { PlatformCredentialsService } from '../platform-credentials/platform-cre
 import { SupportedPlatform } from '../platform-credentials/dto/upsert-credential.dto';
 import { BrowserSessionService } from '../auto-apply/browser-session.service';
 import { blockHeavyResources, dismissCookieBanner } from '../auto-apply/appliers/ats-common';
+import { BrowserConcurrencyService } from '../common/browser-concurrency.service';
 
 declare const document: any;
 
@@ -87,6 +88,7 @@ export class PlatformStatusCheckerService {
     private settings: SettingsService,
     private credentials: PlatformCredentialsService,
     private browserSession: BrowserSessionService,
+    private browserConcurrency: BrowserConcurrencyService,
   ) {}
 
   @Cron(CronExpression.EVERY_HOUR)
@@ -137,6 +139,17 @@ export class PlatformStatusCheckerService {
     }
     if (!sessionState) return;
 
+    await this.browserConcurrency.runExclusive(`platform-status:${platform}`, () =>
+      this.scanPlatform(platform, handler, open, sessionState!),
+    );
+  }
+
+  private async scanPlatform(
+    platform: SupportedPlatform,
+    handler: PlatformHandler,
+    open: { id: string; company: string; jobTitle: string; status: string }[],
+    sessionState: string,
+  ) {
     const context = await this.browserSession.createContext(sessionState);
     await blockHeavyResources(context);
     const remaining = new Set(open.map((a) => a.id));

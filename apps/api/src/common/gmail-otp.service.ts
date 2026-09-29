@@ -4,6 +4,7 @@ import { chromium } from 'playwright';
 import { PrismaService } from './prisma.service';
 import { CryptoService } from './crypto.service';
 import { LocalUserService } from './local-user.service';
+import { BrowserConcurrencyService } from './browser-concurrency.service';
 
 export interface OtpFetchResult {
   code: string;
@@ -28,6 +29,7 @@ export class GmailOtpService {
     private prisma: PrismaService,
     private crypto: CryptoService,
     private localUser: LocalUserService,
+    private browserConcurrency: BrowserConcurrencyService,
   ) {}
 
   /**
@@ -70,10 +72,12 @@ export class GmailOtpService {
     }
 
     // 3. Fallback: stored Playwright Gmail web session (if user logged in via integrated remote browser)
-    const webSessionCode = await this.queryPlaywrightGmail(resolvedUserId, platform, since, deadline).catch((err) => {
-      this.logger.debug(`Playwright Gmail query failed: ${err.message}`);
-      return null;
-    });
+    const webSessionCode = await this.browserConcurrency
+      .runExclusive('gmail-otp', () => this.queryPlaywrightGmail(resolvedUserId, platform, since, deadline))
+      .catch((err) => {
+        this.logger.debug(`Playwright Gmail query failed: ${err.message}`);
+        return null;
+      });
 
     if (webSessionCode) {
       this.logger.log(`Retrieved OTP code [${webSessionCode.code}] for ${platform} via Gmail Web Session`);
