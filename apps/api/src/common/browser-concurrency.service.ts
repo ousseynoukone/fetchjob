@@ -19,6 +19,20 @@ import { Injectable, Logger } from '@nestjs/common';
  * top of each other, which is what turned "briefly busy" into "frozen for
  * hours". Everything routed through here runs one at a time, in the order
  * it arrived.
+ *
+ * Confirmed live, the same day this was added: a single applyToOne attempt
+ * got wedged (Indeed, ~3h with no log output but nonzero CPU -- a
+ * synchronous hang, not an I/O wait, since applyToOne's own 150s+5s
+ * watchdog is a setTimeout and a truly synchronous block prevents even
+ * that from ever firing). Before this lock existed, a wedged attempt only
+ * blocked its OWN campaign loop. With a plain unconditional queue, it
+ * blocked session-health, scraping and every other campaign too -- for as
+ * long as it stayed stuck, unbounded. MAX_WAIT_MS below is the fix: a
+ * queued caller gives up waiting after a generous grace period and runs
+ * anyway rather than waiting forever. That reintroduces the exact
+ * CPU-contention this class exists to prevent, but only as a last resort
+ * after a long wait -- guaranteed forward progress beats a guaranteed
+ * permanent freeze.
  */
 @Injectable()
 export class BrowserConcurrencyService {
@@ -26,13 +40,34 @@ export class BrowserConcurrencyService {
   private mutex: Promise<unknown> = Promise.resolve();
   private queueDepth = 0;
 
+  // Generous relative to any single legitimate task: applyToOne's own
+  // internal watchdog bounds it to ~155s; a scrape/session-health cycle is
+  // normally well under a minute. 5 minutes gives real contention plenty
+  // of room while still capping how long anything can be blocked by a
+  // task that's actually stuck.
+  private static readonly MAX_WAIT_MS = 5 * 60 * 1000;
+
   async runExclusive<T>(label: string, fn: () => Promise<T>): Promise<T> {
     this.queueDepth++;
     if (this.queueDepth > 1) {
       this.logger.log(`[${label}] waiting — ${this.queueDepth - 1} other browser task(s) ahead of it...`);
     }
     const waitForTurn = this.mutex;
-    const run = waitForTurn.then(() => fn());
+
+    const run = (async () => {
+      const gotTurn = await Promise.race([
+        waitForTurn.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), BrowserConcurrencyService.MAX_WAIT_MS)),
+      ]);
+      if (!gotTurn) {
+        this.logger.error(
+          `[${label}] waited over ${BrowserConcurrencyService.MAX_WAIT_MS / 1000}s for the browser lock — ` +
+            `whatever's ahead of it appears stuck. Proceeding anyway instead of waiting forever.`,
+        );
+      }
+      return fn();
+    })();
+
     // Swallow the outcome here so one task's failure never poisons the
     // chain for whoever queues up next.
     this.mutex = run.then(

@@ -138,6 +138,20 @@ start_bg() {
     echo "$name : deja en cours (PID $(cat "$pidfile"))."
     return
   fi
+  # Confirmed live: a PAST stop/restart that killed only the pidfile's
+  # top-level `npm run dev` PID (this script's own old behaviour, and
+  # watchdog-mac.sh's, before this fix) can leave the real work -- nest
+  # start --watch's dist/main child, or next dev's next-server child --
+  # running as an orphan, invisible to the check above since its OWN pid
+  # was never the one recorded in the pidfile. Found two such zombie API
+  # copies still alive hours later, both running full background cron
+  # schedules against the same DB and the same shared host Chrome this
+  # fresh instance is about to also start driving. Cleaned here so every
+  # start begins from a genuinely clean slate, not just when the pidfile
+  # happens to still point at something alive.
+  pkill -9 -f "$dir/dist/main" 2>/dev/null
+  pkill -9 -f "$PROJECT_ROOT/node_modules/.bin/nest start" 2>/dev/null
+  pkill -9 -f "$PROJECT_ROOT/node_modules/.bin/next dev" 2>/dev/null
   (
     cd "$dir"
     nohup npm run dev > "$logfile" 2>&1 &
