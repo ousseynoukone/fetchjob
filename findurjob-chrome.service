@@ -1,0 +1,38 @@
+# Keeps the real host Chrome (see start-host-chrome.sh) running unattended
+# on a Linux server, restarting it if it ever dies or the server reboots —
+# this is the piece that replaces needing a PC left on.
+#
+# Edit User=/Group=/WorkingDirectory below for your setup (WorkingDirectory
+# must be this repo's checkout path on the server), then install:
+#   sudo cp findurjob-chrome.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now findurjob-chrome
+#   sudo systemctl status findurjob-chrome   # confirm it's "active (running)"
+#
+# Running as root works (start-host-chrome.sh adds --no-sandbox
+# automatically when it detects uid 0) but is not required — any user that
+# can read this checkout is fine, and keeps Chrome's sandbox intact.
+
+[Unit]
+Description=FindUrJob host Chrome (CDP :9222 for the API's browser automation)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/findurjob-clone
+# --foreground: execs Chrome directly instead of backgrounding it, so this
+# unit supervises Chrome's actual process (Restart=always then genuinely
+# restarts Chrome on a crash) rather than a launcher script that already
+# exited 0 right after starting it, which is what every other mode of
+# start-host-chrome.sh does for interactive/manual use.
+ExecStart=/bin/bash start-host-chrome.sh --foreground
+Restart=always
+RestartSec=5
+# Give the debug port time to answer on a loaded/cold-started server
+# before systemd decides the start failed.
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

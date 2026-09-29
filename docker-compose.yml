@@ -94,6 +94,13 @@ services:
       # constraint. Defaults much higher here since local Docker Desktop
       # typically has several GB available.
       - CHROMIUM_RENDERER_HEAP_MB=${CHROMIUM_RENDERER_HEAP_MB:-1024}
+    # host.docker.internal is a Docker Desktop (Mac/Windows) built-in; on a
+    # native Linux Docker Engine (e.g. a headless Linux server) it doesn't
+    # resolve at all unless mapped explicitly, which is what this does
+    # (Docker 20.10+). Harmless no-op on Docker Desktop, where the name
+    # already resolves on its own.
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
     # Backs remote-login.service.ts's persistent per-platform Chrome
     # profiles -- without this, the container's own filesystem is wiped on
     # every rebuild, and a brand-new, zero-history browser profile on every

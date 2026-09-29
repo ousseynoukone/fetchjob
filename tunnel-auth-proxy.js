@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Dependency-free HTTP Basic Auth reverse proxy. Sits between the public
-// Cloudflare quick tunnel and the local Web app so the public URL isn't
+// ngrok tunnel and the local Web app so the public URL isn't
 // wide open — most of the API's own routes have no auth guard of their
 // own (see start-mac.command), so the login wall has to live here instead.
 // Started by share-mac.command; not part of the normal local (start-mac)
@@ -53,6 +53,38 @@ const server = http.createServer((req, res) => {
 // don't let Node's default timeouts cut them off.
 server.keepAliveTimeout = 0;
 server.headersTimeout = 0;
+
+// Next.js dev mode's hot-reload client opens a WebSocket
+// (/_next/webpack-hmr) — plain `http.createServer` request handling never
+// sees that, it has to be forwarded separately as a raw socket upgrade.
+server.on('upgrade', (req, socket, head) => {
+  if (req.headers.authorization !== expected) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm="FindUrJob"\r\nConnection: close\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  const proxyReq = http.request({
+    hostname: '127.0.0.1',
+    port: TARGET_PORT,
+    path: req.url,
+    method: req.method,
+    headers: req.headers,
+  });
+  proxyReq.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
+    const headerLines = Object.entries(proxyRes.headers)
+      .map(([key, value]) => `${key}: ${value}`)
+      .join('\r\n');
+    socket.write(`HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage}\r\n${headerLines}\r\n\r\n`);
+    if (proxyHead && proxyHead.length) proxySocket.unshift(proxyHead);
+    if (head && head.length) socket.unshift(head);
+    proxySocket.pipe(socket);
+    socket.pipe(proxySocket);
+  });
+  proxyReq.on('error', () => socket.destroy());
+  socket.on('error', () => proxyReq.destroy());
+  proxyReq.end();
+});
 
 server.listen(LISTEN_PORT, '127.0.0.1', () => {
   console.log(`Auth proxy: 127.0.0.1:${LISTEN_PORT} -> 127.0.0.1:${TARGET_PORT}`);

@@ -1,20 +1,22 @@
 #!/bin/bash
-# FindUrJob — expose the locally-running app to the internet through a
-# Cloudflare quick tunnel, behind an HTTP Basic Auth wall (see
-# tunnel-auth-proxy.js). Run start-mac.command first if the app isn't
+# FindUrJob — expose the locally-running app to the internet through an
+# ngrok tunnel on a fixed static domain, behind an HTTP Basic Auth wall
+# (see tunnel-auth-proxy.js). Run start-mac.command first if the app isn't
 # already up. Safe to double-click every time: reuses the same
-# username/password across runs (stored in .run/.tunnel-auth), only the
-# public URL changes (Cloudflare quick tunnels don't support fixed
-# hostnames without your own domain).
+# username/password (stored in .run/.tunnel-auth) AND the same public URL
+# (NGROK_DOMAIN below is a free static domain claimed on the ngrok account
+# — see dashboard.ngrok.com/domains).
 set -e
 cd "$(dirname "$0")"
 PROJECT_ROOT="$(pwd)"
 mkdir -p .run
 
-echo "== FindUrJob — partage public (Cloudflare Tunnel + mot de passe) =="
+NGROK_DOMAIN="dodge-remark-broom.ngrok-free.dev"
 
-if ! command -v cloudflared &>/dev/null; then
-  echo "cloudflared n'est pas installe. Lance : brew install cloudflared"
+echo "== FindUrJob — partage public (ngrok Tunnel + mot de passe) =="
+
+if ! command -v ngrok &>/dev/null; then
+  echo "ngrok n'est pas installe. Lance : brew install ngrok"
   read -p "Appuie sur Entree pour fermer..."
   exit 1
 fi
@@ -84,16 +86,16 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Cloudflare quick tunnel -> the auth proxy (not directly to the app).
+# 5. ngrok tunnel -> the auth proxy (not directly to the app). Uses a fixed
+#    static domain, so the public URL is the same on every run.
 # ---------------------------------------------------------------------------
-echo "Ouverture du tunnel Cloudflare..."
-nohup cloudflared tunnel --url "http://localhost:$AUTH_PROXY_PORT" > "$PROJECT_ROOT/.run/tunnel-web.log" 2>&1 &
+echo "Ouverture du tunnel ngrok..."
+nohup ngrok http "$AUTH_PROXY_PORT" --url "https://$NGROK_DOMAIN" > "$PROJECT_ROOT/.run/tunnel-web.log" 2>&1 &
 echo $! > "$PROJECT_ROOT/.run/tunnel-web.pid"
 
 PUBLIC_URL=""
 for i in $(seq 1 30); do
-  PUBLIC_URL=$(grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' "$PROJECT_ROOT/.run/tunnel-web.log" | head -1)
-  [ -n "$PUBLIC_URL" ] && break
+  curl -s -o /dev/null "https://$NGROK_DOMAIN" && PUBLIC_URL="https://$NGROK_DOMAIN" && break
   sleep 1
 done
 
@@ -107,7 +109,7 @@ if [ -n "$PUBLIC_URL" ]; then
   echo " Mot de passe : $TUNNEL_PASS"
   echo " (reutilises a chaque partage -- voir .run/.tunnel-auth)"
   echo ""
-  echo " Cette URL change a chaque lancement de ce script."
+  echo " Cette URL est fixe -- elle ne change pas d'un lancement a l'autre."
   echo " Pour arreter le partage (et l'app) : Stop FindUrJob.command"
   echo "================================================"
 else
