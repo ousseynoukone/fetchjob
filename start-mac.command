@@ -9,6 +9,12 @@ mkdir -p .run
 
 echo "== FindUrJob — demarrage natif (macOS, sans Docker) =="
 
+echo "Verification des mises a jour (git pull)..."
+git pull --ff-only || echo "Pull impossible (modifications locales, ou hors ligne) -- poursuite avec le code actuel."
+
+echo "Installation/mise a jour des dependances (npm install)..."
+npm install
+
 # ---------------------------------------------------------------------------
 # 1. Postgres.app — this is a SHARED server (other local projects use it
 #    too), so we only start it if it's not already running; we never stop

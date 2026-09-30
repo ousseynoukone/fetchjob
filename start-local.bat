@@ -2,6 +2,15 @@
 setlocal
 cd /d "%~dp0"
 
+echo Checking for updates (git pull)...
+git pull --ff-only
+if errorlevel 1 (
+  echo Pull failed or skipped ^(local changes, or offline^) -- continuing with the code currently on disk.
+)
+
+echo Installing/updating dependencies (npm install)...
+call npm install
+
 echo Checking Docker Desktop...
 docker info >nul 2>&1
 if errorlevel 1 (
@@ -21,6 +30,17 @@ docker compose stop api web >nul 2>&1
 
 echo Starting Docker services (Postgres and Redis only)...
 docker compose up -d postgres redis
+
+echo Applying any pending database migrations (Prisma)...
+pushd apps\api
+REM npx prisma only reads a plain .env, not .env.local -- load it into the
+REM shell environment manually so migrate deploy targets the right (local,
+REM port 5433) database instead of whatever DATABASE_URL happens to be set
+REM system-wide, or none at all.
+for /f "usebackq tokens=1,* delims==" %%A in (".env.local") do set "%%A=%%B"
+call npx prisma generate
+call npx prisma migrate deploy
+popd
 
 echo Starting the local host Chrome (headless, used over CDP)...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-host-chrome.ps1"

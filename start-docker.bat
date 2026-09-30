@@ -2,6 +2,12 @@
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
+echo Checking for updates (git pull)...
+git pull --ff-only
+if errorlevel 1 (
+  echo Pull failed or skipped ^(local changes, or offline^) -- continuing with the code currently on disk.
+)
+
 echo Stopping any locally-running api/web dev processes (freeing ports 4000/3001)...
 powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 4000,3001 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 taskkill /FI "WINDOWTITLE eq Backend API*" /T /F >nul 2>&1
@@ -24,8 +30,8 @@ if errorlevel 1 (
   )
 )
 
-echo Starting Docker (Postgres, Redis, API, Web)...
-docker compose up -d
+echo Starting Docker (Postgres, Redis, API, Web) -- rebuilding to pick up any code changes...
+docker compose up -d --build
 
 echo Waiting for the API to become ready...
 powershell -NoProfile -Command ^
