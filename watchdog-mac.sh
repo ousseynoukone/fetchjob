@@ -50,6 +50,30 @@ while true; do
 
   if [ "$fails" -ge "$FAIL_THRESHOLD" ]; then
     echo "$(date '+%F %T') API unresponsive for $((FAIL_THRESHOLD * CHECK_INTERVAL_S))s — restarting it."
+
+    # Diagnostic capture, BEFORE anything is killed: every restart so far
+    # has been investigated after the fact, by which point the stuck
+    # process is already gone and there's nothing left to actually inspect
+    # (confirmed live, repeatedly: `sample` on a leftover orphan afterward
+    # only ever shows it idle, because whatever it was doing has already
+    # passed by the time anyone looks). `sample` is read-only and doesn't
+    # affect the target, so this costs ~5s of restart delay in exchange for
+    # a real stack trace of whatever it's ACTUALLY doing at the moment it's
+    # judged stuck, the next time this fires.
+    STUCK_PID=$(pgrep -f "$PROJECT_ROOT/apps/api/dist/main" | head -1)
+    if [ -n "$STUCK_PID" ]; then
+      mkdir -p "$PROJECT_ROOT/.run/diagnostics"
+      DIAG_FILE="$PROJECT_ROOT/.run/diagnostics/stuck-$(date '+%Y%m%d-%H%M%S')-pid${STUCK_PID}.txt"
+      {
+        echo "=== ps snapshot ==="
+        ps -o pid,%cpu,%mem,etime,command -p "$STUCK_PID"
+        echo
+        echo "=== 5s stack sample (what it's actually doing right now) ==="
+        sample "$STUCK_PID" 5 2>&1
+      } > "$DIAG_FILE" 2>&1
+      echo "$(date '+%F %T') diagnostic captured: $DIAG_FILE"
+    fi
+
     # Confirmed live: killing only the pidfile's top-level `npm run dev` PID
     # leaves its children (nest start --watch, and ITS child, the actual
     # dist/main process) alive as orphans -- they keep running full
@@ -66,6 +90,14 @@ while true; do
       [ -n "$OLDPID" ] && kill -9 "$OLDPID" 2>/dev/null
     fi
     for PID in $(lsof -ti tcp:4000 2>/dev/null || true); do kill -9 "$PID" 2>/dev/null || true; done
+    # Confirmed live: every prior restart used `>` here, which truncates
+    # api.log on the spot -- the log content leading up to BOTH freezes
+    # overnight was destroyed by this exact line before anyone got to read
+    # it. Archived instead, so the next restart preserves it.
+    if [ -f "$PROJECT_ROOT/.run/api.log" ]; then
+      mkdir -p "$PROJECT_ROOT/.run/diagnostics"
+      mv "$PROJECT_ROOT/.run/api.log" "$PROJECT_ROOT/.run/diagnostics/api-$(date '+%Y%m%d-%H%M%S')-before-restart.log"
+    fi
     sleep 2
     (
       cd "$PROJECT_ROOT/apps/api"
