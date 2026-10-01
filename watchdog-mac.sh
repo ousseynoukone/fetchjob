@@ -101,7 +101,16 @@ while true; do
     sleep 2
     (
       cd "$PROJECT_ROOT/apps/api"
-      nohup npm run dev > "$PROJECT_ROOT/.run/api.log" 2>&1 &
+      # --exec "node --prof": TEMPORARY while actively hunting the freeze
+      # bug (see stuck-*.txt diagnostics -- confirmed live it's 100% CPU
+      # in a tight Error-construction/promise-rejection loop, not I/O, but
+      # `sample`'s OS-level stack only shows V8 internals, not which JS
+      # function is actually looping). This writes an isolate-*.log V8
+      # profile continuously; `node --prof-process` on it after the next
+      # freeze gives the real, symbolized JS stack. Remove --exec once
+      # the culprit is found -- it has real overhead and grows that log
+      # file for as long as this process runs.
+      nohup npx nest start --watch --exec "node --prof" > "$PROJECT_ROOT/.run/api.log" 2>&1 &
       echo $! > "$PROJECT_ROOT/.run/api.pid"
     )
     echo "$(date '+%F %T') restart issued (new PID $(cat "$PROJECT_ROOT/.run/api.pid" 2>/dev/null))."

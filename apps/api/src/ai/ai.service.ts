@@ -269,6 +269,43 @@ export class AiService {
   private readonly logger = new Logger(AiService.name);
   constructor(private settings: SettingsService) {}
 
+  // Confirmed live: a DeepSeek account that ran out of credit (402
+  // "Insufficient Balance") got retried on every single subsequent offer
+  // across a whole campaign run -- hundreds of calls over several hours,
+  // every one doomed before it started, since nothing distinguished "this
+  // one request failed" from "this account cannot succeed until it's
+  // topped up". Each per-offer call already falls back gracefully on its
+  // own, but paying the full network round-trip (and JSON/error-object
+  // construction) again for every offer is real, continuous CPU/time cost
+  // for zero chance of success -- a meaningful contributor to the API
+  // looking frozen for the campaign's whole duration. 401 (bad/revoked
+  // key) is the other common permanent case; both get the same cooldown
+  // rather than threading a retry-count through every call site, since
+  // neither can succeed sooner no matter how soon it's retried.
+  private static readonly PERMANENT_FAILURE_COOLDOWN_MS = 15 * 60 * 1000;
+  private aiDisabledUntil = 0;
+  private aiDisabledReason = '';
+
+  private isPermanentFailure(err: any): boolean {
+    const status = err?.status ?? err?.response?.status;
+    return status === 402 || status === 401;
+  }
+
+  // Checked at the top of every public AI call, before building the
+  // (sometimes large) prompt or touching the network at all.
+  private circuitOpenReason(): string | null {
+    return this.aiDisabledUntil > Date.now() ? this.aiDisabledReason : null;
+  }
+
+  private recordFailure(err: any): void {
+    if (!this.isPermanentFailure(err)) return;
+    this.aiDisabledReason = err?.message || 'Erreur fournisseur IA';
+    this.aiDisabledUntil = Date.now() + AiService.PERMANENT_FAILURE_COOLDOWN_MS;
+    this.logger.error(
+      `Erreur IA permanente (${this.aiDisabledReason}) — appels IA désactivés pour ${AiService.PERMANENT_FAILURE_COOLDOWN_MS / 60000} min au lieu de réessayer sur chaque offre.`,
+    );
+  }
+
   // Not cached: the key can change at runtime via the Paramètres page, so
   // re-read it fresh each call rather than lock in whatever was set at boot.
   private async getClient(): Promise<OpenAI> {
@@ -286,6 +323,9 @@ export class AiService {
     additionalContext?: string,
     githubRepos?: GithubRepoInfo[],
   ): Promise<any> {
+    const circuitOpenReason = this.circuitOpenReason();
+    if (circuitOpenReason) throw new Error(`IA temporairement désactivée : ${circuitOpenReason}`);
+
     const reposBlock = (githubRepos || [])
       .filter((r) => r.readmeExcerpt)
       .map((r) => `- "${r.name}" [${r.language || 'langage inconnu'}] — README réel : ${r.readmeExcerpt}`)
@@ -316,13 +356,19 @@ INSTRUCTIONS PAR CHAMP :
 
 Reponds uniquement avec un JSON de la forme { "experiences": [...], "skillGroups": [...], "summary": string, "newProjects": [{ "name": string, "bullets": string[] }] }, chaque section au meme format que dans les donnees d'entree.`;
 
-    const response = await (await this.getClient()).chat.completions.create({
-      model: MODEL,
-      messages: [{ role: 'user', content: stripLoneSurrogates(prompt) }],
-      response_format: { type: 'json_object' },
-    });
+    let response: Awaited<ReturnType<OpenAI['chat']['completions']['create']>>;
+    try {
+      response = await (await this.getClient()).chat.completions.create({
+        model: MODEL,
+        messages: [{ role: 'user', content: stripLoneSurrogates(prompt) }],
+        response_format: { type: 'json_object' },
+      });
+    } catch (err) {
+      this.recordFailure(err);
+      throw err;
+    }
 
-    const result = JSON.parse(response.choices[0].message.content || '{}');
+    const result = JSON.parse((response as any).choices[0].message.content || '{}');
     const adaptedExperiences = result.experiences || cv.experiences;
     const sanitizedNewProjects = sanitizeNewProjects(githubRepos, cv.projects || [], result.newProjects);
     const sanitizedSummary = sanitizeSummary(cv, sanitizedNewProjects, result.summary);
@@ -352,6 +398,9 @@ Reponds uniquement avec un JSON de la forme { "experiences": [...], "skillGroups
     offer: { title: string; company: string; description: string },
     extraContext?: string,
   ): Promise<string> {
+    const circuitOpenReason = this.circuitOpenReason();
+    if (circuitOpenReason) throw new Error(`IA temporairement désactivée : ${circuitOpenReason}`);
+
     const prompt = `Genere une lettre de motivation en francais, formelle, ~250-300 mots, sans placeholders ni crochets, en texte brut (aucun markdown, pas d'asterisques ni de gras).
 
 REGLE ABSOLUE : appuie-toi uniquement sur les faits reels fournis ci-dessous (experiences, competences, projets, formation). N'invente aucune experience, technologie, metrique, duree ou responsabilite qui n'y figure pas. Tu peux choisir quels elements reels mettre en avant et reformuler pour coller a l'offre, mais jamais en fabriquer de nouveaux.
@@ -370,12 +419,16 @@ Poste vise: ${offer.title} chez ${offer.company}
 Description du poste: ${offer.description}
 ${extraContext ? `\nInformations complementaires sur le candidat (a mentionner seulement si pertinent pour cette offre, sans forcer) :\n${extraContext}\n` : ''}`;
 
-    const response = await (await this.getClient()).chat.completions.create({
-      model: MODEL,
-      messages: [{ role: 'user', content: stripLoneSurrogates(prompt) }],
-    });
-
-    return response.choices[0].message.content || '';
+    try {
+      const response = await (await this.getClient()).chat.completions.create({
+        model: MODEL,
+        messages: [{ role: 'user', content: stripLoneSurrogates(prompt) }],
+      });
+      return response.choices[0].message.content || '';
+    } catch (err) {
+      this.recordFailure(err);
+      throw err;
+    }
   }
 
   async analyzeOffer(
@@ -383,6 +436,17 @@ ${extraContext ? `\nInformations complementaires sur le candidat (a mentionner s
     offer: { title: string; company: string; description: string },
     extraContext?: string,
   ): Promise<Record<string, any>> {
+    const circuitOpenReason = this.circuitOpenReason();
+    if (circuitOpenReason) {
+      this.logger.warn(`analyzeOffer fallback used: IA temporairement désactivée (${circuitOpenReason})`);
+      return {
+        strengths: ['Compétences clés du profil'],
+        gaps: [],
+        advice: 'Offre analysée avec succès.',
+        recommendation: 4,
+      };
+    }
+
     const prompt = `Analyse cette offre pour ce candidat.
 Candidat (JSON): ${JSON.stringify(cv)}
 Offre: ${offer.title} chez ${offer.company} - ${offer.description}
@@ -404,6 +468,7 @@ Reponds uniquement en JSON avec les champs: strengths (array de 3 max), gaps (ar
         recommendation: 4,
       });
     } catch (err: any) {
+      this.recordFailure(err);
       this.logger.warn(`analyzeOffer fallback used: ${err.message}`);
       return {
         strengths: ['Compétences clés du profil'],
