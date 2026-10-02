@@ -11,6 +11,13 @@ export class CustomQuestionsController {
     return this.questions.list();
   }
 
+  // Registered before any future ':id'-shaped GET route, same reasoning as
+  // applications.controller.ts's updates/count.
+  @Get('count')
+  async count() {
+    return { count: await this.questions.countUnanswered() };
+  }
+
   @Put(':id/answer')
   async setAnswer(@Param('id') id: string, @Body() dto: SetAnswerDto) {
     return this.questions.setAnswer(id, dto.answer);

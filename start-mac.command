@@ -1,7 +1,8 @@
 #!/bin/bash
-# FindUrJob — native macOS start, no Docker. Safe to double-click every time:
-# already-done steps (DB role/database, data restore, dependency install)
-# are detected and skipped; only what's missing gets done.
+# FindUrJob — native macOS start, no Docker. Safe to double-click every time.
+# The database is the shared live Neon instance (same one every machine uses)
+# -- nothing local to set up for it; Prisma migrate deploy just keeps the
+# schema current.
 set -e
 cd "$(dirname "$0")"
 PROJECT_ROOT="$(pwd)"
@@ -16,84 +17,11 @@ echo "Installation/mise a jour des dependances (npm install)..."
 npm install
 
 # ---------------------------------------------------------------------------
-# 1. Postgres.app — this is a SHARED server (other local projects use it
-#    too), so we only start it if it's not already running; we never stop
-#    or restart it here.
-# ---------------------------------------------------------------------------
-PG_BIN="/Applications/Postgres.app/Contents/Versions/latest/bin"
-PGDATA=$(ls -d "$HOME/Library/Application Support/Postgres/var-"* 2>/dev/null | head -1)
-
-if [ ! -x "$PG_BIN/pg_ctl" ] || [ -z "$PGDATA" ]; then
-  echo "Postgres.app introuvable (attendu dans /Applications/Postgres.app)."
-  echo "Installe-le depuis https://postgresapp.com puis relance ce script."
-  open "https://postgresapp.com" 2>/dev/null || true
-  read -p "Appuie sur Entree pour fermer..."
-  exit 1
-fi
-
-if ! "$PG_BIN/pg_isready" -q 2>/dev/null; then
-  # A stale postmaster.pid (left over from a crash, or the PID it names got
-  # reused by an unrelated process) blocks startup with a "lock file already
-  # exists" error -- safe to clear only when that PID isn't actually postgres.
-  if [ -f "$PGDATA/postmaster.pid" ]; then
-    LOCK_PID=$(head -1 "$PGDATA/postmaster.pid")
-    if ! ps -p "$LOCK_PID" -o comm= 2>/dev/null | grep -qi postgres; then
-      echo "Suppression du postmaster.pid perime (PID $LOCK_PID n'est plus Postgres)..."
-      rm -f "$PGDATA/postmaster.pid"
-    fi
-  fi
-  echo "Demarrage de Postgres.app..."
-  "$PG_BIN/pg_ctl" -D "$PGDATA" -l "$PGDATA/postgresql.log" start -w
-else
-  echo "Postgres.app : deja actif."
-fi
-
-PSQL="$PG_BIN/psql"
-
-# ---------------------------------------------------------------------------
-# 2. Role + database for this project (idempotent).
-# ---------------------------------------------------------------------------
-if ! "$PSQL" -tAc "SELECT 1 FROM pg_roles WHERE rolname='findurjob'" postgres | grep -q 1; then
-  echo "Creation du role findurjob..."
-  "$PSQL" -c "CREATE ROLE findurjob LOGIN PASSWORD 'password' CREATEDB;" postgres
-fi
-if ! "$PSQL" -tAc "SELECT 1 FROM pg_database WHERE datname='findurjob'" postgres | grep -q 1; then
-  echo "Creation de la base findurjob..."
-  "$PSQL" -c "CREATE DATABASE findurjob OWNER findurjob;" postgres
-fi
-
-# ---------------------------------------------------------------------------
-# 3. Restore the production data dump — ONLY the first time (guarded by a
-#    marker file, since re-running pg_restore on a live database would wipe
-#    out everything done locally since). Needs pg_restore from
-#    postgresql@18 (brew) specifically: the dump was made with pg_dump v18
-#    (custom format v1.16), newer than Postgres.app's bundled v16 tools,
-#    which refuse to read it.
-# ---------------------------------------------------------------------------
-RESTORE_MARKER="$PROJECT_ROOT/.postgres-restored"
-DUMP="$PROJECT_ROOT/migration-to-mac/findurjob_export.dump"
-PG18_PREFIX=$(brew --prefix postgresql@18 2>/dev/null || true)
-
-if [ -f "$DUMP" ] && [ ! -f "$RESTORE_MARKER" ]; then
-  if [ -n "$PG18_PREFIX" ] && [ -x "$PG18_PREFIX/bin/pg_restore" ]; then
-    echo "Restauration des donnees de production (premiere fois seulement)..."
-    PGPASSWORD=password "$PG18_PREFIX/bin/pg_restore" \
-      -h localhost -p 5432 -U findurjob -d findurjob \
-      --clean --if-exists --no-owner --no-privileges \
-      "$DUMP" || echo "(des avertissements pg_restore sont normaux ici -- verifie que les tables sont bien remplies)"
-    touch "$RESTORE_MARKER"
-    echo "Donnees restaurees."
-  else
-    echo "postgresql@18 non installe (brew install postgresql@18) -- restauration ignoree."
-    echo "L'app demarrera quand meme avec une base vide (schema via les migrations Prisma)."
-  fi
-else
-  echo "Donnees : deja restaurees (ou pas de dump a restaurer)."
-fi
-
-# ---------------------------------------------------------------------------
-# 4. Prisma: generate the client + apply any migration not yet in the
-#    restored database. Always safe to run -- idempotent.
+# 1. Prisma: generate the client + apply any pending migration. The database
+#    is the shared live Neon instance (DATABASE_URL/DIRECT_DATABASE_URL in
+#    apps/api/.env.local) -- every machine points at the same data now, so
+#    there's no local role/database to create and nothing to restore here.
+#    Always safe to run -- idempotent.
 # ---------------------------------------------------------------------------
 echo "Prisma generate + migrate deploy..."
 (
@@ -106,7 +34,7 @@ echo "Prisma generate + migrate deploy..."
 )
 
 # ---------------------------------------------------------------------------
-# 5. Native Chrome over CDP — real desktop Chrome fingerprint for sources
+# 2. Native Chrome over CDP — real desktop Chrome fingerprint for sources
 #    like Indeed that flag headless/containerized browsers. Everything else
 #    works fine without it.
 # ---------------------------------------------------------------------------
@@ -136,7 +64,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 6. API + Web, as plain local npm processes (not containers).
+# 3. API + Web, as plain local npm processes (not containers).
 # ---------------------------------------------------------------------------
 start_bg() {
   local name="$1" dir="$2" logfile="$3" pidfile="$4"

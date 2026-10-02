@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from './prisma.service';
+import { LocalUserService } from './local-user.service';
+import { SUPPORTED_PLATFORMS } from '../platform-credentials/dto/upsert-credential.dto';
 
 export interface SettingsFields {
   deepseekApiKey?: string;
@@ -41,6 +43,7 @@ export class SettingsService {
   constructor(
     private prisma: PrismaService,
     private config: ConfigService,
+    private localUser: LocalUserService,
   ) {}
 
   private async getRow() {
@@ -68,6 +71,50 @@ export class SettingsService {
       result[field] = !!(dbValue || this.config.get(FIELD_TO_ENV_FALLBACK[field]));
     }
     return result;
+  }
+
+  // Drives the "missing configuration" nav badge (same shape as the
+  // "Mises à jour" unseen count) — combines three cheap reads server-side
+  // rather than having the frontend poll three separate stores and
+  // duplicate this platform/source mapping itself.
+  async getMissingConfigCount(): Promise<number> {
+    const userId = await this.localUser.getDefaultUserId();
+    const [campaign, credentialRows, settingsStatus] = await Promise.all([
+      this.prisma.campaign.findFirst({ where: { userId }, select: { sources: true } }),
+      this.prisma.platformCredential.findMany({
+        where: { userId },
+        select: { platform: true, sessionStateEncrypted: true, emailEncrypted: true },
+      }),
+      this.status(),
+    ]);
+
+    const configuredByPlatform = new Map(
+      credentialRows.map((r) => [r.platform, !!(r.sessionStateEncrypted || r.emailEncrypted)] as const),
+    );
+    const sources = (campaign?.sources as string[] | undefined) || [];
+    const credentialBacked = new Set<string>(SUPPORTED_PLATFORMS);
+
+    let count = 0;
+    // A campaign source that actually needs saved credentials but has none —
+    // it would silently fail to scrape/apply at run time.
+    for (const source of sources) {
+      if (credentialBacked.has(source) && !configuredByPlatform.get(source)) count++;
+    }
+    // Gmail powers both OTP autofill and the email response tracker —
+    // flagged regardless of campaign sources since it's never one of them.
+    if (!configuredByPlatform.get('gmail')) count++;
+    // AI is used everywhere (CV adaptation, cover letters, auto-apply
+    // fallback, response matching), so always relevant.
+    if (!settingsStatus.deepseekApiKey) count++;
+    // France Travail / Adzuna only matter if that source is actually selected.
+    if (sources.includes('france_travail') && !(settingsStatus.franceTravailClientId && settingsStatus.franceTravailClientSecret)) {
+      count++;
+    }
+    if (sources.includes('adzuna') && !(settingsStatus.adzunaAppId && settingsStatus.adzunaApiKey)) {
+      count++;
+    }
+
+    return count;
   }
 
   // Only overwrites fields that were actually sent with a non-empty value —

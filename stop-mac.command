@@ -1,8 +1,6 @@
 #!/bin/bash
 # FindUrJob — native macOS stop. Double-click to shut everything down.
-# Does NOT stop Postgres.app itself: it's a shared server other local
-# projects on this Mac also use (diagnocare, skillux, ...); only this
-# project's own processes are stopped.
+# The database is Neon (remote) -- nothing local to stop for it.
 cd "$(dirname "$0")"
 PROJECT_ROOT="$(pwd)"
 
@@ -64,7 +62,5 @@ stop_pidfile "Proxy d'authentification" "$PROJECT_ROOT/.run/tunnel-proxy.pid"
 echo ""
 echo "================================================"
 echo " FindUrJob est arrete."
-echo " (Postgres.app reste actif -- c'est un serveur partage"
-echo "  avec d'autres projets sur ce Mac.)"
 echo "================================================"
 read -p "Appuie sur Entree pour fermer cette fenetre..."

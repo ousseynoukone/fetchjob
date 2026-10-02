@@ -145,6 +145,15 @@ export class GmailOtpService {
           const from = msg.envelope.from?.[0]?.address || msg.envelope.from?.[0]?.name || '';
           const subject = msg.envelope.subject || '';
           const date = msg.envelope.date ? new Date(msg.envelope.date) : since;
+          // IMAP's SINCE is date-only (confirmed in imapflow's own
+          // formatDate: truncates to YYYY-MM-DD), so a `since` of e.g.
+          // 14:00 today still matches the whole day and re-returns messages
+          // from before 14:00 on every later run that same day. Without this
+          // exact-datetime filter, ApplicationResponseTrackerService kept
+          // re-matching and re-flagging (`hasUnseenUpdate: true`) emails it
+          // had already processed, silently undoing the user's "mark as
+          // seen" — confirmed live as the root cause of that complaint.
+          if (date.getTime() <= since.getTime()) continue;
           const raw = msg.source?.toString('utf8') || '';
           // Same cleanup family as extractOtpCode's `clean` step, kept
           // separate since this needs a much longer, readable snippet for

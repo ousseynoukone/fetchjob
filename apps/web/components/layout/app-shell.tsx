@@ -8,6 +8,8 @@ import { usePathname } from 'next/navigation';
 import { LayoutDashboard, FileText, Rocket, Briefcase, Sparkles, Settings, HelpCircle, BookOpen, ShieldCheck, BellRing } from 'lucide-react';
 import clsx from 'clsx';
 import { useUpdatesStore } from '@/lib/updates-store';
+import { useConfigStatusStore } from '@/lib/config-status-store';
+import { useQuestionsStore } from '@/lib/questions-store';
 
 const NAV_ITEMS = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -26,15 +28,31 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const unseenCount = useUpdatesStore((s) => s.unseenCount);
   const startPolling = useUpdatesStore((s) => s.startPolling);
   const stopPolling = useUpdatesStore((s) => s.stopPolling);
+  const missingConfigCount = useConfigStatusStore((s) => s.missingConfigCount);
+  const startConfigPolling = useConfigStatusStore((s) => s.startPolling);
+  const stopConfigPolling = useConfigStatusStore((s) => s.stopPolling);
+  const unansweredCount = useQuestionsStore((s) => s.unansweredCount);
+  const startQuestionsPolling = useQuestionsStore((s) => s.startPolling);
+  const stopQuestionsPolling = useQuestionsStore((s) => s.stopPolling);
 
-  // Global, not per-page: AppShell wraps every screen, so the badge stays
-  // current no matter where the person navigates, and the interval is only
+  // Global, not per-page: AppShell wraps every screen, so each badge stays
+  // current no matter where the person navigates, and each interval is only
   // ever created once regardless of how many pages mount AppShell during a
   // session.
   useEffect(() => {
     startPolling();
     return () => stopPolling();
   }, [startPolling, stopPolling]);
+
+  useEffect(() => {
+    startConfigPolling();
+    return () => stopConfigPolling();
+  }, [startConfigPolling, stopConfigPolling]);
+
+  useEffect(() => {
+    startQuestionsPolling();
+    return () => stopQuestionsPolling();
+  }, [startQuestionsPolling, stopQuestionsPolling]);
 
   return (
     <div className="min-h-screen flex bg-base-100">
@@ -65,6 +83,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 {item.label}
                 {item.href === '/mises-a-jour' && unseenCount > 0 && (
                   <span className="ml-auto badge badge-sm badge-primary">{unseenCount}</span>
+                )}
+                {item.href === '/questions' && unansweredCount > 0 && (
+                  <span className="ml-auto badge badge-sm badge-primary">{unansweredCount}</span>
+                )}
+                {item.href === '/parametres' && missingConfigCount > 0 && (
+                  <span className="ml-auto badge badge-sm badge-warning">{missingConfigCount}</span>
                 )}
               </Link>
             );

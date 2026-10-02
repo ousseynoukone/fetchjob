@@ -35,6 +35,12 @@ export class CustomQuestionsService {
     });
   }
 
+  // Drives the "Questions" nav badge (same shape as "Mises à jour"'s unseen count).
+  async countUnanswered(): Promise<number> {
+    const userId = await this.localUser.getDefaultUserId();
+    return this.prisma.customQuestion.count({ where: { userId, answer: null } });
+  }
+
   async setAnswer(id: string, answer: string) {
     return this.prisma.customQuestion.update({
       where: { id },

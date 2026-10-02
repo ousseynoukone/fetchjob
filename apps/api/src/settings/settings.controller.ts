@@ -11,6 +11,13 @@ export class SettingsController {
     return this.settings.status();
   }
 
+  // Registered before any future ':id'-shaped route for the same reason
+  // already documented in applications.controller.ts.
+  @Get('missing-config-count')
+  async missingConfigCount() {
+    return { count: await this.settings.getMissingConfigCount() };
+  }
+
   @Put()
   async update(@Body() dto: UpdateSettingsDto) {
     return this.settings.update(dto);

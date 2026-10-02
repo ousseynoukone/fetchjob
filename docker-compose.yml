@@ -1,31 +1,4 @@
 services:
-  postgres:
-    # Matches the production Neon database's own version (18) — kept in sync
-    # on purpose so a local dump/restore of prod data never hits a
-    # server-version mismatch, and local testing behaves the same as prod.
-    image: postgres:18-alpine
-    container_name: findurjob_postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: findurjob
-      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-password}
-      POSTGRES_DB: findurjob
-    ports:
-      # Host-side port only — the api container still reaches this over the
-      # internal docker network as postgres:5432 either way (see
-      # DATABASE_URL below), unaffected by whatever the host maps this to.
-      - '5433:5432'
-    # Postgres 18's own image mounts the parent dir, not .../data directly
-    # (it places versioned subdirectories itself) — confirmed live, the old
-    # .../data mount point made the image refuse to start.
-    volumes:
-      - postgres_data:/var/lib/postgresql
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U findurjob -d findurjob']
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
   redis:
     image: redis:7-alpine
     container_name: findurjob_redis
@@ -51,11 +24,10 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=4000
-      - DATABASE_URL=postgresql://findurjob:${DATABASE_PASSWORD:-password}@postgres:5432/findurjob?schema=public
-      # Neon needs separate pooled/direct connections (schema.prisma); the
-      # local single-instance Postgres here has no pooler, so both point at
-      # the exact same place.
-      - DIRECT_DATABASE_URL=postgresql://findurjob:${DATABASE_PASSWORD:-password}@postgres:5432/findurjob?schema=public
+      # Shared live Neon database (see root .env) — read from the host's .env
+      # so Docker, local npm, and Mac runs all point at the exact same data.
+      - DATABASE_URL=${DATABASE_URL}
+      - DIRECT_DATABASE_URL=${DIRECT_DATABASE_URL}
       - REDIS_URL=redis://redis:6379
       - FRONTEND_URL=http://localhost:3001
       - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key-change-in-production}
@@ -118,8 +90,6 @@ services:
       - remote_login_profiles:/root/.findurjob/remote-login-profiles
       - scraping_profiles:/root/.findurjob/scraping-profiles
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
 
@@ -146,7 +116,6 @@ services:
     # and fighting over port 4000.
 
 volumes:
-  postgres_data:
   redis_data:
   remote_login_profiles:
   scraping_profiles:
