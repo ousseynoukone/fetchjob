@@ -500,6 +500,12 @@ Reponds uniquement en JSON avec les champs: strengths (array de 3 max), gaps (ar
   > {
     if (!emails.length || !applications.length) return [];
 
+    const circuitOpenReason = this.circuitOpenReason();
+    if (circuitOpenReason) {
+      this.logger.warn(`matchApplicationResponses skipped: IA temporairement désactivée (${circuitOpenReason})`);
+      return [];
+    }
+
     const prompt = `Tu analyses une boite mail pour retrouver des reponses de recruteurs a des candidatures envoyees.
 
 CANDIDATURES EN ATTENTE DE REPONSE (JSON, un id par candidature) :
@@ -549,6 +555,7 @@ Reponds UNIQUEMENT en JSON strict de la forme {"matches":[{"emailIndex":number,"
           evidence: typeof m.evidence === 'string' ? m.evidence.slice(0, 300) : '',
         }));
     } catch (err: any) {
+      this.recordFailure(err);
       this.logger.warn(`matchApplicationResponses failed: ${err.message}`);
       return [];
     }
@@ -562,6 +569,22 @@ Reponds UNIQUEMENT en JSON strict de la forme {"matches":[{"emailIndex":number,"
   // deliberately small (short candidate brief, no CV/job-description dump,
   // capped output tokens) since this runs once per ambiguous step.
   async planApplicationFormStep(input: FormStepAiInput): Promise<FormStepAiPlan | null> {
+    // Confirmed live: this is the 4th AI call site in this file, and the
+    // one the circuit breaker above was never wired into when it was added
+    // -- runFormLoop (every applier that isn't a known-platform fast path,
+    // Indeed and the generic fallback especially) calls this on every form
+    // step, up to maxAiCallsPerAttempt times PER application. Missing this
+    // one meant a permanent provider error (402/401) kept getting retried
+    // fresh here on every step of every attempt, unprotected, while the
+    // other three call sites were already short-circuiting -- a strong
+    // match for the recurring freeze pattern that kept correlating with
+    // Indeed/generic apply attempts specifically.
+    const circuitOpenReason = this.circuitOpenReason();
+    if (circuitOpenReason) {
+      this.logger.warn(`planApplicationFormStep skipped: IA temporairement désactivée (${circuitOpenReason})`);
+      return null;
+    }
+
     const prompt = `Tu pilotes un formulaire de candidature d'emploi a la place d'un humain. Reponds UNIQUEMENT avec un JSON strict de la forme {"fields":[{"idx":number,"value":string}],"action":{"idx":number|null,"kind":"submit"|"next"|"review"|"stop"}}.
 
 Regles imperatives :
@@ -620,6 +643,7 @@ ${input.buttonsText}`;
           : undefined,
       };
     } catch (err: any) {
+      this.recordFailure(err);
       this.logger.warn(`planApplicationFormStep failed: ${err.message}`);
       return null;
     }
