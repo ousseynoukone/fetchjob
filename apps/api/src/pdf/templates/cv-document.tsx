@@ -330,8 +330,8 @@ const DEFAULT_SIDEBAR_ACCENT = '#2d5bff';
 const SIDEBAR_BG = '#111827';
 
 function getSidebarStyles(ACCENT: string, scale: number) {
-  const leftPadding = Math.max(14, 20 * scale);
-  const rightPadding = Math.max(14, 22 * scale);
+  const leftPadding = Math.max(14, 18 * scale);
+  const rightPadding = Math.max(14, 16 * scale);
   return StyleSheet.create({
     page: {
       flexDirection: 'row',
@@ -404,20 +404,20 @@ function getSidebarStyles(ACCENT: string, scale: number) {
       textTransform: 'uppercase',
       letterSpacing: 0.5,
       color: ACCENT,
-      marginTop: 3 * scale,
-      paddingBottom: 10 * scale,
-      marginBottom: 14 * scale,
+      marginTop: 2 * scale,
+      paddingBottom: 6 * scale,
+      marginBottom: 10 * scale,
       borderBottomWidth: 2,
       borderBottomColor: '#e2e8f0',
     },
     summary: {
       fontSize: 9 * scale,
       color: '#475569',
-      lineHeight: 1.5,
-      marginBottom: 14 * scale,
+      lineHeight: 1.4,
+      marginBottom: 10 * scale,
     },
     section: {
-      marginBottom: 14 * scale,
+      marginBottom: 9 * scale,
     },
     sectionTitle: {
       fontSize: 9.5 * scale,
@@ -426,11 +426,11 @@ function getSidebarStyles(ACCENT: string, scale: number) {
       letterSpacing: 0.5,
       borderBottomWidth: 2,
       borderBottomColor: ACCENT,
-      paddingBottom: 5 * scale,
-      marginBottom: 9 * scale,
+      paddingBottom: 3.5 * scale,
+      marginBottom: 6 * scale,
     },
     entry: {
-      marginBottom: 10 * scale,
+      marginBottom: 7 * scale,
     },
     entryTitle: {
       fontSize: 9.5 * scale,
@@ -456,12 +456,12 @@ function getSidebarStyles(ACCENT: string, scale: number) {
       fontSize: 8.5 * scale,
       fontWeight: 700,
       color: ACCENT,
-      marginTop: 3 * scale,
-      marginBottom: 3 * scale,
+      marginTop: 2 * scale,
+      marginBottom: 2 * scale,
     },
     bulletRow: {
       flexDirection: 'row',
-      marginTop: 2 * scale,
+      marginTop: 1.5 * scale,
     },
     bulletDot: {
       fontSize: 8 * scale,
@@ -485,7 +485,7 @@ function getSidebarStyles(ACCENT: string, scale: number) {
     },
     eduRow: {
       flexDirection: 'row',
-      marginBottom: 9 * scale,
+      marginBottom: 7 * scale,
     },
     eduPeriod: {
       width: '28%',
@@ -506,7 +506,7 @@ function getSidebarStyles(ACCENT: string, scale: number) {
       flexDirection: 'row',
       justifyContent: 'space-between',
       alignItems: 'baseline',
-      marginBottom: 5 * scale,
+      marginBottom: 4 * scale,
     },
     certName: {
       fontSize: 8.5 * scale,
