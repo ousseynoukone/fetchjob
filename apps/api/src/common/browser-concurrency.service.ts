@@ -26,18 +26,25 @@ import { Injectable, Logger } from '@nestjs/common';
 export class BrowserConcurrencyService {
   private readonly logger = new Logger(BrowserConcurrencyService.name);
 
-  private static readonly MAX_CONCURRENT = 3;
+  // Confirmed live: 3 was too low for how much real concurrent demand this
+  // app generates on its own — 7 platforms' session-health (every ~20min)
+  // plus continuous per-offer enrichment during a campaign arrive faster
+  // than 3 slots can drain. The queue grew without bound (5 -> 11 queued
+  // over 17 minutes) and the 5-minute timeout-bypass below stopped being a
+  // rare safety valve and became the NORMAL path for most tasks -- every
+  // queued task waiting the full 5 minutes before even starting is exactly
+  // why a campaign looked frozen rather than just busy. Raised to actually
+  // match the real workload instead of fighting it.
+  private static readonly MAX_CONCURRENT = 8;
 
   // Generous relative to any single legitimate task: applyToOne's own
   // internal watchdog bounds it to ~155s; a scrape/session-health cycle is
-  // normally well under a minute. 5 minutes gives real contention plenty of
-  // room while still capping how long anything can be blocked by a task
-  // that's actually stuck (confirmed live: this is necessary — a wedged
-  // applyToOne attempt once sat for ~3h with no log output but nonzero CPU,
-  // a synchronous hang that even prevents its OWN 150s+5s setTimeout
-  // watchdog from firing, so nothing owns recovering from it except a
-  // caller giving up on waiting).
-  private static readonly MAX_WAIT_MS = 5 * 60 * 1000;
+  // normally well under a minute. Lowered from 5 min now that MAX_CONCURRENT
+  // is high enough that hitting this at all should be rare -- if something
+  // still waits this long, it's much more likely to actually be stuck than
+  // just caught behind ordinary contention, so there's less reason to make
+  // everyone else wait the full 5 minutes to find out.
+  private static readonly MAX_WAIT_MS = 2 * 60 * 1000;
 
   private activeCount = 0;
   private readonly waiters: Array<() => void> = [];
