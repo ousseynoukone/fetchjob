@@ -7,11 +7,14 @@ powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 4000,3001 -State
 taskkill /FI "WINDOWTITLE eq Backend API*" /T /F >nul 2>&1
 taskkill /FI "WINDOWTITLE eq Frontend Web*" /T /F >nul 2>&1
 
-echo Stopping Docker (Postgres, Redis)...
-docker compose stop postgres redis
+echo Stopping Docker (Redis)...
+docker compose stop redis
 
 echo Stopping the local host Chrome...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-host-chrome.ps1" -Stop
+
+echo Closing Docker Desktop...
+powershell -NoProfile -Command "Get-Process 'Docker Desktop' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; Get-Process 'com.docker.backend' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue"
 
 echo.
 echo ================================================
