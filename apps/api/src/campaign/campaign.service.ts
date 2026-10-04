@@ -422,10 +422,17 @@ export class CampaignService implements OnModuleInit {
     }
   }
 
+  // Confirmed live as the single biggest contributor to a Neon egress spike
+  // that burned through the whole monthly 5GB allowance in a couple of days:
+  // the old findUnique-then-update(data:{logs}) pattern reads the FULL,
+  // ever-growing logs array before every append, then writes it back with
+  // Prisma's default RETURNING sending that same ever-growing array back
+  // over the wire again — O(n²) transfer across a run that can log
+  // thousands of lines (one campaign run alone could account for several
+  // GB). array_append mutates the column server-side without reading it
+  // first, and $executeRaw has no RETURNING clause at all.
   private async appendLog(runId: string, message: string) {
-    const run = await this.prisma.campaignRun.findUnique({ where: { id: runId } });
-    const logs = [...(run?.logs || []), message];
-    await this.prisma.campaignRun.update({ where: { id: runId }, data: { logs } });
+    await this.prisma.$executeRaw`UPDATE "campaign_runs" SET logs = array_append(logs, ${message}) WHERE id = ${runId}`;
     this.logStream.next({ runId, type: 'log', message, at: new Date().toISOString() });
   }
 
@@ -637,8 +644,14 @@ export class CampaignService implements OnModuleInit {
               },
             });
 
+            // select: only {id, status, campaignRunId} are ever read below --
+            // without it Prisma fetches every column, including screenshot/
+            // verificationScreenshot/adaptedCvData, on every single offer
+            // scanned (confirmed live as a real contributor to a Neon egress
+            // spike alongside the appendLog fix above).
             const existingApplication = await this.prisma.application.findUnique({
               where: { campaignId_jobOfferId: { campaignId: campaign.id, jobOfferId: jobOffer.id } },
+              select: { id: true, status: true, campaignRunId: true },
             });
             if (existingApplication) {
               // Still surfaced by this run and still pending — keep it counted

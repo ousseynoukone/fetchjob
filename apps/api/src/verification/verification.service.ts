@@ -103,10 +103,12 @@ export class VerificationService {
     return verificationRun;
   }
 
+  // Same fix as CampaignService.appendLog (see its comment): array_append
+  // avoids reading the whole growing array before every write, and
+  // $executeRaw has no RETURNING clause, so neither direction re-transmits
+  // the full log history on every single line.
   private async appendLog(runId: string, message: string) {
-    const run = await this.prisma.verificationRun.findUnique({ where: { id: runId } });
-    const logs = [...(run?.logs || []), message];
-    await this.prisma.verificationRun.update({ where: { id: runId }, data: { logs } });
+    await this.prisma.$executeRaw`UPDATE "verification_runs" SET logs = array_append(logs, ${message}) WHERE id = ${runId}`;
     this.logStream.next({ runId, type: 'log', message, at: new Date().toISOString() });
   }
 
