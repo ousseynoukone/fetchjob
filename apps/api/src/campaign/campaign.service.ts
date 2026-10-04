@@ -852,6 +852,7 @@ export class CampaignService implements OnModuleInit {
         }
       }
 
+      let applicationsSent = 0;
       if (campaign.actionMode === 'auto_apply' && toApplyIds.length) {
         const summaryParts: string[] = [];
         for (const [source, count] of selectedBySource.entries()) {
@@ -874,17 +875,18 @@ export class CampaignService implements OnModuleInit {
           sourceDailyLimits: overrides,
           maxApplicationsPerDay: campaign.maxApplicationsPerDay,
         });
+        applicationsSent = applied;
         await this.appendLog(runId, `Auto-apply terminé: ${applied} envoyée(s), ${needsReview} à vérifier.`);
 
         if (autoApplyCancelled) {
           await this.appendLog(runId, 'Campagne arrêtée (pause demandée) pendant l\'auto-apply.');
-          await this.finishRun(campaign.id, runId, { offersScanned, offersFiltered, applicationsPrepared }, 'paused');
+          await this.finishRun(campaign.id, runId, { offersScanned, offersFiltered, applicationsPrepared, applicationsSent }, 'paused');
           return;
         }
       }
 
       await this.appendLog(runId, `Terminé: ${applicationsPrepared} candidature(s) préparée(s).`);
-      await this.finishRun(campaign.id, runId, { offersScanned, offersFiltered, applicationsPrepared });
+      await this.finishRun(campaign.id, runId, { offersScanned, offersFiltered, applicationsPrepared, applicationsSent });
     } catch (error: any) {
       this.logger.error(error);
       await this.appendLog(runId, `Erreur: ${error.message}`);
@@ -909,7 +911,7 @@ export class CampaignService implements OnModuleInit {
   private async finishRun(
     campaignId: string,
     runId: string,
-    stats: { offersScanned: number; offersFiltered: number; applicationsPrepared: number },
+    stats: { offersScanned: number; offersFiltered: number; applicationsPrepared: number; applicationsSent?: number },
     finalStatus: 'active' | 'paused' = 'active',
   ) {
     await this.prisma.campaignRun.update({
