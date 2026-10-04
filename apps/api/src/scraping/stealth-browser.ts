@@ -569,6 +569,17 @@ export async function isBotChallengePage(page: import('patchright').Page): Promi
   try {
     const url = page.url();
     if (/challenge|captcha|authwall|security-check|verify/i.test(url)) return true;
+    // Confirmed live on Indeed: a second, different Cloudflare variant from
+    // the "Request Blocked" one below -- a JS challenge page (own title
+    // "Security Check - Indeed.com", body "Additional Verification
+    // Required... Enable JavaScript and cookies to continue") that the body
+    // -text regex alone didn't catch either, since its wording doesn't
+    // overlap with "blocked"/"ray id"/etc. The title is checked separately
+    // since Cloudflare challenge titles are a small, stable set
+    // ("Just a moment...", "Security Check - <site>", "Attention Required!
+    // | Cloudflare") regardless of the body copy used for a given site.
+    const title = await page.title().catch(() => '');
+    if (/just a moment|security check|attention required|checking your browser/i.test(title)) return true;
     const text = await page.locator('body').innerText({ timeout: 2000 });
     // Confirmed live on Indeed: a Cloudflare "Request Blocked" page (own
     // title "Blocked - Indeed.com", body text "You have been blocked... Ray
@@ -578,7 +589,7 @@ export async function isBotChallengePage(page: import('patchright').Page): Promi
     // is a real, outright IP-level block (not a stale selector) -- fixing
     // detection doesn't un-block the IP, but at least surfaces WHY nothing
     // came back instead of looking like an empty result set.
-    return /authwall|sign in to continue|unusual activity|captcha|verify you are human|browser check failed|you have been blocked|request blocked|ray id|access denied|pardon our interruption|attention required.*cloudflare/i.test(
+    return /authwall|sign in to continue|unusual activity|captcha|verify you are human|browser check failed|you have been blocked|request blocked|ray id|access denied|pardon our interruption|attention required.*cloudflare|additional verification required|enable javascript and cookies|complete the security check/i.test(
       text,
     );
   } catch {
