@@ -1,4 +1,30 @@
 services:
+  # TEMPORARY local fallback (2026-10-05) -- Neon's free-tier monthly network
+  # transfer allowance (5GB) is exhausted (confirmed via Neon's own API:
+  # HTTP 402 "account or project has exceeded the quota"), blocking all
+  # connections until it resets 2026-11-01 or the plan is upgraded. Restored
+  # so the app keeps working meanwhile; data written here is LOCAL ONLY and
+  # will need reconciling with Neon once it's reachable again. Remove this
+  # service (and point DATABASE_URL/DIRECT_DATABASE_URL back at Neon in
+  # .env) once that happens -- see git history for the exact prior values.
+  postgres:
+    image: postgres:18-alpine
+    container_name: findurjob_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: findurjob
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-password}
+      POSTGRES_DB: findurjob
+    ports:
+      - '5433:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U findurjob -d findurjob']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   redis:
     image: redis:7-alpine
     container_name: findurjob_redis
@@ -90,6 +116,8 @@ services:
       - remote_login_profiles:/root/.findurjob/remote-login-profiles
       - scraping_profiles:/root/.findurjob/scraping-profiles
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
 
@@ -116,6 +144,7 @@ services:
     # and fighting over port 4000.
 
 volumes:
+  postgres_data:
   redis_data:
   remote_login_profiles:
   scraping_profiles:
