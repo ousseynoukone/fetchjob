@@ -134,6 +134,7 @@ export class VerificationService {
           jobOffer: { source: { in: [...SUPPORTED_PLATFORMS] } },
         },
         include: { jobOffer: true },
+        omit: { screenshot: true, verificationScreenshot: true },
         orderBy: { updatedAt: 'asc' },
         take: MAX_PER_RUN,
       });

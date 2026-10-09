@@ -315,6 +315,7 @@ export class ApplicationsService {
     const existing = await this.prisma.application.findUnique({
       where: { campaignId_jobOfferId: { campaignId: campaign.id, jobOfferId: jobOffer.id } },
       include: { jobOffer: true },
+      omit: { screenshot: true, verificationScreenshot: true },
     });
     if (existing) return existing;
 

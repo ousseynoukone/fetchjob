@@ -52,6 +52,7 @@ export class DigestService {
       this.prisma.application.findMany({
         where: { userId, status: 'applied', appliedAt: { gt: lastSentAt } },
         include: { jobOffer: true },
+        omit: { screenshot: true, verificationScreenshot: true },
         orderBy: { appliedAt: 'asc' },
       }),
       this.prisma.application.count({

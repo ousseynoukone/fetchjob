@@ -233,7 +233,13 @@ export class AutoApplyService {
   // to avoid a module cycle (ApplicationsModule already depends on
   // CampaignModule, which is what invokes auto-apply).
   private async buildCvData(applicationId: string, userId: string): Promise<CVData> {
-    const application = await this.prisma.application.findUniqueOrThrow({ where: { id: applicationId } });
+    // select: only adaptedCvData is ever read below -- without it this
+    // fetches every column, including screenshot/verificationScreenshot and
+    // the full aiAnalysis blob, once per application in the apply loop.
+    const application = await this.prisma.application.findUniqueOrThrow({
+      where: { id: applicationId },
+      select: { adaptedCvData: true },
+    });
     const liveCv = await this.cvService.getCV(userId);
 
     if (application.adaptedCvData) {
@@ -292,9 +298,14 @@ export class AutoApplyService {
       }
 
       const applicationId = applicationIds[i];
+      // omit: a prior attempt's screenshot/verificationScreenshot are never
+      // read before taking a NEW one for this attempt -- without this, every
+      // application in the run drags along whatever ~100-200KB image(s) a
+      // previous attempt left behind.
       const application = await this.prisma.application.findUnique({
         where: { id: applicationId },
         include: { jobOffer: true },
+        omit: { screenshot: true, verificationScreenshot: true },
       });
       if (!application) continue;
 
