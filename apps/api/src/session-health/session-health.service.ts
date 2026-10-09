@@ -426,7 +426,21 @@ export class SessionHealthService implements OnModuleInit {
       if (platform === 'collective_work') {
         const emailField = page.getByRole('textbox', { name: 'email-input' }).first();
         const passField = page.getByRole('textbox', { name: 'password-input' }).first();
-        if ((await emailField.isVisible().catch(() => false)) && (await passField.isVisible().catch(() => false))) {
+        // waitFor (polls), not isVisible() (single instant check, no
+        // retry) -- confirmed live this platform's login form consistently
+        // renders fine in isolation but can need longer than the fixed
+        // pre-wait above gives it under the real orchestrator's load (host
+        // Chrome shared with whatever else is running), the same gap
+        // already found and fixed for other platforms elsewhere in this
+        // codebase. isVisible() alone reports false the instant it's
+        // called if the SPA simply hasn't rendered yet, with nothing left
+        // to retry it.
+        const fieldsReady = await emailField
+          .waitFor({ state: 'visible', timeout: 8000 })
+          .then(() => passField.waitFor({ state: 'visible', timeout: 8000 }))
+          .then(() => true)
+          .catch(() => false);
+        if (fieldsReady) {
           await humanFill(emailField, email);
           await humanFill(passField, pass);
           const loginBtn = page.getByRole('button', { name: /se connecter/i }).first();

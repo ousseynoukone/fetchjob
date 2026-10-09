@@ -123,7 +123,16 @@ export class CollectiveWorkApplier implements JobApplier {
 
         const emailField = page.getByRole('textbox', { name: 'email-input' }).first();
         const passField = page.getByRole('textbox', { name: 'password-input' }).first();
-        if ((await emailField.isVisible().catch(() => false)) && (await passField.isVisible().catch(() => false))) {
+        // Same fix as SessionHealthService's collective_work branch: a
+        // single instant isVisible() right after a fixed sleep doesn't
+        // retry if the SPA hasn't rendered yet under real load, even
+        // though the same page loads reliably fast in isolation.
+        const fieldsReady = await emailField
+          .waitFor({ state: 'visible', timeout: 8000 })
+          .then(() => passField.waitFor({ state: 'visible', timeout: 8000 }))
+          .then(() => true)
+          .catch(() => false);
+        if (fieldsReady) {
           await emailField.fill(ctx.credential.email);
           await passField.fill(ctx.credential.password);
           const submitBtn = page.getByRole('button', { name: /se connecter/i }).first();
