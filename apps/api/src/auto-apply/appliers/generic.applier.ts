@@ -37,15 +37,23 @@ const SUCCESS_TEXT =
 const SUCCESS_URL = /thank-?you|confirmation|success|merci|candidature-envoyee|application-submitted/i;
 
 // Job boards where applying requires an account on THAT board -- confirmed
-// live one by one (Free-Work, Collective.work, eFinancialCareers,
-// Freelance.com): the job page looks open, but "Postuler" only ever leads
-// to sign-up / Google sign-in. No session exists for them here, so the
-// honest outcome is immediate: named as such, nothing typed anywhere.
+// live one by one (Free-Work, eFinancialCareers, Freelance.com): the job
+// page looks open, but "Postuler" only ever leads to sign-up / Google
+// sign-in. No session exists for them here, so the honest outcome is
+// immediate: named as such, nothing typed anywhere.
 // free-work.com is deliberately NOT here any more: confirmed via a real
 // recorded application that it needs no account at all (see
 // freework.applier.ts, routed there directly by URL before this ever
 // runs) -- an earlier reading of one of its pages was wrong.
-const ACCOUNT_ONLY_BOARDS = /efinancialcareers\.|collective\.work|freelance\.com|malt\.(fr|com)|jobteaser\.|jobijoba\.|choosemycompany\.|talents-handicap\./i;
+// collective.work is ALSO deliberately not here any more: it used to be,
+// back when this applier was the only thing that ever saw a collective.work
+// URL reached via some other source's redirect -- but it has its own
+// dedicated applier with a real, working session now (CollectiveWorkApplier),
+// so landing here on a collective.work URL mid-flow is handled below as a
+// hop, same as any other account-based platform, instead of giving up.
+const ACCOUNT_ONLY_BOARDS = /efinancialcareers\.|freelance\.com|malt\.(fr|com)|jobteaser\.|jobijoba\.|choosemycompany\.|talents-handicap\./i;
+
+const COLLECTIVE_WORK_HOST = /(^|\.)collective\.work$/i;
 
 // Job boards that only ever link OUT to the real posting (see apply()).
 const AGGREGATOR_OUTBOUND_LINKS: { name: string; host: RegExp; selector: string }[] = [
@@ -90,6 +98,9 @@ export class GenericApplier implements JobApplier {
     // candidate's job title typed into Adzuna's own search box. Resolve
     // the outbound link and hand it back as a redirect instead; if it lands
     // right back on Adzuna (an expired ad bounces to search results), say so.
+    if (COLLECTIVE_WORK_HOST.test(new URL(page.url()).hostname)) {
+      return { success: false, redirectToExternalUrl: page.url() };
+    }
     if (ACCOUNT_ONLY_BOARDS.test(page.url())) {
       return {
         success: false,
@@ -194,6 +205,9 @@ export class GenericApplier implements JobApplier {
         await popup.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
         await ctx.appendLog?.(`Le formulaire s'est ouvert dans un nouvel onglet (${(() => { try { return new URL(popup.url()).hostname; } catch { return popup.url(); } })()})...`);
         page = popup;
+        if (COLLECTIVE_WORK_HOST.test(new URL(page.url()).hostname)) {
+          return { success: false, finalPage: page, redirectToExternalUrl: page.url() };
+        }
         if (ACCOUNT_ONLY_BOARDS.test(page.url())) {
           return {
             success: false,

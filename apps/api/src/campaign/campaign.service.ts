@@ -7,6 +7,7 @@ import { ScrapingService, APPLY_MODE_RANK, ApplyMode } from '../scraping/scrapin
 import { MatchingService } from '../matching/matching.service';
 import { ApplicationPrepService } from '../applications/application-prep.service';
 import { AutoApplyService } from '../auto-apply/auto-apply.service';
+import { SessionHealthService } from '../session-health/session-health.service';
 import { UpdateCampaignDto } from './dto/update-campaign.dto';
 import { normalizeText, locationWithinRegion } from '../common/location-region';
 
@@ -99,6 +100,7 @@ export class CampaignService implements OnModuleInit {
     private matching: MatchingService,
     private prep: ApplicationPrepService,
     private autoApply: AutoApplyService,
+    private sessionHealth: SessionHealthService,
   ) {}
 
   // On startup, any campaign still marked 'running' in the DB is a
@@ -162,13 +164,107 @@ export class CampaignService implements OnModuleInit {
     });
   }
 
+  // Lightweight per-run summary list — NOT `logs` (can be thousands of
+  // lines per run; the live Journal/stream views already cover that, this
+  // is for "what happened across my past runs" at a glance). The status
+  // breakdown is one groupBy across all 10 runs' applications together,
+  // not one query per run.
   async getRunHistory() {
     const campaign = await this.getOrCreateCampaign();
-    return this.prisma.campaignRun.findMany({
+    const runs = await this.prisma.campaignRun.findMany({
       where: { campaignId: campaign.id },
       orderBy: { startedAt: 'desc' },
       take: 10,
+      select: {
+        id: true,
+        startedAt: true,
+        finishedAt: true,
+        offersScanned: true,
+        offersFiltered: true,
+        applicationsPrepared: true,
+        applicationsSent: true,
+        error: true,
+      },
     });
+    if (!runs.length) return [];
+
+    const statusCounts = await this.prisma.application.groupBy({
+      by: ['campaignRunId', 'status'],
+      where: { campaignRunId: { in: runs.map((r) => r.id) } },
+      _count: { _all: true },
+    });
+    const byRun = new Map<string, Record<string, number>>();
+    for (const row of statusCounts) {
+      if (!row.campaignRunId) continue;
+      const bucket = byRun.get(row.campaignRunId) || {};
+      bucket[row.status] = row._count._all;
+      byRun.set(row.campaignRunId, bucket);
+    }
+
+    return runs.map((run) => ({ ...run, statusCounts: byRun.get(run.id) || {} }));
+  }
+
+  // Full report for one run: the same summary fields as above, plus WHY
+  // things that didn't go through failed (grouped autoApplyNote, most
+  // common first) and which source each candidature came from — the two
+  // questions that otherwise meant re-querying the database by hand after
+  // every single run to answer "so what actually happened."
+  async getRunDetail(runId: string) {
+    const userId = await this.localUser.getDefaultUserId();
+    const run = await this.prisma.campaignRun.findFirst({
+      where: { id: runId, userId },
+      select: {
+        id: true,
+        startedAt: true,
+        finishedAt: true,
+        offersScanned: true,
+        offersFiltered: true,
+        applicationsPrepared: true,
+        applicationsSent: true,
+        error: true,
+      },
+    });
+    if (!run) throw new NotFoundException('Campagne introuvable.');
+
+    const applications = await this.prisma.application.findMany({
+      where: { campaignRunId: runId },
+      select: { status: true, autoApplyNote: true, sourceUrl: true },
+    });
+
+    const statusCounts: Record<string, number> = {};
+    const failureReasons = new Map<string, number>();
+    const bySource = new Map<string, { total: number; applied: number; needsReview: number }>();
+
+    for (const app of applications) {
+      statusCounts[app.status] = (statusCounts[app.status] || 0) + 1;
+
+      let host = 'inconnu';
+      try {
+        host = new URL(app.sourceUrl).hostname.replace(/^www\./, '');
+      } catch {}
+      const sourceBucket = bySource.get(host) || { total: 0, applied: 0, needsReview: 0 };
+      sourceBucket.total++;
+      if (app.status === 'applied') sourceBucket.applied++;
+      if (app.status === 'needs_review') sourceBucket.needsReview++;
+      bySource.set(host, sourceBucket);
+
+      if (app.status === 'needs_review' && app.autoApplyNote) {
+        const reason = app.autoApplyNote.trim().slice(0, 160);
+        failureReasons.set(reason, (failureReasons.get(reason) || 0) + 1);
+      }
+    }
+
+    return {
+      ...run,
+      statusCounts,
+      totalApplications: applications.length,
+      failureReasons: [...failureReasons.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([reason, count]) => ({ reason, count })),
+      bySource: [...bySource.entries()]
+        .sort((a, b) => b[1].total - a[1].total)
+        .map(([host, counts]) => ({ host, ...counts })),
+    };
   }
 
   async pause() {
@@ -465,6 +561,27 @@ export class CampaignService implements OnModuleInit {
     const createdApplicationIds: string[] = [];
 
     try {
+      // Confirmed live: launching right after a Docker/host-Chrome restart
+      // races the 30s-post-boot and 20-minute cron session checks -- Chrome
+      // is often not even up yet when the post-boot check fires, so the
+      // first attempts on a freshly-launched run can hit a session that's
+      // stale relative to the Chrome instance actually driving this run,
+      // trip the "ignorée pour cette série" protective skip, and take the
+      // rest of that platform's batch down with it even though the session
+      // was perfectly refreshable. Forcing a synchronous check here, before
+      // any offer is scanned or applied to, means a run never starts on a
+      // session it hasn't just verified. Failure here is never fatal to the
+      // run itself -- an expired session still surfaces per-platform via
+      // the normal ensureLoggedIn() flow in each applier, same as today.
+      await this.appendLog(runId, 'Vérification des sessions avant de démarrer...');
+      try {
+        const results = await this.sessionHealth.run();
+        const summary = results.map((r) => `${r.platform}: ${r.status}`).join(', ');
+        await this.appendLog(runId, `Sessions vérifiées — ${summary}`);
+      } catch (err: any) {
+        await this.appendLog(runId, `Vérification des sessions impossible (${err.message}) — poursuite de la campagne.`);
+      }
+
       const cv = await this.cvService.getCV(userId);
       const targetKeywords = (campaign.keywords as string[]) || [];
 

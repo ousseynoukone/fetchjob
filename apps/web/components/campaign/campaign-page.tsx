@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useCampaignStore } from '@/lib/campaign-store';
 import AppShell from '@/components/layout/app-shell';
+import CampaignRunHistory from '@/components/campaign/campaign-run-history';
 import { Play, Pause, Loader2, Terminal, Eye, Maximize2, X } from 'lucide-react';
 
 const CONTRACT_TYPES = ['CDI', 'CDD', 'Freelance', 'Stage', 'Alternance'];
@@ -601,6 +602,10 @@ export default function CampaignPage() {
               </div>
             </div>
           </div>
+        </div>
+
+        <div className="mt-6">
+          <CampaignRunHistory />
         </div>
       </div>
 

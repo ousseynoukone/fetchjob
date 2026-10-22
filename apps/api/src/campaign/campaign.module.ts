@@ -8,9 +8,10 @@ import { ScrapingModule } from '../scraping/scraping.module';
 import { MatchingModule } from '../matching/matching.module';
 import { ApplicationPrepModule } from '../applications/application-prep.module';
 import { AutoApplyModule } from '../auto-apply/auto-apply.module';
+import { SessionHealthModule } from '../session-health/session-health.module';
 
 @Module({
-  imports: [CommonModule, CvModule, ScrapingModule, MatchingModule, ApplicationPrepModule, AutoApplyModule],
+  imports: [CommonModule, CvModule, ScrapingModule, MatchingModule, ApplicationPrepModule, AutoApplyModule, SessionHealthModule],
   providers: [CampaignService, CampaignSchedulerService],
   controllers: [CampaignController],
   exports: [CampaignService],

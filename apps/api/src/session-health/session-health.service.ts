@@ -62,19 +62,26 @@ export class SessionHealthService implements OnModuleInit {
   // ran concurrently through the same browser -- every platform visited two
   // or three times back to back, which is both wasted work and exactly the
   // burst of repeated automated traffic anti-bot systems score against.
-  private sweepInProgress = false;
+  //
+  // Holds the IN-FLIGHT sweep's promise, not just a boolean -- confirmed
+  // live: a campaign launched right after an api restart raced the
+  // automatic post-boot check, got turned away by the old boolean guard,
+  // and silently treated an EMPTY result as "sessions verified" (logged
+  // "Sessions vérifiées — " with nothing after the dash) when nothing had
+  // actually been checked for that run at all. A second caller now awaits
+  // the SAME sweep and gets its real results instead of being skipped.
+  private sweepPromise: Promise<{ platform: string; status: 'refreshed' | 'expired' | 'error' | 'skipped' }[]> | null = null;
 
   async run(force = false): Promise<{ platform: string; status: 'refreshed' | 'expired' | 'error' | 'skipped' }[]> {
-    if (this.sweepInProgress) {
-      this.logger.log('Session health sweep already in progress — skipping this trigger.');
-      return [];
+    if (this.sweepPromise) {
+      this.logger.log('Session health sweep already in progress — awaiting its result instead of starting a new one.');
+      return this.sweepPromise;
     }
-    this.sweepInProgress = true;
-    try {
-      return await this.sweep(force);
-    } finally {
-      this.sweepInProgress = false;
-    }
+    const promise = this.sweep(force).finally(() => {
+      this.sweepPromise = null;
+    });
+    this.sweepPromise = promise;
+    return promise;
   }
 
   private async sweep(force: boolean): Promise<{ platform: string; status: 'refreshed' | 'expired' | 'error' | 'skipped' }[]> {
@@ -357,7 +364,20 @@ export class SessionHealthService implements OnModuleInit {
       if (platform === 'welcome_to_the_jungle') {
         const emailField = page.locator('input[name="email"], input[type="email"]').first();
         const passField = page.locator('input[name="password"], input[type="password"]').first();
-        if ((await emailField.isVisible().catch(() => false)) && (await passField.isVisible().catch(() => false))) {
+        // Same fix as france_travail/apec/collective_work above: relying on
+        // only the shared fixed wait before this block, then an instant
+        // isVisible() with no retry, doesn't give the SPA a chance to
+        // finish rendering under real load -- confirmed live, this exact
+        // gap left welcome_to_the_jungle reporting "expired" (session
+        // auto-relogin silently never attempted, not actually failing)
+        // while the three cascade-skipped candidatures from that run were
+        // never truly unrecoverable.
+        const fieldsReady = await emailField
+          .waitFor({ state: 'visible', timeout: 15000 })
+          .then(() => passField.waitFor({ state: 'visible', timeout: 15000 }))
+          .then(() => true)
+          .catch(() => false);
+        if (fieldsReady) {
           await emailField.fill(email);
           await passField.fill(pass);
           await page.keyboard.press('Enter');
@@ -372,7 +392,13 @@ export class SessionHealthService implements OnModuleInit {
       if (platform === 'hellowork') {
         const emailField = page.locator('input[name="email2"], input[name="email"]').first();
         const passField = page.locator('input[type="password"]').first();
-        if ((await emailField.isVisible().catch(() => false)) && (await passField.isVisible().catch(() => false))) {
+        // Same fix as welcome_to_the_jungle above.
+        const fieldsReady = await emailField
+          .waitFor({ state: 'visible', timeout: 15000 })
+          .then(() => passField.waitFor({ state: 'visible', timeout: 15000 }))
+          .then(() => true)
+          .catch(() => false);
+        if (fieldsReady) {
           await emailField.fill(email);
           await passField.fill(pass);
           await page.keyboard.press('Enter');

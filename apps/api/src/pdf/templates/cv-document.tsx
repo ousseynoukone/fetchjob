@@ -330,8 +330,8 @@ const DEFAULT_SIDEBAR_ACCENT = '#2d5bff';
 const SIDEBAR_BG = '#111827';
 
 function getSidebarStyles(ACCENT: string, scale: number) {
-  const leftPadding = Math.max(14, 18 * scale);
-  const rightPadding = Math.max(14, 16 * scale);
+  const leftPadding = Math.max(12, 15 * scale);
+  const rightPadding = Math.max(12, 14 * scale);
   return StyleSheet.create({
     page: {
       flexDirection: 'row',
@@ -340,25 +340,34 @@ function getSidebarStyles(ACCENT: string, scale: number) {
       color: '#0f172a',
     },
     left: {
+      // Confirmed live: the sidebar routinely ends with roughly half the
+      // page left blank below it, while the main (right) column — three
+      // jobs' worth of bullet points — is what actually overflows and caps
+      // how big the font can get. A narrower sidebar (30%) did free real
+      // width for the constrained column, but also broke long unbreakable
+      // tokens (the email address split mid-word, "oussey-\nnou781227@...")
+      // at larger sizes -- not worth it for a modest ceiling gain. Left at
+      // the original width; see `right` below for a smaller, safer version
+      // of the same idea.
       width: '34%',
       padding: leftPadding,
       backgroundColor: SIDEBAR_BG,
     },
     contactBlock: {
-      marginBottom: 16 * scale,
+      marginBottom: 12 * scale,
     },
     contactRow: {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 5,
-      marginBottom: 5 * scale,
+      marginBottom: 4 * scale,
     },
     contactText: {
       fontSize: 8 * scale,
       color: '#cbd5e1',
     },
     sideBlock: {
-      marginBottom: 14 * scale,
+      marginBottom: 10 * scale,
     },
     sideTitle: {
       fontSize: 8 * scale,
@@ -368,8 +377,8 @@ function getSidebarStyles(ACCENT: string, scale: number) {
       color: '#f8fafc',
       borderBottomWidth: 1.5,
       borderBottomColor: ACCENT,
-      paddingBottom: 4 * scale,
-      marginBottom: 8 * scale,
+      paddingBottom: 3 * scale,
+      marginBottom: 6 * scale,
     },
     skillGroupLabel: {
       fontSize: 7.5 * scale,
@@ -381,8 +390,8 @@ function getSidebarStyles(ACCENT: string, scale: number) {
     skillItemsText: {
       fontSize: 7.5 * scale,
       color: '#cbd5e1',
-      lineHeight: 1.4,
-      marginBottom: 8 * scale,
+      lineHeight: 1.3,
+      marginBottom: 6 * scale,
     },
     sideText: {
       fontSize: 8 * scale,
@@ -405,19 +414,19 @@ function getSidebarStyles(ACCENT: string, scale: number) {
       letterSpacing: 0.5,
       color: ACCENT,
       marginTop: 2 * scale,
-      paddingBottom: 6 * scale,
-      marginBottom: 10 * scale,
+      paddingBottom: 5 * scale,
+      marginBottom: 7 * scale,
       borderBottomWidth: 2,
       borderBottomColor: '#e2e8f0',
     },
     summary: {
       fontSize: 9 * scale,
       color: '#475569',
-      lineHeight: 1.4,
-      marginBottom: 10 * scale,
+      lineHeight: 1.3,
+      marginBottom: 7 * scale,
     },
     section: {
-      marginBottom: 9 * scale,
+      marginBottom: 6 * scale,
     },
     sectionTitle: {
       fontSize: 9.5 * scale,
@@ -426,11 +435,11 @@ function getSidebarStyles(ACCENT: string, scale: number) {
       letterSpacing: 0.5,
       borderBottomWidth: 2,
       borderBottomColor: ACCENT,
-      paddingBottom: 3.5 * scale,
-      marginBottom: 6 * scale,
+      paddingBottom: 2.5 * scale,
+      marginBottom: 4.5 * scale,
     },
     entry: {
-      marginBottom: 7 * scale,
+      marginBottom: 5 * scale,
     },
     entryTitle: {
       fontSize: 9.5 * scale,
@@ -461,7 +470,7 @@ function getSidebarStyles(ACCENT: string, scale: number) {
     },
     bulletRow: {
       flexDirection: 'row',
-      marginTop: 1.5 * scale,
+      marginTop: 1 * scale,
     },
     bulletDot: {
       fontSize: 8 * scale,
@@ -472,7 +481,7 @@ function getSidebarStyles(ACCENT: string, scale: number) {
       fontSize: 8 * scale,
       color: '#475569',
       flex: 1,
-      lineHeight: 1.35,
+      lineHeight: 1.25,
     },
     entryRow: {
       flexDirection: 'row',
@@ -485,13 +494,22 @@ function getSidebarStyles(ACCENT: string, scale: number) {
     },
     eduRow: {
       flexDirection: 'row',
-      marginBottom: 7 * scale,
+      marginBottom: 5 * scale,
     },
     eduPeriod: {
       width: '28%',
       fontSize: 7.5 * scale,
       fontWeight: 700,
       color: '#64748b',
+    },
+    // Without an explicit flex, this column's width is undefined inside the
+    // row — confirmed live: a long school name ("Institut supérieur
+    // d'informatique (ISI)") then has no defined width to wrap text
+    // against, so it lands at a different effective position/wrap point
+    // than a short one ("ITIC Paris") on the row above it, looking
+    // misaligned even though eduPeriod's own width is fixed.
+    eduContent: {
+      flex: 1,
     },
     eduDegree: {
       fontSize: 9 * scale,
@@ -506,7 +524,7 @@ function getSidebarStyles(ACCENT: string, scale: number) {
       flexDirection: 'row',
       justifyContent: 'space-between',
       alignItems: 'baseline',
-      marginBottom: 4 * scale,
+      marginBottom: 3 * scale,
     },
     certName: {
       fontSize: 8.5 * scale,
@@ -619,7 +637,7 @@ function SidebarCVDocument({ cv }: { cv: CVData }) {
               {cv.education.map((edu, idx) => (
                 <View style={styles.eduRow} key={idx}>
                   <Text style={styles.eduPeriod}>{edu.period}</Text>
-                  <View>
+                  <View style={styles.eduContent}>
                     <Text style={styles.eduDegree}>
                       {edu.link ? (
                         <Link src={edu.link} style={{ ...styles.eduDegree, color: ACCENT }}>

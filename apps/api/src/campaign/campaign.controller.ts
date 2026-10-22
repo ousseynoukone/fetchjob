@@ -77,6 +77,15 @@ export class CampaignController {
     return this.campaignService.getRunHistory();
   }
 
+  // Declared before any other 'runs/...' route would need to be, and after
+  // the static 'runs' above — same ordering lesson as applications.controller.ts:
+  // a param route never shadows a static one when the static one is declared
+  // first, but it's still only safe because nothing else under 'runs/' exists.
+  @Get('runs/:id')
+  async getRunDetail(@Param('id') id: string) {
+    return this.campaignService.getRunDetail(id);
+  }
+
   @Get('stats')
   async getStats() {
     return this.campaignService.getStats();

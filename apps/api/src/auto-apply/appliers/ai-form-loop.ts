@@ -218,7 +218,27 @@ export async function runFormLoop(page: Page, ctx: ApplyContext, ai: AiService, 
         confirmed = await detectFormSuccess(page, opts.successText, opts.successUrl);
         if (confirmed) break;
       }
-      
+
+      // Some platforms gate the real submit behind a SECOND, native-feeling
+      // confirm dialog ("Cette action est irréversible...") whose own button
+      // matches the same submitText (often a bare "Envoyer" vs. "Envoyer la
+      // candidature") -- confirmed live on Collective Work: the click above
+      // only opened this dialog, it never actually submitted anything, so
+      // detectFormSuccess above had nothing real to find yet. A still-visible
+      // matching button here means a confirm step appeared, not that the
+      // first click silently failed -- click it too before giving up.
+      if (!confirmed) {
+        const confirmButton = page.getByRole('button', { name: opts.submitText }).first();
+        if (await confirmButton.isVisible().catch(() => false)) {
+          await humanClick(page, confirmButton).catch(() => {});
+          for (let i = 0; i < 8; i++) {
+            await page.waitForTimeout(1000);
+            confirmed = await detectFormSuccess(page, opts.successText, opts.successUrl);
+            if (confirmed) break;
+          }
+        }
+      }
+
       return confirmed ? { success: true } : await reportBlockedState(page, ctx, opts.unresolvedNote);
     }
     

@@ -90,7 +90,15 @@ $args += 'about:blank'
 # One string, with the space-containing arguments quoted above: Start-Process
 # does not quote array elements itself, and an unquoted UA gets split into
 # several bogus arguments.
-Start-Process $chrome -ArgumentList ($args -join ' ')
+#
+# -WindowStyle Hidden is not about Chrome's own (nonexistent, headless) UI --
+# it's about the console. Confirmed live: without it, --headless=new Chrome
+# stays attached to whatever console window launched this script, and since
+# Chrome is a long-running background process, that console can never close
+# on its own -- not even dropping -NoExit on the wrapping `powershell -File`
+# call helped, because the window stays open as long as ANY process attached
+# to it is still running, and Chrome always is. This detaches it for good.
+Start-Process $chrome -ArgumentList ($args -join ' ') -WindowStyle Hidden
 
 for ($i = 0; $i -lt 20; $i++) {
   Start-Sleep -Milliseconds 500

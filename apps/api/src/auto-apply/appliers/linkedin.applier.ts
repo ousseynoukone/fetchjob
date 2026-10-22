@@ -298,9 +298,19 @@ export class LinkedInApplier implements JobApplier {
     await ctx.appendLog?.('Formulaire Easy Apply chargé avec succès.');
     await page.waitForTimeout(600);
 
-    // Step through the multi-page Easy Apply modal (up to 8 steps)
+    // Step through the multi-page Easy Apply modal. Confirmed live: a
+    // posting with several custom screening questions (one per page, this
+    // platform's own pattern) genuinely needed more than 8 -- the old cap
+    // hit its loop limit with questions still unanswered on screen, which
+    // then got reported as "unknown" purely because the loop never reached
+    // them, not because nothing could answer them (the exact same question,
+    // already answered before, sat right there unreachable). Raised well
+    // past any real form seen so far; the per-attempt AI-call budget
+    // (Paramètres — "autoApplyMaxAiCalls") is what actually bounds cost,
+    // not this count -- a step that only needs a known button click never
+    // touches that budget at all.
     let aiCallsUsed = 0;
-    for (let step = 0; step < 8; step++) {
+    for (let step = 0; step < 20; step++) {
       const stepHeader = await page
         .locator('[role="dialog"]:visible h3, [role="dialog"]:visible h2, .artdeco-modal__header:visible, dialog[open] h2, #dialog-header h2')
         .first()

@@ -793,10 +793,18 @@ export function buildCandidateBrief(ctx: ApplyContext, formText?: string): strin
     const ranked = haystack
       ? entries
           .map((entry) => {
+            // >2, not >3 -- confirmed live: this was dropping every 2-3
+            // letter tech acronym (SQL, PHP, AWS, GCP...), which is usually
+            // the ONE word that actually ties a rephrased/translated
+            // duplicate to its answer (e.g. English "...with SQL?" vs
+            // French "...utilisez-vous SQL ?"). With >3 those entries
+            // scored 0 overlap like any unrelated question and got crowded
+            // out of the budget below once the answered set passed ~140
+            // rows, so the AI saw them as brand new and left them unknown.
             const words = entry[0]
               .toLowerCase()
               .split(/[^a-z0-9àâäéèêëïîôöùûüç]+/i)
-              .filter((w) => w.length > 3);
+              .filter((w) => w.length > 2);
             const hits = words.filter((w) => haystack.includes(w)).length;
             return { entry, score: words.length ? hits / words.length : 0 };
           })

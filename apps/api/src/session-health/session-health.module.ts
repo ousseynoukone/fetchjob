@@ -9,5 +9,6 @@ import { SessionHealthController } from './session-health.controller';
   imports: [CommonModule, PlatformCredentialsModule, AutoApplyModule],
   providers: [SessionHealthService],
   controllers: [SessionHealthController],
+  exports: [SessionHealthService],
 })
 export class SessionHealthModule {}
